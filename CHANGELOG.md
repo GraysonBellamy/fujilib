@@ -45,6 +45,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `fujilib.config.DEFAULTS`: the timing and retry defaults, each with the
   measurement or manual statement it rests on; operation deadlines that cover queue
   time and retries.
+- Read-only hardware tests of the client and read procedures
+  (`tests/hardware/test_hardware_client.py`, gated by `FUJILIB_ENABLE_HARDWARE_TESTS=1`
+  and `FUJILIB_HARDWARE_PORT`), and `scripts/probe_client.py`, which measures the client
+  on a real analyzer. On the bench unit every read procedure works, 300 polls ran at
+  7.78 Hz with no failure, and the quiet window turns a lost request into a clean read
+  (`docs/protocol-findings.md` §10). On Windows, trio cannot read a real COM port with
+  `anyserial` 0.1.2; use asyncio there.
 - `fujilib.testing`: `MockAnalyzer` stations on a `MockLine` over a real serial port
   pair, with the manual's and the bench unit's exception replies, per-request reply
   faults (drop, delay, bad CRC, wrong count, wrong function code, garbage, exception),

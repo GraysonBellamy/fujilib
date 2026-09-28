@@ -5,8 +5,9 @@ description: What the bench Fuji ZPA analyzer actually does on the wire, measure
 # Protocol findings — bench ZPA, 2026-09-28
 
 Measured on the bench analyzer with the read-only probes in `scripts/`
-(`probe_connect.py`, `probe_map.py`, `probe_scan.py`, `probe_link.py`). Only Modbus
-*read* function codes were sent; no register was written and no command was issued.
+(`probe_connect.py`, `probe_map.py`, `probe_scan.py`, `probe_link.py`, and, for
+fujilib's own client, `probe_client.py`, §10). Only Modbus *read* function codes were
+sent; no register was written and no command was issued.
 
 This document records what was **observed**. The manual is INZ-TN5A1190a-E unless noted.
 Addresses are relative (on-the-wire) hexadecimal. Raw results are in `probe_out/`
@@ -345,4 +346,118 @@ package versions and the SHA-256 of the probe scripts:
 - Addresses 2000h–FFFFh at full resolution (sampled only).
 - Multi-drop with more than one station.
 - A comparison of the Modbus O2 value against the analog output.
-- Normal → exception gap pairs, randomized gap order, and Linux timing.
+- Linux timing. (Normal → exception gap pairs and randomized gap order were measured
+  later; see §6.3.)
+
+## 10. fujilib's own client on the bench (2026-09-28, evening)
+
+fujilib's transport, Modbus port, client and read procedures (commit `8c04481`), run
+against the same analyzer on `COM8`, station 1. They used the library defaults: 0.5 s
+request timeout, 5 ms inter-frame idle, 50 ms startup settle, 2 read retries and a
+0.1 s quiet window. `anymodbus` 0.2.1, `anyserial` 0.1.2, `anyio` 4.15.1, Python 3.13,
+Windows 11.
+
+- **The probe:** `scripts/probe_client.py`, read-only by construction (the read
+  procedures get a client whose write methods raise).
+- **The tests:** `tests/hardware/test_hardware_client.py`, run with
+  `FUJILIB_ENABLE_HARDWARE_TESTS=1 FUJILIB_HARDWARE_PORT=COM8 uv run pytest -m hardware tests/hardware`.
+
+### 10.1 Every read procedure
+
+`--mode smoke` ran every read procedure once.
+
+- **Identify.** Type code and serial as in §2; channels 1–3 present.
+- **Probes.** The clock and the A/D values are supported; type-code digits 27–29 and the
+  calibration log are unsupported (exception 02, as in §5).
+- **Poll.** Two blocks, 48 ms each. Every reading was in state "ok": CO2 −0.10, CO
+  −0.006, O2 20.17 vol%. No hold and no errors.
+- **Metadata.** Response times 15 s on every channel.
+- **Error log.** 14 entries, as in §7.
+- **Clock.** Still about 6.5 minutes behind the host.
+- **A/D.** Reference voltage 38927.
+- **Counters.** 27 requests, no retries; the only failed attempts were the 3 expected
+  exception replies.
+
+The eight hardware tests passed under asyncio.
+
+### 10.2 Sustained polls
+
+`--mode polls --count 300`: 300 full polls back to back.
+
+| Quantity | min | median | p95 | max |
+|---|---|---|---|---|
+| block 1 (`0000h+61`) round trip, ms | 46.5 | 48.9 | 51.1 | 54.3 |
+| block 2 (`0083h+60`) round trip, ms | 46.0 | 48.3 | 50.7 | 53.9 |
+| block 1 reply → block 2 request, ms | 5.1 | 16.9 | 20.3 | 22.8 |
+| whole poll, ms | 110.9 | 130.9 | 136.8 | 140.9 |
+
+- **No failures.** 603 requests, no retries, no failed attempt.
+- **7.78 polls per second**, within the 7–8 Hz ceiling estimated in design §2.4.
+- **The idle holds.** The 5 ms idle was never shortened. Its median of 17 ms is the
+  Windows timer.
+- **Timing is honest.** Each block's round trip excludes that wait: the client waits out
+  the gap before it timestamps the request (design §4.2).
+
+### 10.3 A reply still on the wire after its read is cancelled
+
+`--mode resync`, 30 trials per condition. Each trial:
+
+1. reads block B (`0083h+36`, the error and hold flags) as a reference;
+2. idles 40 ms;
+3. reads block A (`0000h+36`, the readings; about 33 ms round trip) and cancels it
+   after 15 or 30 ms, so A has been sent and its reply is on its way;
+4. reads B again at once and compares.
+
+In all 120 trials A reached the wire before it was cancelled.
+
+| Cancel A after | Quiet window | B right first time | B lost (timed out, the retry recovered it) | Wrong data accepted | Cancel → B done, median |
+|---|---|---|---|---|---|
+| 15 ms | 0 | 7 | **23** | 0 | 571 ms (lost) / 55 ms (first time) |
+| 15 ms | 0.1 s | 30 | 0 | 0 | 136 ms |
+| 30 ms | 0 | 30 | 0 | 0 | 53 ms |
+| 30 ms | 0.1 s | 30 | 0 | 0 | 138 ms |
+
+- **The hazard is real on this line**, but it takes a different form from the one the
+  simulator reproduces. Cancelled 15 ms in, A's reply is still arriving when B's request
+  goes out on the half-duplex line. In 23 of 30 trials the analyzer never answered B:
+  the request collided with A's reply, and B cost a 0.5 s timeout and a retry.
+- **Stale data was never accepted.** In no trial was A's late reply accepted as B's. The
+  hazard the design's §4.2 describes (a same-length reply to another request) remains
+  possible in principle, but was not observed with this adapter.
+- **When the reply has landed, the input reset clears it.** Cancelled 30 ms in, A's reply
+  has almost entirely arrived by the time B is sent, so the reset clears it and B
+  succeeds even with no window.
+- **With the default 0.1 s window every trial succeeded at once.** A cancellation or
+  timeout then costs about 80 ms instead of a possible 0.5 s timeout.
+- **An invalid first run.** Its cancellations landed while the client was still waiting
+  out the inter-frame gap, before anything was sent, so it tested nothing. It is kept
+  (`probe_client_resync_20260928T203149Z.json`) but not counted. The probe now idles
+  before A.
+
+### 10.4 Trio cannot read a real COM port on Windows
+
+Under trio, every hardware test failed within about 4 ms of its first read, with
+`anyserial.SerialError: [WinError 1460] This operation returned because the timeout
+period expired`. A plain idle `receive()` on `COM8`, with nothing sent, reproduces it:
+under asyncio it waits and is cancelled cleanly; under trio it raises.
+
+- **Cause.** `anyserial` reads with the "wait-for-any" `COMMTIMEOUTS` policy, under
+  which an overlapped read with no data completes after about 1 ms with
+  `STATUS_TIMEOUT`. That is a success status: asyncio's Proactor returns it as 0 bytes,
+  and `anyserial` reissues the read. Trio raises it as an error, and `anyserial` treats
+  it as a failed port.
+- **Why CI did not catch it.** The simulator's port pair does not take this path, which
+  is why the unit tests pass on trio.
+- **Until `anyserial` fixes it**, fujilib on Windows with a real port must run on asyncio.
+  The hardware tests mark trio on Windows as a strict expected failure (design §4.7
+  item 14).
+
+Raw files, in `probe_out/` (git-ignored):
+
+| File | Run | `probe_client.py` SHA-256 |
+|---|---|---|
+| `probe_client_smoke_20260928T203048Z.json` | smoke | `2475306b…` |
+| `probe_client_polls_20260928T203100Z.json` | 300 polls | `2475306b…` |
+| `probe_client_resync_20260928T203149Z.json` | resync, invalid (cancelled before sending) | `2475306b…` |
+| `probe_client_resync_20260928T203243Z.json` | resync, cancel after 15 ms | `694951e7…` |
+| `probe_client_resync_20260928T203354Z.json` | resync, cancel after 30 ms | `694951e7…` |

@@ -713,6 +713,10 @@ exception reply, is a certain outcome and starts no window.
   `FujiResyncRequiredError`.
 - A test shows the hazard is real: with the window at 0, a reply that arrives 50 ms after
   its read timed out is taken as the answer to the next read, at another address.
+- **[bench]** On the analyzer (findings §10.3) the hazard showed up as a lost request
+  rather than stale data. With the window at 0, a read sent while a cancelled read's reply
+  was still on the half-duplex line went unanswered in 23 of 30 trials, costing a 0.5 s
+  timeout and a retry. With the 0.1 s window, 30 of 30 succeeded at once.
 
 ### 4.3 Read planner
 
@@ -868,6 +872,16 @@ And in `anyserial`:
 
 13. `normalise_com_path` turns `\\?\COM8` into `\\.\\\?\COM8`, and there is no public
     helper to canonicalize a port name. fujilib has its own (`transport/ports.py`).
+14. **[bench] Trio cannot read a real COM port on Windows.** An idle `receive()` under
+    trio raises `SerialError` (WinError 1460) about 1 ms after it is called.
+    - `anyserial` reads with the "wait-for-any" `COMMTIMEOUTS` policy, under which an
+      overlapped read with no data completes with `STATUS_TIMEOUT`, a success status.
+      asyncio's Proactor returns it as 0 bytes and `anyserial` reissues the read. Trio
+      raises it, and `anyserial` treats it as a failed port.
+    - Until `anyserial` returns 0 for that error in its trio read path, fujilib on Windows
+      with a real port must run on asyncio.
+    - The simulator's port pair does not take this path, so CI cannot catch it. The
+      hardware tests mark trio on Windows as a strict expected failure (findings §10.4).
 
 ---
 
@@ -1920,12 +1934,22 @@ Differences from the plan above (decisions §13.1 #26–#31):
   - the log reads check the newest record after the scan (§4.3);
   - `DOCUMENTED` and `BENCH_1_02` differ only on FC01/02, because the manual's own text
     for exception 03 covers a read that crosses a region end (§10).
-- **Upstream findings** are §4.7 items 7–13.
+- **Upstream findings** are §4.7 items 7–14.
 
 *Exit:* the read path is fully covered without hardware. Locally (Windows, Python 3.13
 and 3.14), lint, both type checkers, the docs build and 1233 tests at 100 % coverage
 pass, on asyncio and trio. The uvloop backend and the Linux and macOS cells run only in
 CI, which needs `phase-1` and this work pushed.
+
+*Hardware check* (read-only, 2026-09-28, findings §10), all on the bench analyzer:
+
+- every read procedure, and the eight hardware tests of
+  `tests/hardware/test_hardware_client.py`, pass under asyncio;
+- 300 polls ran back to back at 7.78 Hz with no failure;
+- request timestamps come after the inter-frame gap;
+- the quiet window turns a lost request (23 of 30 trials without it) into a clean read.
+
+On Windows, trio cannot read a real COM port with `anyserial` 0.1.2 (§4.7 item 14).
 
 ### Phase 4 — Session, facade, discovery, sync, capa spike (4–5 days, plus a hardware session)
 
@@ -1994,7 +2018,7 @@ then start with a design and a hardware prototype, and be estimated after that.
 - Further sinks (SQLite, JSONL, Postgres), when needed.
 - Validate ZPB / ZPG / ZPAJ / ZPG3E; add their type-code tables; exercise the RS-232C
   path.
-- The remaining upstream `anymodbus` and `anyserial` items (§4.7 items 2–13).
+- The remaining upstream `anymodbus` and `anyserial` items (§4.7 items 2–14).
 
 ### Sequencing
 
@@ -2069,6 +2093,7 @@ Answered by the read-only probes of 2026-09-28. Details and data are in
 | 17 | Type code | `ZPACBJY1MPFYYYYYY2DEYAYAY0`; does not fully match the current code table (§2.9) |
 | 19 | Map beyond 2000h | Sampled every 256 addresses and every multiple of 1000; nothing found |
 | 20 | The scan's 43 malformed replies | all re-read as exception 02 (3 of 3 each); link artifacts |
+| 28 | fujilib's client, read procedures and quiet window on the analyzer | Done 2026-09-28 (findings §10). Every read procedure works; 300 polls at 7.78 Hz with no failure; with no quiet window a read after a cancelled one was lost in 23 of 30 trials, with the window never; stale data was never accepted |
 
 Still open:
 
@@ -2091,6 +2116,8 @@ Still open:
     auto-calibration start time the panel shows; no Modbus traffic is needed.*
 27. The encoding of the alarm target channel (§2.6). *Phase 6, or a unit with the alarm
     option.*
+29. Trio with a real Windows COM port (§4.7 item 14). *Fails with `anyserial` 0.1.2; rerun
+    the hardware tests on trio once it is fixed. Linux and macOS untested.*
 
 ### 13.3 The bench analyzer
 
