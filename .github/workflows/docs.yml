@@ -46,7 +46,8 @@ jobs:
         run: uv sync --group docs
       - name: Build
         run: uv run zensical build --clean
-      - if: github.event_name == 'push'
+      # Pushes to main and manual runs deploy; pull requests only build.
+      - if: github.event_name != 'pull_request'
         uses: actions/upload-pages-artifact@v5.0.0
         with:
           path: site/
@@ -54,7 +55,7 @@ jobs:
   deploy:
     name: Deploy to GitHub Pages
     needs: build
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     environment:
       name: github-pages
