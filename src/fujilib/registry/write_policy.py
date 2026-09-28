@@ -158,9 +158,9 @@ OPERATIONS: Final[Mapping[str, OperationSpec]] = MappingProxyType(
 
 def _check_operations() -> None:
     for spec in OPERATIONS.values():
-        if not envelope_allows(FC_WRITE_SINGLE, spec.address):
+        if not envelope_allows(FC_WRITE_SINGLE, spec.address):  # pragma: no cover — tested
             msg = f"operation {spec.name!r} at 0x{spec.address:04X} is outside the write envelope"
-            raise FujiConfigurationError(msg)  # pragma: no cover — guarded by the tests
+            raise FujiConfigurationError(msg)
 
 
 _check_operations()

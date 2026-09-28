@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 from fujilib.devices.models import (
     AnalyzerStatus,
@@ -128,4 +130,16 @@ def frame(
         readings_timing=timing(0.0),
         status_timing=timing(25.0) if detail else None,
         raw=b"\x00" * 242,
+    )
+
+
+BENCH_BANK_PATH = Path(__file__).resolve().parent / "fixtures" / "zpa_bench_documented.json"
+
+
+def bench_banks() -> tuple[dict[int, int], dict[int, int]]:
+    """``(holding, input)`` banks of the committed, sanitized bench capture."""
+    data = json.loads(BENCH_BANK_PATH.read_text(encoding="utf-8"))
+    return (
+        {int(a, 16): w for a, w in data["holding"].items()},
+        {int(a, 16): w for a, w in data["input"].items()},
     )

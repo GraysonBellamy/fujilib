@@ -411,6 +411,8 @@ class ChannelInfo:
     suggested_gas: Gas | None
     role: ChannelRole
     label_source: LabelSource
+    derived_from: ChannelId | None = None
+    """For an O2-corrected value or average, the channel of the corrected component."""
 
 
 @dataclass(frozen=True, slots=True)

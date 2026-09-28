@@ -22,7 +22,7 @@ from __future__ import annotations
 
 from decimal import ROUND_HALF_EVEN, Decimal, InvalidOperation
 from enum import IntEnum, StrEnum
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Final, assert_never
 
 from anymodbus import ByteOrder, WordOrder
 from anymodbus.decoders import decode_int16, decode_int32, encode_int16, encode_int32
@@ -356,3 +356,5 @@ def decode_raw(words: Sequence[int], data_type: DataType) -> int | bool | str:
             return decode_bool(words[0])
         case DataType.CHAR:
             return decode_chars(words)
+        case _:  # pragma: no cover — every DataType has a case
+            assert_never(data_type)
