@@ -1,0 +1,21 @@
+# The worked examples of INZ-TN5A1190a-E (the MODBUS manual), station 1.
+# CRC-16/MODBUS is appended low byte first. Design §2.10.
+
+# p.15: the CRC worked example (write 1000 to 0005h).
+> 01 06 00 05 03 E8 99 75
+
+# p.20: read Ch2 range-1 zero and span calibration gas (0004h, 2 words).
+> 01 03 00 04 00 02 85 CA
+< 01 03 04 00 00 03 E8 FA 8D                  # 0, 1000 -> 0.0 / 100.0 ppm at 1 decimal
+
+# p.22: read Ch5 concentration, decimal point and unit (000Ch, 3 words).
+> 01 04 00 0C 00 03 70 08
+< 01 04 06 04 B0 00 02 00 00 81 0D            # 1200, dp 2, vol% -> 12.00 vol%
+
+# p.23: the ZERO key (07D0h); the reply echoes the request. fujilib never sends it.
+> 01 06 07 D0 00 40 88 B7
+< 01 06 07 D0 00 40 88 B7
+
+# p.25: write alarm 1 limits (0023h, 4 words): 5000, 10, 1000, 10.
+> 01 10 00 23 00 04 08 13 88 00 0A 03 E8 00 0A E2 A6
+< 01 10 00 23 00 04 30 00
