@@ -1,0 +1,90 @@
+[project]
+site_name = "fujilib"
+site_description = "Async Python driver for Fuji Electric ZP-series NDIR gas analyzers."
+site_url = "https://graysonbellamy.github.io/fujilib/"
+repo_url = "https://github.com/GraysonBellamy/fujilib"
+repo_name = "GraysonBellamy/fujilib"
+edit_uri = "edit/main/docs/"
+docs_dir = "docs"
+site_dir = "site"
+# Pages are added to the nav as the phases that write them land (design §12).
+nav = [
+    { Home = "index.md" },
+    { Installation = "installation.md" },
+    { Reference = [
+        { "Protocol findings" = "protocol-findings.md" },
+    ] },
+    { "API reference" = [
+        { Overview = "api/index.md" },
+        { "fujilib.errors" = "api/errors.md" },
+    ] },
+    { Design = "design.md" },
+]
+
+[project.theme]
+variant = "classic"
+features = [
+    "content.code.copy",
+    "content.code.annotate",
+    "navigation.instant",
+    "navigation.tracking",
+    "navigation.sections",
+    "navigation.indexes",
+    "search.highlight",
+]
+
+[[project.theme.palette]]
+media = "(prefers-color-scheme: light)"
+scheme = "default"
+primary = "purple"
+accent = "purple"
+toggle.icon = "lucide/sun"
+toggle.name = "Switch to dark mode"
+
+[[project.theme.palette]]
+media = "(prefers-color-scheme: dark)"
+scheme = "slate"
+primary = "purple"
+accent = "purple"
+toggle.icon = "lucide/moon"
+toggle.name = "Switch to light mode"
+
+[project.plugins.mkdocstrings]
+default_handler = "python"
+
+[project.plugins.mkdocstrings.handlers.python]
+paths = ["src"]
+
+[project.plugins.mkdocstrings.handlers.python.options]
+docstring_style = "google"
+show_source = true
+show_root_heading = true
+merge_init_into_class = true
+separate_signature = true
+
+[project.markdown_extensions.admonition]
+
+[project.markdown_extensions.attr_list]
+
+[project.markdown_extensions.md_in_html]
+
+[project.markdown_extensions.pymdownx.details]
+
+[project.markdown_extensions.pymdownx.highlight]
+anchor_linenums = true
+
+[project.markdown_extensions.pymdownx.inlinehilite]
+
+[project.markdown_extensions.pymdownx.snippets]
+base_path = [".", "docs"]
+check_paths = true
+
+[project.markdown_extensions.pymdownx.superfences]
+
+[project.markdown_extensions.pymdownx.tabbed]
+alternate_style = true
+
+[project.markdown_extensions.tables]
+
+[project.markdown_extensions.toc]
+permalink = true

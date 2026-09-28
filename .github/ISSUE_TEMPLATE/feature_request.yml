@@ -1,0 +1,39 @@
+name: Feature request
+description: Propose a new register, setting, operation, sink or behaviour
+labels: [enhancement]
+body:
+  - type: textarea
+    id: motivation
+    attributes:
+      label: Motivation
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: Sketch the API. For a register, cite its address (e.g. 30001 / 40001-based number), data type, scaling and the manual page that documents it.
+    validations:
+      required: true
+  - type: dropdown
+    id: model
+    attributes:
+      label: Model(s)
+      multiple: true
+      options:
+        - ZPA
+        - ZPB
+        - ZPG
+        - ZPAJ
+        - ZPG3E
+        - n/a
+  - type: dropdown
+    id: safety
+    attributes:
+      label: Safety tier (for anything that writes)
+      options:
+        - READ_ONLY
+        - STATEFUL
+        - PERSISTENT
+        - DANGEROUS
+        - n/a
