@@ -29,10 +29,21 @@ from typing import TYPE_CHECKING, Final, cast
 
 from anymodbus.crc import verify_crc
 
-from fujilib.cli._common import render, run_cli
+from fujilib.cli._common import parse_gas, render, run_cli
+from fujilib.cli._report import (
+    adc_report,
+    channels_report,
+    error_log_report,
+    frame_report,
+    metadata_report,
+    ranges_report,
+    show,
+    type_code_report,
+)
 from fujilib.devices.decode import (
     decode_adc,
     decode_clock,
+    decode_current_ranges,
     decode_error_log,
     decode_frame,
     decode_identity,
@@ -44,9 +55,8 @@ from fujilib.devices.decode import (
     words_of,
 )
 from fujilib.devices.models import TransferTiming
-from fujilib.errors import ErrorContext, FujiDecodeError, FujiError, FujiValidationError
+from fujilib.errors import ErrorContext, FujiDecodeError, FujiValidationError
 from fujilib.protocol.modbus.codec import decode_int, scale
-from fujilib.registry.channels import ChannelId, Gas, coerce_channel
 from fujilib.registry.enums import KeyCode
 from fujilib.registry.regions import (
     FC_READ_HOLDING,
@@ -65,6 +75,7 @@ if TYPE_CHECKING:
 
     from fujilib.devices.decode import Bank
     from fujilib.devices.models import ChannelInfo
+    from fujilib.registry.channels import ChannelId, Gas
 
 __all__ = ["describe_dump", "describe_frame", "main"]
 
@@ -92,12 +103,6 @@ def _table(fc: int) -> RegisterTable:
 
 def _address(table: RegisterTable, address: int) -> str:
     return f"{address:04X}h ({table.number_base + address})"
-
-
-def _show(value: object) -> object:
-    if isinstance(value, Enum):
-        return value.name.lower()
-    return value
 
 
 def _names(table: RegisterTable, start: int, count: int) -> list[str]:
@@ -133,7 +138,7 @@ def _registers(table: RegisterTable, start: int, words: Sequence[int]) -> list[o
         elif decoded.value is None:
             entry["value"] = "needs the range's decimal point"
         elif isinstance(decoded.value, Enum) or decoded.value != decoded.raw or decoded.unit:
-            entry["value"] = f"{_show(decoded.value)}{f' {decoded.unit}' if decoded.unit else ''}"
+            entry["value"] = f"{show(decoded.value)}{f' {decoded.unit}' if decoded.unit else ''}"
         out.append(entry)
     return out
 
@@ -262,13 +267,7 @@ def describe_dump(
     except FujiDecodeError as exc:
         report["identity"] = f"not decodable from this dump: {exc}"
     else:
-        type_code, serial = identity
-        report["identity"] = {
-            "type_code": type_code.raw,
-            "model": type_code.model,
-            "unknown_digits": list(type_code.unknown_digits),
-            "serial_number": serial,
-        }
+        report["identity"] = type_code_report(*identity)
     channels: tuple[ChannelInfo, ...] = ()
     try:
         present = nonzero_channels(inputs)
@@ -278,142 +277,41 @@ def describe_dump(
         channels = label_channels(
             present, asserted=asserted, type_code=identity[0] if identity else None
         )
-        report["channels"] = [
-            {
-                "channel": c.channel.value,
-                "gas": c.gas.value,
-                "suggested_gas": c.suggested_gas.value if c.suggested_gas else None,
-                "label_source": c.label_source.value,
-                "role": c.role.value,
-            }
-            for c in channels
-        ]
-    _section(report, "ranges", lambda: _ranges(inputs))
+        report["channels"] = channels_report(channels)
+    _section(report, "ranges", lambda: ranges_report(decode_ranges(inputs)))
     at = _captured_at(data)
     timing = TransferTiming(at, at, 0, 0)
-    _section(report, "readings", lambda: _readings(inputs, channels, timing))
-    _section(report, "error_log", lambda: _error_log(inputs))
+    _section(
+        report,
+        "readings",
+        lambda: frame_report(
+            decode_frame(inputs, channels, readings_timing=timing, status_timing=timing)
+        ),
+    )
+    _section(report, "error_log", lambda: error_log_report(decode_error_log(inputs)))
     _section(report, "clock", lambda: decode_clock(words_of(inputs, 0x3E8, 7)).isoformat(sep=" "))
-    _section(report, "adc", lambda: _adc(inputs, at))
+    _section(
+        report,
+        "adc",
+        lambda: adc_report(decode_adc(words_of(inputs, 0x3EF, 42), received_at=at, t_mono_ns=0)),
+    )
     _section(report, "settings", lambda: _settings(holding, inputs, channels, at))
     return report
 
 
-def _ranges(inputs: Bank) -> list[object]:
-    out: list[object] = []
-    for info in decode_ranges(inputs):
-        described: list[str] = []
-        for rng in range(1, info.count + 1):
-            unit, full_scale, decimals = info.of(rng)
-            described.append(f"0-{full_scale:.{decimals}f} {unit.value}")
-        out.append({"channel": info.channel.value, "ranges": described})
-    return out
-
-
-def _readings(inputs: Bank, channels: Sequence[ChannelInfo], timing: TransferTiming) -> object:
-    frame = decode_frame(inputs, channels, readings_timing=timing, status_timing=timing)
-    analyzer = frame.analyzer
-    readings = [
-        {
-            "channel": r.channel.value,
-            "value": f"{r.value:.{r.decimals}f} {r.unit.value}" if r.value is not None else None,
-            "raw": r.raw_value,
-            "state": r.state.value,
-        }
-        for r in frame.readings
-    ]
-    status = (
-        {
-            "instrument_error": analyzer.instrument_error,
-            "calibration_error": analyzer.calibration_error,
-            "errors": sorted(int(e) for e in analyzer.errors),
-            "alarms": [_show(a) for a in analyzer.alarms],
-            "auto_calibration_running": analyzer.auto_calibration_running,
-            "display": _show(analyzer.display.screen) if analyzer.display else None,
-        }
-        if analyzer is not None
-        else None
-    )
-    return {"channels": readings, "analyzer": status}
-
-
-def _error_log(inputs: Bank) -> list[object]:
-    return [
-        {
-            "error": f"{int(e.code)} {_show(e.code)}",
-            "channel": e.channel.value if e.channel else None,
-            "at": f"day {e.at.day} {e.at.hour:02d}:{e.at.minute:02d}",
-        }
-        for e in decode_error_log(inputs)
-    ]
-
-
-def _adc(inputs: Bank, at: datetime) -> object:
-    adc = decode_adc(words_of(inputs, 0x3EF, 42), received_at=at, t_mono_ns=0)
-    return {
-        "inputs": list(adc.inputs),
-        "temperatures": list(adc.temperatures),
-        "resistances": list(adc.resistances),
-        "pressure": adc.pressure,
-        "reference_voltage": adc.reference_voltage,
-        "ground": adc.ground,
-    }
-
-
 def _settings(holding: Bank, inputs: Bank, channels: Sequence[ChannelInfo], at: datetime) -> object:
-    ranges = decode_ranges(inputs)
-    current = {
-        c: 1 + words_of(inputs, REGISTRY.resolve(f"range.{c.value.lower()}.current").address)[0]
-        for c in (r.channel for r in ranges)
-    }
-    serial = decode_identity(inputs)[1]
     meta = decode_metadata(
         holding,
-        serial_number=serial,
-        ranges=ranges,
+        serial_number=decode_identity(inputs)[1],
+        ranges=decode_ranges(inputs),
         channels=channels,
-        current_range=current,
+        current_range=decode_current_ranges(inputs),
         captured_at=at,
     )
-    schedule = meta.auto_calibration.schedule
-    return {
-        "response_time_s": {c.value: s for c, s in meta.response_time_s.items()},
-        "response_time_ndir_s": list(meta.response_time_ndir_s),
-        "response_time_o2_s": meta.response_time_o2_s,
-        "calibration_gas": {
-            f"{c.value} range {r}": list(pair) for (c, r), pair in meta.calibration_gas.items()
-        },
-        "hold_mode": _show(meta.hold_mode),
-        "output_hold": meta.output_hold,
-        "auto_calibration": {
-            "enabled": schedule.enabled,
-            "start_day": _show(schedule.start_day),
-            "start_hour_raw": schedule.start_hour_raw,
-            "start_minute_raw": schedule.start_minute_raw,
-            "cycle": f"{schedule.cycle} {_show(schedule.cycle_unit)}",
-        },
-        "auto_zero": {
-            "enabled": meta.auto_zero.schedule.enabled,
-            "flow_time_s": meta.auto_zero.flow_time_s,
-        },
-        "moving_average": [f"{a.period} {_show(a.unit)}" for a in meta.moving_average],
-    }
+    return metadata_report(meta)
 
 
 # --- Entry point -----------------------------------------------------------------------------
-
-
-def _parse_gas(text: str) -> tuple[ChannelId, Gas]:
-    channel, sep, gas = text.partition("=")
-    try:
-        if not sep:
-            raise ValueError
-        return coerce_channel(channel), Gas(gas.strip().lower())
-    except (ValueError, FujiError):
-        msg = (
-            f"--gas expects CHn=gas with gas one of {', '.join(g.value for g in Gas)}; got {text!r}"
-        )
-        raise argparse.ArgumentTypeError(msg) from None
 
 
 def _run(args: argparse.Namespace) -> int:
@@ -460,7 +358,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--gas",
         action="append",
-        type=_parse_gas,
+        type=parse_gas,
         metavar="CHn=GAS",
         help="Assert a channel's gas for --dump (repeatable), e.g. CH3=o2.",
     )

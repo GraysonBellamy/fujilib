@@ -49,7 +49,10 @@ docs = [
 ]
 
 [project.scripts]
+fuji-configure = "fujilib.cli.configure:main"
 fuji-decode = "fujilib.cli.decode:main"
+fuji-discover = "fujilib.cli.discover:main"
+fuji-read = "fujilib.cli.read:main"
 
 [project.urls]
 Homepage = "https://github.com/GraysonBellamy/fujilib"
