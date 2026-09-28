@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Require `anymodbus>=0.2.1`, which measures the inter-frame idle gap from the
+  end of every transaction, including exception replies, checksum errors,
+  timeouts and cancellations (design §4.7).
+
 ### Added
 
 - Project scaffolding from the `*lib` family skeleton: packaging (hatchling +

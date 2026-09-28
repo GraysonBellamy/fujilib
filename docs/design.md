@@ -205,7 +205,8 @@ analyzer:
 1. **`anymodbus` counts the gap from the wrong moment after an exception.** It only
    records "last I/O" after a successful reply (`bus.py:475`). After an exception or a
    timeout, the gap is counted from when the request was sent (`bus.py:439`). A
-   configured 5 ms after an exception reply was therefore no gap at all.
+   configured 5 ms after an exception reply was therefore no gap at all. Fixed in
+   `anymodbus` 0.2.1 (§4.7).
 2. **Short sleeps on Windows are rounded up.** On the development machine, any
    `anyio.sleep` under about 16 ms takes about 16 ms, and 20 ms takes about 33 ms. The
    configured gaps in the original probe were not the gaps on the wire.
@@ -537,7 +538,7 @@ There is no `devices/panel.py`: key simulation is not planned (§6.5).
 | Bus objects | `servomexlib`: one `Bus` per analyzer | one `Bus` per port | the bus lock then serializes multi-drop by construction |
 | Read retries | performed inside `anymodbus` | performed and counted by `ModbusClient` | `recoverable_error_count` must be observable (§4.5) |
 | `Sample` field names | `servomexlib`: `monotonic_ns` | `t_mono_ns`, `t_utc`, `t_midpoint_mono_ns` | unified API §C, which `capa` reads (§7.8) |
-| `Sample` shape | `watlowlib` long; `sartoriuslib`/`alicatlib` one per poll | one per poll, carrying a `Frame` *(awaiting)* | analyzer status travels once with all channels; matches capa's `wide_row` path (§7.6) |
+| `Sample` shape | `watlowlib` long; `sartoriuslib`/`alicatlib` one per poll | one per poll, carrying a `Frame` (wide) | analyzer status travels once with all channels; matches capa's `wide_row` path (§7.6) |
 | Per-call `timeout` | `servomexlib`: accepted, then discarded | honoured as an operation deadline | §6.4 |
 | Writes | `watlowlib`: request value echoed back | read-back verification | `anymodbus` does not compare write echoes |
 | Access checks | `watlowlib`: a write to a read-only row reaches the wire | rejected before I/O, plus a frozen envelope check at the client | §5.4 |
@@ -631,10 +632,10 @@ closes what it opened.
 
 **Inter-frame timing.** The idle gap must be measured from the end of the last reply of
 any kind: a normal reply, an exception, a CRC failure or a timeout. `anymodbus` 0.2.0
-measures it from the request after anything but a normal reply (§2.4). The fix is
-upstream (§4.7 item 1) and is a prerequisite of Phase 3. Until it is released,
-`ModbusClient` records the completion time of every transaction itself and waits out
-`inter_frame_idle` before the next request.
+measured it from the request after anything but a normal reply (§2.4). 0.2.1 measures it
+from the end of every transaction, including a cancelled one (§4.7 item 1), and fujilib
+requires 0.2.1, so `ModbusClient` leaves the gap to `anymodbus`. That also covers the
+client's own read retries, which run with `anymodbus` retries set to 0 (§4.5).
 
 **Resynchronization after cancellation.** A cancelled or timed-out transaction can leave
 a reply in flight. FC03/04 replies carry no register address, so a late reply can be
@@ -728,11 +729,13 @@ and the elapsed time.
 
 ### 4.7 Changes to make upstream in `anymodbus`
 
-Item 1 is a **prerequisite of Phase 3**. The rest remove workarounds and also benefit
-`servomexlib`.
+Item 1 was a **prerequisite of Phase 3** and is done. The rest remove workarounds and
+also benefit `servomexlib`.
 
-1. **Record the completion of every transaction.** Set `_last_io_monotonic` when *any*
-   receive completes or times out, not only after a normal reply. Release as 0.2.1.
+1. ~~**Record the completion of every transaction.**~~ **Released in 0.2.1
+   (2026-09-28).** `_last_io_monotonic` is now set in a `finally` at the end of every
+   transaction and broadcast (reply, exception, checksum or framing error, timeout,
+   cancellation), with regression tests in `tests/integration/test_inter_frame_gap.py`.
 2. Replace the `isinstance(stream, SerialPort)` checks with a capability check, so
    wrapped streams keep drain and input reset.
 3. Verify the register count of read responses, and compare write echoes to the request.
@@ -1143,8 +1146,8 @@ scan, as in `sartoriuslib`.
 
 ### 7.6 Streaming, recording and sinks
 
-The recorder follows the **`sartoriuslib` / `alicatlib`** contract *(awaiting owner
-confirmation of the sample shape)*:
+The recorder follows the **`sartoriuslib` / `alicatlib`** contract, with one wide sample
+per poll (§13.1 #13):
 
 ```python
 class PollSource(Protocol):
@@ -1548,7 +1551,7 @@ file is used.
 | `.github/workflows/docs.yml`, `release.yml` | `servomexlib` | package name, PyPI URL; make publishing depend on the same revision having passed lint, type, test and docs |
 | PR and issue templates | **`watlowlib`** | reword for the analyzer |
 | `.gitignore`, `.pre-commit-config.yaml` | `servomexlib` | package name; codespell word list |
-| `pyproject.toml` | `servomexlib` | rename. Make `anymodbus` a **core** dependency (`>=0.2,<0.3` until 0.2.1 is on PyPI, then `>=0.2.1,<0.3`) and remove both `modbus` and `modbus-ascii` extras. Declare only CLI scripts that exist. Exclude `docs/manuals/` and raw captures from the sdist |
+| `pyproject.toml` | `servomexlib` | rename. Make `anymodbus>=0.2.1,<0.3` a **core** dependency and remove both `modbus` and `modbus-ascii` extras. Declare only CLI scripts that exist. Exclude `docs/manuals/` and raw captures from the sdist |
 | `zensical.toml` | `servomexlib` | names, URLs, nav limited to pages that exist |
 | `CONTRIBUTING.md`, `SECURITY.md` | **`watlowlib`** structure | rewritten for fujilib |
 | `version.py`, `tests/conftest.py` | `servomexlib` | rename; remove the continuous-mode fixtures |
@@ -1559,7 +1562,7 @@ file is used.
 package), and its `SECURITY.md` has Servomex-specific wording.
 
 - **Dependencies.** Core: `anyio>=4.13`, `anyserial>=0.1.2,<0.2`,
-  `anymodbus>=0.2,<0.3`, raised to `>=0.2.1` once the §4.7 fix is released. Extras:
+  `anymodbus>=0.2.1,<0.3` (0.2.1 carries the §4.7 item 1 fix). Extras:
   `docs` now, `parquet` with the Parquet sink (others as sinks are added).
   Python ≥ 3.13.
 - **Release process.** Update `CHANGELOG.md`, make an annotated tag `vX.Y.Z`, publish a
@@ -1600,10 +1603,9 @@ assume the scope below, not the first draft's.
 
 ### Decisions still open
 
-The capture policy was settled before Phase 0 (§13.1 #11). The remaining items marked
-*(awaiting)* in §13.1 are each needed before the phase that uses them:
+The capture policy (§13.1 #11) and the sample shape (#13) are settled. The remaining
+items marked *(awaiting)* in §13.1 are each needed before the phase that uses them:
 
-- the sample shape, before Phase 1's contract exercise;
 - the asserted channel map, before Phase 4;
 - the 0.1.0 acceptance criteria for O2, before the Phase 4 O2 comparison.
 
@@ -1620,20 +1622,22 @@ The capture policy was settled before Phase 0 (§13.1 #11). The remaining items 
 
 Differences from the plan above:
 
-- `anymodbus>=0.2,<0.3` instead of `>=0.2.1`, because 0.2.1 is not released yet (§11).
+- `anymodbus>=0.2,<0.3` instead of `>=0.2.1`, because 0.2.1 was not released yet. The
+  floor was raised to `>=0.2.1` once it was, the same day.
 - The raw bench capture is git-ignored and excluded from the sdist (§13.1 #11).
 - The Phase 2 probe scripts were reformatted to pass lint. Their syntax trees are
   unchanged, so they behave exactly as before.
 
 *Exit:* lint, type check, six-cell test matrix, build and docs build are green.
 
-### Prerequisite — `anymodbus` 0.2.1 (0.5 day, in the `anymodbus` repo)
+### Prerequisite — `anymodbus` 0.2.1 (**done 2026-09-28**)
 
-- Record the completion of every transaction (§4.7 item 1), with a regression test for
-  exception, CRC and timeout paths.
-- Then raise fujilib's dependency floor to `anymodbus>=0.2.1`.
+- ~~Record the completion of every transaction (§4.7 item 1), with a regression test
+  for exception, CRC and timeout paths.~~
+- ~~Then raise fujilib's dependency floor to `anymodbus>=0.2.1`.~~
 
-*Exit:* released to PyPI, before Phase 3 begins.
+*Exit:* released to PyPI, before Phase 3 begins. Met: 0.2.1 was published on
+2026-09-28.
 
 ### Phase 1 — Registry, codecs, models, contract exercise (4–5 days)
 
@@ -1796,10 +1800,10 @@ complete read-and-record slice.
 | 10 | ~~Caller-asserted serial number~~ | **MOOT 2026-09-28:** the serial is readable. The register block the manual calls "board" holds `N8A0259T`, matching the nameplate |
 | 11 | ~~The register capture contains this analyzer's serial number and factory calibration tables~~ | **RESOLVED 2026-09-28:** the serial number may appear in the public repository and docs. The raw capture stays local (git-ignored, excluded from the sdist). A sanitized subset without the factory calibration blocks is committed for `DEFAULT_ZPA_BANK` in Phase 3 |
 | 12 | ~~Expose the undocumented real-time clock and A/D values (§2.6)~~ | **RESOLVED 2026-09-28: yes**, as probed capabilities (§6.6) |
-| 13 | Sample shape: one per poll carrying a `Frame` (wide), or one per channel (long) | **Wide** (§7.6). Long remains workable if batches are per tick; decide before Phase 5 |
+| 13 | ~~Sample shape: one per poll carrying a `Frame` (wide), or one per channel (long)~~ | **RESOLVED 2026-09-28: wide** (§7.6). All channel values come from one read, and capa's `wide_row` path needs no per-tick workaround. `Frame.as_long_rows()` serves consumers that want long rows |
 | 14 | Asserted channel map for the bench rig | Ch1 CO2, Ch2 CO, Ch3 O2; inferred labels never bind scientific channels |
 | 15 | O2 acceptance for calorimetry (minimum depletion, response time, uncertainty; any standard that applies) | Needed before Modbus O2 is described as fit for purpose (§2.11) |
-| 16 | Fix `anymodbus` and release 0.2.1 before Phase 3 | Yes |
+| 16 | ~~Fix `anymodbus` and release 0.2.1 before Phase 3~~ | **RESOLVED 2026-09-28:** released; fujilib requires `anymodbus>=0.2.1` |
 | 17 | Defer `FujiManager` until after 0.1.0 | Yes, unless capa needs multi-analyzer management sooner |
 | 18 | Sinks for 0.1.0 | Memory, CSV, Parquet |
 
@@ -1931,6 +1935,6 @@ Sibling libraries and what each contributes:
 | `watlowlib` | parameter registry, `DeviceProfile`, manager concurrency contract, snapshot fields, PR and issue templates |
 | `sartoriuslib` | four-tier `SafetyTier`, the recorder / `PollSource` contract and error samples, `DiscoverySummary`, CLI conventions |
 | `alicatlib` | strict sync parity test, generated-artifact CI check, the wide-sample pattern capa's adapter follows |
-| `anymodbus` 0.2.x | Modbus engine and test slave (0.2.1 fix required, §4.7) |
+| `anymodbus` ≥ 0.2.1 | Modbus engine and test slave; 0.2.1 carries the inter-frame gap fix (§4.7) |
 | `anyserial` 0.1.2 | serial transport, COM-name normalization and test port pair |
 | `capa` | downstream consumer; its adapters, `SourceRecord` shapes and cone profile define what the library must provide |
