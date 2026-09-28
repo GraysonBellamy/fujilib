@@ -15,8 +15,8 @@ description: Architecture, design decisions, and phased implementation plan for 
 > and the *unified device-library API* that `capa` consumes all match the siblings. The
 > internals are shaped to this device.
 >
-> Status: **proposal, revised 2026-09-28.** Phase 0 (repository bootstrap) is done; the
-> library so far holds only its error hierarchy.
+> Status: **proposal, revised 2026-09-28.** Phase 0 (repository bootstrap) and Phase 1
+> (registry, codecs, models and the sample shape) are done; the library does no I/O yet.
 >
 > - **Where statements come from.** Statements about the device come from the three
 >   manuals in `docs/manuals/` (§14) and are marked **[manual]**. The bench analyzer was
@@ -144,7 +144,9 @@ base 40001 (holding) or 30001 (input).
 | 04h | 1000h–1707h | 34097–35896 | calibration log, **firmware ≥ 2.24** |
 
 Unused addresses *inside* a region read as 0, so a block read may span gaps within a
-region but must never cross a region boundary.
+region but must never cross a region boundary. **[bench]** Not all of them: the "do not
+use" words 00B9h and 00BDh have read 6 and 16 (findings §4.3). The planner discards
+bridged words, so nothing depends on their value.
 
 **[bench]** The analyzer's readable map is wider than the manual's. On the bench unit
 (firmware 1.02):
@@ -295,6 +297,30 @@ Holding registers (FC03/06/10). `c` = channel 1–5, `r` = range 1–2, `n` = al
 reading "four interference coefficients" is an **inference**, not a documented fact, so
 the whole block is **read-only** in fujilib.
 
+**What building the register map found** (Phase 1; **[bench]** where marked):
+
+- **[bench] Schedule start times may not be BCD.** The manual says the auto-calibration,
+  auto-zero and blowback start hour and minute are BCD. All three start hours read
+  `000Ch` on the bench unit, which is not BCD, while the clock at 03E8h is BCD. The hour
+  is probably binary (12:00). These six registers are *contested*: kept raw and never
+  written until the start time the panel shows settles it (§13.2 #26).
+- **[bench] The alarm target channel's encoding is undocumented.** The manual gives 0–6
+  with no meaning. The bench unit reads 0–4 for alarms 1–5 (channel − 1?) and 12 for
+  alarm 6, outside the documented range. The registers are contested, so alarm limits
+  stay raw until the encoding is known (§5.2, §13.2 #27).
+- **Response time is per NDIR component, not per channel.** 40076–40082 belong to NDIR
+  components 1–4, and O2 has its own slot (40084) whatever its channel. Which output
+  each of the four moving-average "orders" (40085–40092) averages is not stated.
+- **The two cycle-unit registers differ.** The schedules use 0 = hours, 1 = days; the
+  moving-average and measurement-point periods use 0 = hours, 1 = minutes.
+- **The manuals disagree on five limits** (peak-alarm concentration, O2 reference,
+  response time, moving-average period, the schedule cycles). The registry takes the
+  MODBUS manual's limits and records each conflict; each is resolved before any write
+  (Phase 6).
+- **Decoding is total.** An undocumented enum value is kept as a plain integer, and a
+  concentration whose decimal point does not decode becomes a reading with no value and
+  state `unknown`, rather than failing a whole read.
+
 The manual labels the alarm registers "Ch1…Ch5", but the instruction manual describes
 *alarms* 1–6, each with a **target channel** (40121–40126). fujilib models them as
 alarms, not channels.
@@ -424,9 +450,9 @@ expose the raw code until their manuals are added.
 
 ### 2.10 Golden frames
 
-The manual's eight worked examples were recomputed against CRC-16/MODBUS twice,
-independently, and all match. They become `tests/fixtures/manual_frames.txt` in the
-family arrow format.
+The manual's worked frames (the CRC example and the FC03, FC04, FC06 and FC10
+exchanges, nine frames) were recomputed against CRC-16/MODBUS twice, independently,
+and all match. They are `tests/fixtures/manual_frames.txt`, in the family arrow format.
 
 ```
 > 01 03 00 04 00 02 85 CA                                  # read Ch2 r1 zero/span gas
@@ -517,6 +543,7 @@ registry/      registers.py  RegisterSpec + the full map, generated from stride 
 devices/       profile.py    DeviceProfile (ZP_PROFILE): registry + regions + limits + identify
                capability.py Capability, SafetyTier, Availability
                models.py     Reading, Frame, ChannelStatus, AnalyzerStatus, DeviceInfo, logs, ...
+               decode.py     pure decoders: register banks -> identity, frames, logs, metadata
                session.py    THE choke point: gates, lock, deadlines, verify, caches, counters
                analyzer.py   Analyzer — the public facade
                metadata.py   AnalyzerMetadata: the read-only settings snapshot for consumers
@@ -670,11 +697,12 @@ at import:
 
 | Operation | Blocks (FC04 unless noted) | Transactions |
 |---|---|---|
-| `poll()` | `0000h+64` (readings, ranges, alarms, calibration flags, error summary) and `0083h+60` (active errors, hold flags, display state, alarm 6) | 2 |
+| `poll()` | `0000h+61` (readings, ranges, alarms, calibration flags, error summary) and `0083h+60` (active errors, hold flags, display state, alarm 6) | 2 |
 | `identify()` | `0425h+35` (ranges), `0448h+34` (type code and serial), `0000h+36` (readings); probes: `03E8h+49` (clock and A/D; on failure, separately), `047Ah+3`, `1000h+9` | 3 + 3 probes |
 | `read_metadata()` | FC03 `0000h+64`, `0040h+64`, `0080h+36`; FC04 `03E8h+7` (clock, if supported) | 4 |
 | `read_settings()` | FC03 `0000h+64`, `0040h+64`, `0080h+44` | 3 |
 | `read_calibration_log(ch)` | 5 × 63 words + 1 × 45 words from `1000h + 360(ch−1)` (7 whole records per full block) | 6 |
+| `read_error_log()` | `003Dh+60`, `0079h+10` (whole records) | 2 |
 
 `poll()` does not read the clock. `read_clock()` and `read_metadata()` do, and each clock
 value carries its own read time.
@@ -760,40 +788,49 @@ also benefit `servomexlib`.
 ```python
 @dataclass(frozen=True, slots=True)
 class RegisterSpec:
-    name: str  # "calibration.ch2.range1.span"
+    name: str  # "calibration_gas.ch2.range1.span"
+    group: str  # "Calibration gas": its heading in docs/registers.md
     table: RegisterTable  # HOLDING | INPUT
     address: int  # 0-based relative address, exactly as on the wire
-    count: int  # 1, or 2 for a long word
     dtype: DataType  # UINT16 | INT16 | UINT32_LH | BCD | BOOL | ENUM | CHAR
     access: Access  # READ | READ_WRITE   (commands are OperationSpecs, §5.4)
     read_functions: frozenset[int]  # e.g. {0x03}
     write_functions: frozenset[int]  # e.g. {0x06, 0x10}, {0x10}, or empty
     safety: SafetyTier
-    scaling: Scaling  # NONE | FIXED(n) | BY_RANGE | INLINE
-    unit: UnitRule  # NONE | FIXED(unit) | BY_RANGE | INLINE
-    minimum: int | None  # raw limits
-    maximum: int | None
-    enum: type[IntEnum] | None
-    channel: int | None
-    range: int | None
-    alarm: int | None
-    requires: Capability  # option / model / firmware gate
-    evidence: Evidence  # DOCUMENTED | OBSERVED | INFERRED
-    manual_ref: str  # "TN5A1190a p.26"
+    evidence: Evidence  # DOCUMENTED | OBSERVED | INFERRED | CONTESTED
+    manual_ref: str  # "TN5A1190a p.28": a PDF page
     doc: str
+    count: int = 1  # 1; 2 for a long word; the width of a character field
+    scaling: Scaling = NONE  # NONE | FIXED(n) | BY_RANGE | BY_ALARM_TARGET | INLINE
+    unit: str | None = None  # a fixed unit ("s", "%FS"); a scaled value's comes with its decimals
+    minimum: int | None = None  # raw limits
+    maximum: int | None = None
+    enum: type[IntEnum] | None = None
+    channel: ChannelId | None = None
+    range: int | None = None
+    alarm: int | None = None
+    requires: Capability = Capability.NONE  # option / model / firmware gate
+    notes: str = ""  # where the manuals disagree or the bench unit contradicts them
 
     @property
     def register_number(self) -> int: ...  # 40001- or 30001-based, for humans and docs
 ```
 
 The map is written in **Python**, not JSON. Most of it is generated from stride helpers
-(`for c in 1..5, for r in 1..2`), so about 440 registers, plus the 1,800-word
-calibration log, come from a few dozen declarations that read like the manual's tables.
+(`for c in 1..5, for r in 1..2`), so 343 registers, plus the error log and the
+1,800-word calibration log, come from about a hundred declarations that read like the manual's tables.
 `watlowlib` uses JSON because its map is a 1,500-row vendor spreadsheet; here a typed
 table is smaller and checked by mypy.
 
 Registers the bench shows but the manual does not document carry `evidence=OBSERVED` or
-`INFERRED` and are never writable.
+`INFERRED` and are never writable. Documented registers the
+bench unit contradicts carry `CONTESTED` and are read-only too (§2.6). The two logs
+are `LogSpec`s (fixed-width records in per-channel regions), not 1,600 separate
+fields. `RegisterRegistry` indexes the map by name and by address.
+
+**Page references** are PDF page numbers, which match the page markers of the text
+extracts. The printed page number is 3 lower in TN5A1190a, 13 lower in TN2ZPAb and 8
+lower in TN5A1191b.
 
 **Eager validation at import**, failing loudly as `FujiConfigurationError`:
 
@@ -814,12 +851,14 @@ manuals.
 | Rule | Used by | Decimal point and unit come from |
 |---|---|---|
 | `INLINE` | Ch1–12 concentration | the two registers that follow it, read in the same block |
-| `BY_RANGE` | calibration gas values, alarm limits, range values | 31087–31096 and 31067–31076, keyed by (channel, range) |
+| `BY_RANGE` | calibration gas values, range values | 31087–31096 and 31067–31076, keyed by (channel, range) |
+| `BY_ALARM_TARGET` | alarm limits | the `BY_RANGE` registers of the alarm's target channel |
 | `FIXED(n)` | calibration deviation (%FS × 10) | the constant |
 | `NONE` | counts, switches, times | — |
 
 Alarm limits are per *alarm*, so their scaling is resolved through the alarm's target
-channel first.
+channel first. The target register's encoding is contested (§2.6), so alarm limits are
+decoded raw until the caller supplies the target channels.
 
 ### 5.3 `DeviceProfile` — how the rest of the family is added
 
@@ -1180,15 +1219,28 @@ async def record(
   per-tick workaround. `watlowlib`'s long samples need one in capa (`tick_first`).
 - **A failed poll** produces one `Sample` with `frame=None` and `error` set, so gaps are
   recorded rather than dropped. It does not produce twelve invented readings.
-- **`sample_to_row()`** flattens a sample to columns fixed after `identify()`:
+- **`sample_to_row(sample, channels)`** flattens a sample to columns fixed after
+  `identify()`:
+  - the header: `device`, `address`, `protocol`, `t_mono_ns`, `t_utc`,
+    `t_midpoint_mono_ns`, `requested_at`, `received_at`, `latency_s`;
   - per established channel: `chN_value`, `chN_raw`, `chN_decimals`, `chN_unit`,
-    `chN_gas`, `chN_label_source`, `chN_valid`, `chN_hold`, `chN_calibrating`,
-    `chN_errors`;
-  - analyzer-level: `instrument_error`, `calibration_error`, `analyzer_errors`, `alarms`,
-    `auto_calibration_running`.
+    `chN_gas`, `chN_label_source`, `chN_state`, `chN_valid`, `chN_hold`,
+    `chN_calibrating`, `chN_errors`;
+  - analyzer-level: `instrument_error`, `calibration_error`, `analyzer_errors`,
+    `alarm1` … `alarm6`, `auto_calibration_running`;
+  - `error_type` and `error_message`, `None` on a successful poll.
 
-  The schema is fixed before the first row, including when the first row is an error. An
-  established channel never disappears, so `SchemaLock` holds.
+  Every value is a scalar (`float`, `int`, `str`, `bool` or `None`), because capa's
+  `SourceRecord.row` accepts nothing else. Datetimes are ISO strings, error codes are
+  sorted and comma-joined (`""` when none), and alarm states are lower-case names (or
+  the raw number when undocumented). An error row has the same keys, with `None` in every
+  reading and analyzer column. `chN_state` is one token of the closed `ReadingState`
+  vocabulary (§8), which capa stores as `ChannelSample.status`.
+
+  The schema is fixed before the first row, including when the first row is an error:
+  `row_columns(channels)` gives every column's type, so a sink never infers types from
+  an error row. One column table backs `Reading.as_dict()`, `Frame.as_long_rows()` and
+  `sample_to_row()`. An established channel never disappears, so `SchemaLock` holds.
 - **Long rows are a helper, not the recorder's shape.** `Frame.as_long_rows()` produces
   one row per channel with the analyzer status repeated, for SQL unions with long-format
   siblings.
@@ -1229,14 +1281,14 @@ the contract in places; fujilib follows the contract.
 |---|---|---|
 | A | `open_device` is the canonical entry point; async context manager and `close()`; cleanup on failed open | §7.1 |
 | B | `DiscoveryResult(ok, port, address, baudrate, protocol, device_info, error, elapsed_s)`; `DiscoverySummary` | §7.5 |
-| C | `Sample` carries `t_mono_ns`, `t_utc`, `t_midpoint_mono_ns`, `requested_at`, `received_at`, `latency_s`. `t_mono_ns`/`t_utc` are the request/reply **midpoint** of the concentration block | §8 |
+| C | `Sample` carries `t_mono_ns`, `t_utc`, `t_midpoint_mono_ns`, `requested_at`, `received_at`, `latency_s`. `t_mono_ns`/`t_utc` are the request/reply **midpoint** of the concentration block, and `requested_at`, `received_at` and `latency_s` are that block's, so `t_utc` is their midpoint | §8 |
 | E | `DeviceResult.success()` / `.failure()`; `PollSourceAdapter(name, device)` over the `poll(names) -> Mapping` contract | §7.6 |
 | F | typed `FujiTransientTransportError`: **deferred**, as in `watlowlib` and `alicatlib`; revisit if a cold-open race is observed | §9 |
 | G | `ErrorContext.address` | §9 |
 | H | `DeviceSnapshot` + `FujiDeviceSnapshot`; `snapshot()` is awaitable and does no I/O; fields `name`, `model`, `firmware` (None: not readable), `serial`, `connected`, `last_error`, `recoverable_error_count`, `captured_at` | §8 |
 | I, M | `Recording` with `stream`, `summary`, `rate_hz`; mutable `AcquisitionSummary` | §7.6 |
 | J | `Session.recoverable_error_count`: counts the client's read retries that later succeeded | §4.5 |
-| K | `to_pint()` covering every `Unit` member, exported at top level and from `fujilib.units`; `vol%` and `ppm` differ by 10⁴, and `to_pint` never converts values | §8 |
+| K | `to_pint()` covering every `Unit` member, exported at top level and from `fujilib.units`; `vol%` and `ppm` differ by 10⁴, and `to_pint` never converts values. The strings are ones capa's unit registry parses: `vol%` → `percent`, `ppm`, `mg/m**3`, `g/m**3`, and `None` for an unknown unit | §8 |
 | 6 | top-level exports: `open_device`, `find_devices`, `sample_to_row`, `PollSourceAdapter`, `Recording`, `DeviceResult`, `DiscoveryResult`, `DiscoverySummary`, `DeviceSnapshot`, `FujiDeviceSnapshot`, `to_pint` | `tests/unit/test_unified_api.py` |
 
 `requested_at` and `latency_s` are populated on every polled sample (`servomexlib`
@@ -1272,12 +1324,15 @@ class ChannelRole(StrEnum):    INSTANTANEOUS, O2_CORRECTED, O2_CORRECTED_AVERAGE
 class Gas(StrEnum):            NO, NOX, SO2, CO2, CO, CH4, O2, UNKNOWN
 class LabelSource(StrEnum):    ASSERTED, TYPE_CODE, INFERRED, UNKNOWN
 class Unit(StrEnum):           VOL_PERCENT = "vol%"; PPM = "ppm"; MG_M3 = "mg/m3"; G_M3 = "g/m3"; UNKNOWN = "?"
+class ReadingState(StrEnum):   OK, ANALYZER_ERROR, CHANNEL_ERROR, CALIBRATING, AUTO_CALIBRATION, HOLD, SOURCE_INVALID, UNKNOWN
 
 @dataclass(frozen=True, slots=True)
-class ChannelStatus:
-    range: int | None                       # 1 or 2; None for derived channels
+class ChannelStatus:                        # measured channels 1-5 only
+    range: int                              # 1 or 2
     zero_calibrating: bool
     span_calibrating: bool
+    auto_zero_running: bool
+    auto_span_running: bool
     hold: bool                              # value is frozen, not live
     errors: frozenset[ErrorCode]            # errors 4-9 for this channel
 
@@ -1292,8 +1347,8 @@ class Reading:
     unit: Unit
     raw_value: int                          # the signed integer from the register
     decimals: int                           # 0..3, so the exact decimal can be rebuilt
-    status: ChannelStatus | None            # None when poll(detail=False)
-    valid: bool | None                      # None = unknown (§ validity rule below)
+    status: ChannelStatus | None            # None for derived channels and poll(detail=False)
+    state: ReadingState                     # `valid` derives from it (validity rule below)
     protocol: ProtocolKind
 
 @dataclass(frozen=True, slots=True)
@@ -1301,7 +1356,7 @@ class AnalyzerStatus:
     instrument_error: bool
     calibration_error: bool
     errors: frozenset[ErrorCode]            # analyzer-level: 1, 2, 3, 10
-    alarms: tuple[AlarmState, ...]          # alarm 1..6
+    alarms: tuple[AlarmState | int, ...]    # alarm 1..6; an undocumented value stays an int
     peak_count: int
     peak_alarm: bool
     auto_calibration_running: bool
@@ -1337,6 +1392,7 @@ class ChannelInfo:
     suggested_gas: Gas | None
     role: ChannelRole
     label_source: LabelSource
+    derived_from: ChannelId | None = None   # source of a corrected value or average
 
 @dataclass(frozen=True, slots=True)
 class DeviceInfo:
@@ -1351,15 +1407,18 @@ class DeviceInfo:
     address: int
     serial_settings: SerialSettings         # the settings actually in use
     health: DeviceHealth                    # OK | PARTIAL | FAILED
+    firmware: str | None = None             # not readable: always None
 
 @dataclass(frozen=True, slots=True)
 class AnalyzerMetadata:                     # read_metadata(); what capa's snapshot carries
     serial_number: str
     ranges: tuple[RangeInfo, ...]
     current_range: Mapping[ChannelId, int]
-    response_time_s: Mapping[ChannelId, int]          # 40076-40084
-    moving_average: Mapping[ChannelId, AveragePeriod] # 40085-40092
-    calibration_gas: Mapping[tuple[ChannelId, int], tuple[float, float]]  # zero, span per range
+    response_time_s: Mapping[ChannelId, int]          # where labels say which channel is O2 / NDIR
+    response_time_ndir_s: tuple[int, ...]             # 40076-40082: NDIR components 1-4
+    response_time_o2_s: int                           # 40084
+    moving_average: tuple[AveragePeriod, ...]         # 40085-40092: 'orders' 1-4
+    calibration_gas: Mapping[tuple[ChannelId, int], tuple[float | None, float | None]]  # zero, span per range
     calibration_scope: Mapping[ChannelId, CalibrationScope]               # 40026-40035
     hold_mode: HoldMode
     output_hold: bool
@@ -1409,18 +1468,19 @@ class Sample:                               # one per analyzer per tick, unified
     error: FujiError | None = None
 ```
 
-**Validity rule.** `Reading.valid` is:
+**Validity rule.** `Reading.state` is one token of `ReadingState`, and `Reading.valid`
+derives from it: `True` for `ok`, `None` for `unknown`, `False` otherwise. The state is:
 
-- `False` when any of the following holds:
-  - the channel is held;
-  - the channel is zero- or span-calibrating;
-  - the channel reports an error 4–9;
-  - the analyzer reports an instrument error (1, 2, 3, 10);
-  - auto calibration is running;
-  - for a derived channel (O2-corrected or average), any source channel or the O2
-    channel is invalid.
-- `None` when the status block was not read.
-- `True` otherwise.
+- `unknown` when the status block was not read, or the concentration's decimal point does
+  not decode;
+- otherwise the first of these that holds: `analyzer_error` (instrument error, or error
+  1, 2, 3 or 10), `channel_error` (an error 4–9 on the channel), `calibrating` (zero or
+  span, manual or automatic, on the channel), `auto_calibration` (auto calibration
+  running), `hold`;
+- `source_invalid` for a derived channel (O2-corrected or an average) whose source
+  channel or O2 channel is not `ok`. When its source is not known (an unlabelled channel
+  above 5), any invalid measured channel makes it invalid;
+- `ok` otherwise.
 
 Raw values are always kept; validity flags them, it does not hide them.
 
@@ -1496,7 +1556,9 @@ framer, CRC and timing code run.
 It is loaded from a `MockAnalyzerConfig` (type code, channels, ranges, values).
 `DEFAULT_ZPA_BANK` is a **sanitized** bank derived from the bench capture: the documented
 read blocks and the clock/A/D observations, with the factory calibration blocks omitted
-(§13.1 #11).
+(§13.1 #11). It is
+`tests/fixtures/zpa_bench_documented.json`, made by `scripts/sanitize_capture.py` from the
+coherent block capture (findings §4.3).
 
 **Test layers**
 
@@ -1645,23 +1707,41 @@ Differences from the plan above:
 *Exit:* released to PyPI, before Phase 3 begins. Met: 0.2.1 was published on
 2026-09-28.
 
-### Phase 1 — Registry, codecs, models, contract exercise (4–5 days)
+### Phase 1 — Registry, codecs, models, contract exercise (**done 2026-09-28**)
 
-- `registry/`: units, enums, channels, regions, write policy, the complete register map,
-  the ZPA type-code decoder and channel-layout table.
-- `protocol/modbus/codec.py` and `read_plan.py`.
-- `devices/models.py`, `devices/capability.py`.
-- `scripts/gen_register_docs.py`, generated `docs/registers.md`, CI check.
-- `fuji-decode`.
-- **Contract exercise:** a synthetic three-channel `Frame` → `Sample` → `sample_to_row()`
-  → the intended capa `SourceRecord` and `ChannelSample` mapping, as a test. This freezes
-  units, timestamps, validity columns, error rows and the snapshot shape before the facade
-  is built.
+- ~~`registry/`: units, enums, channels, regions, write policy, the complete register
+  map, the ZPA type-code decoder and channel-layout table~~.
+- ~~`protocol/modbus/codec.py` and `read_plan.py`~~.
+- ~~`devices/models.py`, `devices/capability.py`~~.
+- ~~`scripts/gen_register_docs.py`, generated `docs/registers.md`, CI check~~.
+- ~~`fuji-decode`~~.
+- ~~**Contract exercise:** a synthetic three-channel `Frame` → `Sample` →
+  `sample_to_row()` → the intended capa `SourceRecord` and `ChannelSample` mapping, as a
+  test~~ (`tests/unit/test_contract_capa.py`). It fixes units, timestamps, validity
+  columns, error rows and the snapshot shape before the facade is built.
 
 *Tests:* golden frames; hypothesis round trips; registry and envelope validation; planner
-invariants; one test per row of the channel-layout table.
+invariants; one test per row of the channel-layout table (45 rows).
+
+Differences from the plan above (decisions §13.1 #19–#25):
+
+- Added `devices/decode.py`, pure decoders from register banks to every model, so
+  `fuji-decode --dump` decodes a whole register bank and the client in Phase 3 only
+  moves words.
+- Built early, because the models and the contract test need them: `ProtocolKind`,
+  `SerialSettings`, `Sample`, `sample_to_row()` with `row_columns()` and `ColumnSpec`,
+  `DeviceSnapshot` and `FujiDeviceSnapshot`, and the arrow-fixture parser in
+  `testing.py`. The sanitized bench bank is committed (§10).
+- New in the registry: `Evidence.CONTESTED`, the `BY_ALARM_TARGET` scaling rule,
+  `RangeIndex`, and `LogSpec` for the two logs (§2.6, §5.1, §5.2).
+- `Reading` carries a `ReadingState` (§8), and rows gain `chN_state`, `alarm1` … `alarm6`,
+  `address`, `protocol`, `error_type` and `error_message` (§7.6).
+- Poll block 1 is `0000h+61` (§4.3).
+
 *Exit:* every documented register is in the registry with a manual reference, and
-`docs/registers.md` has been reviewed against the manual.
+`docs/registers.md` has been reviewed against the manual. The software part is met:
+lint, both type checkers and 748 tests at 100 % coverage pass locally (Windows, Python
+3.13). **The owner's review of `docs/registers.md` against the manual is outstanding.**
 
 ### Phase 2 — Bench probe (read-only part **done 2026-09-28**)
 
@@ -1815,6 +1895,13 @@ complete read-and-record slice.
 | 16 | ~~Fix `anymodbus` and release 0.2.1 before Phase 3~~ | **RESOLVED 2026-09-28:** released; fujilib requires `anymodbus>=0.2.1` |
 | 17 | Defer `FujiManager` until after 0.1.0 | Yes, unless capa needs multi-analyzer management sooner |
 | 18 | Sinks for 0.1.0 | Memory, CSV, Parquet |
+| 19 | Pure decoders and `fuji-decode --dump` in Phase 1 | **Adopted 2026-09-28** on the owner's "proceed"; not separately confirmed |
+| 20 | `Reading.state`, a closed validity vocabulary, and a `chN_state` column (§8) | **Adopted 2026-09-28** on the owner's "proceed"; not separately confirmed |
+| 21 | Row encoding: `alarm1` … `alarm6`, comma-joined error codes, `address`, `protocol`, `error_type`, `error_message` (§7.6) | **Adopted 2026-09-28** on the owner's "proceed"; not separately confirmed |
+| 22 | `requested_at` / `received_at` are the concentration block's, so `t_utc` is their midpoint (§7.8 C) | **Adopted 2026-09-28** on the owner's "proceed"; not separately confirmed |
+| 23 | `manual_ref` gives PDF page numbers (§5.1) | **Adopted 2026-09-28** on the owner's "proceed"; not separately confirmed |
+| 24 | Commit the sanitized bench bank in Phase 1 (§10) | **Adopted 2026-09-28** on the owner's "proceed"; not separately confirmed; taken from the coherent block capture (#11) |
+| 25 | Poll block 1 is `0000h+61` (§4.3) | **Adopted 2026-09-28** on the owner's "proceed"; not separately confirmed |
 
 ### 13.2 Hardware verification
 
@@ -1854,6 +1941,10 @@ Still open:
 22. The Premus variant and specification. *Owner, from Hummingbird or Fuji.*
 23. The analyzer's current calibration state (§2.11). *Owner.*
 25. Linux timing. *If the rig runs Linux.*
+26. The encoding of the schedule start hour and minute (§2.6). *Owner: read the
+    auto-calibration start time the panel shows; no Modbus traffic is needed.*
+27. The encoding of the alarm target channel (§2.6). *Phase 6, or a unit with the alarm
+    option.*
 
 ### 13.3 The bench analyzer
 
