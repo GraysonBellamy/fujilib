@@ -16,8 +16,9 @@ description: Architecture, design decisions, and phased implementation plan for 
 > internals are shaped to this device.
 >
 > Status: **proposal, revised 2026-09-28.** Phase 0 (repository bootstrap), Phase 1
-> (registry, codecs, models and the sample shape) and Phase 3 (transport, Modbus client,
-> simulated analyzer and read procedures) are done. There is no facade yet.
+> (registry, codecs, models and the sample shape), Phase 3 (transport, Modbus client,
+> simulated analyzer and read procedures) and Phase 4 (session, facade, discovery, sync
+> and the read-only commands) are done. Streaming and recording come next.
 >
 > - **Where statements come from.** Statements about the device come from the three
 >   manuals in `docs/manuals/` (§14) and are marked **[manual]**. The bench analyzer was
@@ -552,7 +553,6 @@ devices/       profile.py    DeviceProfile (ZP_PROFILE): registry + regions + li
                reads.py      read procedures: a plan, a client and a decoder; stateless
                session.py    THE choke point: gates, lock, deadlines, verify, caches, counters
                analyzer.py   Analyzer — the public facade
-               metadata.py   AnalyzerMetadata: the read-only settings snapshot for consumers
                settings.py   typed settings groups + SettingsSnapshot writes      (Phase 6)
                operations.py auto-cal / auto-zero / blowback / return-to-measure (Phase 6)
                factory.py    async open_device(...)  <- THE entry point
@@ -560,7 +560,8 @@ devices/       profile.py    DeviceProfile (ZP_PROFILE): registry + regions + li
                snapshot.py   DeviceSnapshot, FujiDeviceSnapshot
    │
    ▼
-streaming/ sinks/ sync/ cli/              ported from the siblings (§7)
+streaming/ sinks/ sync/ cli/              ported from the siblings (§7); sync/ and
+                                           streaming/poll_source.py since Phase 4
 manager.py                                 after 0.1.0 (§7.4)
 testing/    arrow.py (fixtures)  mock.py (MockAnalyzer, MockLine)  pair.py (wiring, bank)
 errors.py  config.py  units.py  version.py  _logging.py  _lock.py  _deadline.py  py.typed
@@ -744,12 +745,13 @@ at import:
 | Operation | Blocks (FC04 unless noted) | Transactions |
 |---|---|---|
 | `poll()` | `0000h+61` (readings, ranges, alarms, calibration flags, error summary) and `0083h+60` (active errors, hold flags, display state, alarm 6) | 2 |
-| `identify()` | `0425h+35` (ranges), `0448h+34` (type code and serial), `0000h+36` (readings); probes: `03E8h+49` (clock and A/D; on failure, separately), `047Ah+3`, `1000h+9` | 3 + 3 probes |
-| `read_metadata()` | FC03 `0000h+64`, `0040h+64`, `0080h+36`; FC04 `03E8h+7` (clock, if supported) | 4 |
+| `identify()` | `0425h+35` (ranges), `0448h+34` (type code and serial), `0000h+42` (readings and current ranges); probes: `03E8h+49` (clock and A/D; on failure, separately), `047Ah+3`, `1000h+9` | 3 + 3 probes |
+| `read_metadata()` | FC03 `0000h+64`, `0040h+64`, `0080h+36`; FC04 `0025h+5` (current ranges), `03E8h+7` (clock, if supported) | 5 |
 | `read_settings()` | FC03 `0000h+64`, `0040h+64`, `0080h+44` | 3 |
 | `read_ranges()` | `0425h+35` | 1 |
 | `read_calibration_log(ch)` | 5 × 63 words + 1 × 45 words from `1000h + 360(ch−1)` (7 whole records per full block), then the newest record again | 6 + 1 |
 | `read_error_log()` | `003Dh+60`, `0079h+10` (whole records), then `003Dh+5` again | 2 + 1 |
+| discovery, per station | `0448h+3` (type-code digits 1–3), then `identify()` on a hit | 1 (+ 6) |
 
 `poll()` does not read the clock. `read_clock()` and `read_metadata()` do, and each clock
 value carries its own read time.
@@ -1212,8 +1214,8 @@ reading them is harmless.
 | Cache | Filled by | Invalidated by |
 |---|---|---|
 | `DeviceInfo` (type code, serial, channel layout) | `identify()` | explicit `identify()` |
-| Established channels | assertion; first non-zero triple | never within a session |
-| Range metadata (count, unit, value, decimal point per (c, r)) | `identify()` | every scaled write; `refresh_ranges()`; a change in the current-range registers seen by `poll()` |
+| Established channels | assertion; first non-zero triple, in the poll that shows it | never within a session |
+| Range metadata (count, unit, value, decimal point per (c, r)) | `identify()`, `read_ranges()` | every scaled write; `read_ranges()`; a change in the current-range registers seen by `poll()` or `status()` (read again on next need) |
 | Availability per capability | first probe | `reprobe()`; `UNKNOWN` is retried on next use |
 | Last `Frame` | `poll()` | next `poll()` |
 
@@ -1258,11 +1260,12 @@ async with await open_device(
 | Group | Methods | Phase |
 |---|---|---|
 | Reads | `poll(*, detail=True)`, `read_channel(ch)`, `status()`, `channel_status(ch)` | 4 |
-| Identity and metadata | `identify()`, `snapshot()` (no I/O), `read_ranges()`, `refresh_ranges()`, `read_metadata()` | 4 |
+| Identity and metadata | `identify(channel_map=...)`, `snapshot(name=...)` (no I/O), `read_ranges()`, `read_metadata()` | 4 |
 | Diagnostics | `read_clock()`, `read_adc()`, `reprobe(capability)` | 4 |
 | Logs | `read_error_log()`, `read_calibration_log(ch=None)` | 4 |
-| Parameters (read) | `read_parameter(name)`, `read_parameters(names)`, `read_settings()` | 4 |
-| Streaming | `poll_samples()` (satisfies `PollSource` via `PollSourceAdapter`) | 5 |
+| Parameters (read) | `read_parameter(name)`, `read_parameters(names)`, `read_settings()`, each with `alarm_targets=` (§5.2) | 4 |
+| Streaming | `PollSourceAdapter(name, device)`, `DeviceResult` | 4 |
+| Recording | `record()` over a `PollSource` | 5 |
 | Parameters (write) | `write_parameter(name, value, *, confirm=False)`; settings helpers such as `set_range`, `configure_alarm`, `set_hold`, `set_response_time` | 6 |
 | Operations | `start_auto_calibration`, `start_auto_zero_calibration`, `start_blowback`, `return_to_measurement`, `calibration_status()`, `wait_for_calibration(timeout=...)` | 6 |
 
@@ -1309,14 +1312,31 @@ async def find_devices(
     addresses: Sequence[int] = (1,),
     profiles: Sequence[DeviceProfile] = DEVICE_PROFILES,
     per_probe_timeout_s: float = 0.3,
+    identify: bool = True,
+    max_concurrency: int = 8,
 ) -> list[DiscoveryResult]: ...
 ```
 
 Read-only. The probe is an FC04 read of type-code digits 1–3, which must decode to `Z`,
 `P` and a model letter. A CRC-valid exception reply counts as "a Modbus device, but not a
 ZP analyzer". Baud is fixed, so a full scan of one port is 31 probes. Discovery never
-raises for a probe failure; it returns an `ok=False` row. `DiscoverySummary` aggregates a
-scan, as in `sartoriuslib`.
+raises for a probe failure; it returns an `ok=False` row.
+
+- **Probes are not retried** (`read_retries=0`), and an analyzer found is identified in
+  full unless `identify=False`. An absent station costs the probe timeout plus the
+  0.1 s quiet window, so a full sweep takes about 12 s per port.
+- **Ports are scanned in parallel**, up to `max_concurrency` (as in `alicatlib`); the
+  stations of one port one at a time, on one bus. Results come back in the order given.
+- **`DiscoveryResult`** has the unified fields (§7.8 B) and a `model`, set from the probe
+  even without identification. When identification of a station that answered fails,
+  the row is `ok=True` with `device_info=None` and the error.
+- **`DiscoverySummary`**, from `summarize_discovery()`, is one row per port, as in
+  `sartoriuslib`: the stations found, how many were probed, and the first error when
+  nothing was found.
+- **Every port scanned receives the probe frames**, including ports of other
+  instruments, so `fuji-discover` scans every host port only with `--all-ports`.
+- **Each port is scanned once**: two spellings of one port (`COM8`, `com8`) name the
+  same canonical port (§4.1).
 
 ### 7.6 Streaming, recording and sinks
 
@@ -1389,14 +1409,26 @@ Plain `argparse`, each `main(argv=None) -> int`, each drivable with `--fixture`.
 | Command | Purpose | Phase |
 |---|---|---|
 | `fuji-decode` | decode a hex frame or a register dump offline | 1 |
-| `fuji-read` | one-shot poll, status, identity, metadata, logs | 4 |
-| `fuji-discover` | scan ports and station numbers | 4 |
+| `fuji-read` | one-shot identity, poll, status, metadata, ranges, logs, clock, A/D, snapshot (`--include`, `--all`) | 4 |
+| `fuji-discover` | scan named ports (or `--all-ports`) and station numbers | 4 |
 | `fuji-stream`, `fuji-capture` | live stream; record to a sink | 5 |
 | `fuji-diag timing` | read-only link timing, busy-wait gaps measured from the reply | 5 |
 | `fuji-configure` | `dump` (0.1.0) / `diff` / `apply` (0.2.0, `--confirm`, settings names only) | 5 / 6 |
 
 The CLI uses the same session and write policy as the facade; it has no private write
 path.
+
+- **Exit codes** are 0 on success, 1 for a library error, 2 for bad arguments, and 2 when
+  `fuji-discover` finds nothing (as `servomex-discover` and `sarto-discover` do).
+- **`--fixture`** for `fuji-read` and `fuji-configure` is a register bank (the JSON
+  `fuji-decode --dump` reads), or `bench` for the bundled bench bank, answered by the
+  simulated analyzer through `open_device`. A live read takes a dozen transactions, which
+  an arrow script could not reasonably hold. `fuji-discover` has no `--fixture`: it opens
+  ports by name.
+- **`fuji-configure dump`** writes a document of format `fujilib-settings/1`: the
+  analyzer's identity, then every holding register by name (never by address) with its
+  decoded value, raw value, unit, access, safety tier and evidence. `diff` and `apply`
+  (Phase 6) will read it.
 
 ### 7.8 Unified device-library API conformance
 
@@ -1408,7 +1440,7 @@ the contract in places; fujilib follows the contract.
 
 | § | Requirement | fujilib |
 |---|---|---|
-| A | `open_device` is the canonical entry point; async context manager and `close()`; cleanup on failed open | §7.1 |
+| A | `open_device` is the canonical entry point; async context manager and `close()`; cleanup on failed open | §7.1; closes only what it opened (`alicatlib`'s rule) |
 | B | `DiscoveryResult(ok, port, address, baudrate, protocol, device_info, error, elapsed_s)`; `DiscoverySummary` | §7.5 |
 | C | `Sample` carries `t_mono_ns`, `t_utc`, `t_midpoint_mono_ns`, `requested_at`, `received_at`, `latency_s`. `t_mono_ns`/`t_utc` are the request/reply **midpoint** of the concentration block, and `requested_at`, `received_at` and `latency_s` are that block's, so `t_utc` is their midpoint | §8 |
 | E | `DeviceResult.success()` / `.failure()`; `PollSourceAdapter(name, device)` over the `poll(names) -> Mapping` contract | §7.6 |
@@ -1416,9 +1448,9 @@ the contract in places; fujilib follows the contract.
 | G | `ErrorContext.address` | §9 |
 | H | `DeviceSnapshot` + `FujiDeviceSnapshot`; `snapshot()` is awaitable and does no I/O; fields `name`, `model`, `firmware` (None: not readable), `serial`, `connected`, `last_error`, `recoverable_error_count`, `captured_at` | §8 |
 | I, M | `Recording` with `stream`, `summary`, `rate_hz`; mutable `AcquisitionSummary` | §7.6 |
-| J | `Session.recoverable_error_count`: failed read attempts that a later attempt of the same read recovered (the client's `recoverable_error_count`) | §4.5 |
+| J | `Session.recoverable_error_count`: failed read attempts that a later attempt of the same read recovered (the client's `recoverable_error_count`) | §4.5; `Analyzer.session` |
 | K | `to_pint()` covering every `Unit` member, exported at top level and from `fujilib.units`; `vol%` and `ppm` differ by 10⁴, and `to_pint` never converts values. The strings are ones capa's unit registry parses: `vol%` → `percent`, `ppm`, `mg/m**3`, `g/m**3`, and `None` for an unknown unit | §8 |
-| 6 | top-level exports: `open_device`, `find_devices`, `sample_to_row`, `PollSourceAdapter`, `Recording`, `DeviceResult`, `DiscoveryResult`, `DiscoverySummary`, `DeviceSnapshot`, `FujiDeviceSnapshot`, `to_pint` | `tests/unit/test_unified_api.py` |
+| 6 | top-level exports: `open_device`, `find_devices`, `sample_to_row`, `PollSourceAdapter`, `Recording`, `DeviceResult`, `DiscoveryResult`, `DiscoverySummary`, `DeviceSnapshot`, `FujiDeviceSnapshot`, `to_pint` | `tests/unit/test_unified_api.py`; all but `Recording` (Phase 5) |
 
 `requested_at` and `latency_s` are populated on every polled sample (`servomexlib`
 declares them but never sets them). `t_midpoint_mono_ns` is `None`: a configured
@@ -1820,11 +1852,12 @@ assume the scope below, not the first draft's.
 
 ### Decisions still open
 
-The capture policy (§13.1 #11) and the sample shape (#13) are settled. The remaining
-items marked *(awaiting)* in §13.1 are each needed before the phase that uses them:
+The capture policy (§13.1 #11) and the sample shape (#13) are settled; the bench
+channel map (#14) was adopted with Phase 4. The remaining items marked *(awaiting)* in
+§13.1 are each needed before the work that uses them:
 
-- the asserted channel map, before Phase 4;
-- the 0.1.0 acceptance criteria for O2, before the Phase 4 O2 comparison.
+- the 0.1.0 acceptance criteria for O2 (#15), before the O2 comparison;
+- whether to run the capa adapter spike before 0.1.0 (#44).
 
 ### Phase 0 — Repository bootstrap (**done 2026-09-28**)
 
@@ -2003,23 +2036,68 @@ Checked without hardware (1,242 tests, 100 % coverage) and again on the analyzer
 Checked without hardware (1,247 tests, 100 % coverage) and on the analyzer, where the
 eight hardware tests pass under asyncio and trio (findings §10.4).
 
-### Phase 4 — Session, facade, discovery, sync, capa spike (4–5 days, plus a hardware session)
+### Phase 4 — Session, facade, discovery, sync, capa spike (**done 2026-09-28**, but for the capa spike)
 
-- `devices/{session,analyzer,factory,discovery,snapshot,profile,metadata}.py`.
-- `sync/` with the parity test; `fuji-read`, `fuji-discover`, `fuji-configure dump`.
-- `tests/hardware/test_hardware_reads.py`, `docs/hardware-test-day.md`, quickstarts.
+- ~~`devices/{session,analyzer,factory,discovery,snapshot,profile}.py`~~ (`metadata.py`
+  dropped, #37).
+- ~~`sync/` with the parity test; `fuji-read`, `fuji-discover`, `fuji-configure dump`~~.
+- ~~`tests/hardware/test_hardware_reads.py`, `docs/hardware-test-day.md`, quickstarts~~.
 - **capa adapter spike** against `MockAnalyzer`, in a capa branch (1–2 days, separately
   authorized): the `FujiChannel` binding, the `wide_row` record, `ChannelSample` status
-  and expected-gas assertion.
+  and expected-gas assertion. *Not started: awaiting the owner (#44).*
 - **O2 comparison, if the analog output is wired:** simultaneous Modbus and analog O2
   across relevant O2 changes, ranges, hold and response settings. Record the Premus
-  variant and its specification.
+  variant and its specification. *Taken off the Phase 4 path (#43).*
 
 *Exit:*
 
-- the read-only API passes against the bench analyzer;
-- the unified-API tests are green;
-- the capa spike consumes real rows without adapter-side reshaping.
+- ~~the read-only API passes against the bench analyzer~~ — 45 of 45 hardware tests,
+  asyncio and trio (findings §11);
+- ~~the unified-API tests are green~~ — §A, §B, §C, §E, §G, §H, §J and §K;
+- the capa spike consumes real rows without adapter-side reshaping — *awaiting #44*.
+
+Locally (Windows, Python 3.13), lint, both type checkers, the docs build and 1586 tests
+at 100 % coverage pass, on asyncio and trio. An independent review found nine issues,
+all fixed before the commit; the ones that changed behaviour are listed below.
+
+Differences from the plan above (decisions §13.1 #32–#44):
+
+- **The streaming entry point came forward** (#32): `DeviceResult` and
+  `PollSourceAdapter` exist; a sample-returning poll is left to the recorder, which
+  times failed polls itself.
+- **`read_metadata()` reads the current ranges** (#33), one more block, so the snapshot
+  never depends on an earlier poll. The read procedures gained `read_poll()`, which
+  returns the words before they are decoded, so a channel can join the poll that shows
+  it alive (#34).
+- **A connection failure breaks the session** (#35); later calls are refused before any
+  I/O, and there is no reconnect.
+- **`refresh_ranges()` is gone** (#36): `read_ranges()` refreshes the cache.
+- **The profile holds what code uses** (#40): name, register map, default protocol and
+  serial framing, the identify strategy and the discovery probe.
+- **The safety-tier gate is not built** (#42): no public path above `READ_ONLY` exists
+  before Phase 6, which adds the gate with the first write.
+- **The commands** (#39, #41): `fuji-read` and `fuji-configure` run on a register bank
+  with `--fixture`; `fuji-discover` needs named ports or `--all-ports`; the settings
+  document is `fujilib-settings/1`.
+- **Reads of a capability-gated register** by name (`read_parameter("clock.year")`) are
+  refused before I/O once the capability is known to be absent, and a read of one
+  probed block by name keeps that capability's availability current.
+- **`identify()` reads the current ranges** with the readings (`0000h+42` instead of
+  `0000h+36`), so a range change before the first poll is seen.
+- **Replacing the channel map** with `identify(channel_map=...)` keeps the channels the
+  old map established (§6.7).
+- **A call refused while it waited for the port** (the session was closed or broke
+  meanwhile) is not kept as the last error, and every `close()` waits for the
+  operation in progress.
+- **`PollSourceAdapter(name, device)`**, as in the siblings (unified API §E).
+- **Discovery scans each port once**, however it is spelled, and refuses an empty or
+  non-string port name.
+- **The commands refuse bad arguments with exit code 2** (station, timeouts, alarm
+  numbers, a gas asserted twice or as `unknown`), and a settings file that cannot be
+  written is an error, not a traceback.
+- **Tooling:** `ASYNC109` is ignored for the facade, the session and the factory, whose
+  `timeout=` is the family's; a test that the write policy imports nothing of the
+  register map now loads the package without its `__init__`, which imports the facade.
 
 ### Phase 5 — Streaming, sinks, CLI (5–6 days software; soak separate)
 
@@ -2106,7 +2184,7 @@ complete read-and-record slice.
 | 11 | ~~The register capture contains this analyzer's serial number and factory calibration tables~~ | **RESOLVED 2026-09-28:** the serial number may appear in the public repository and docs. The raw capture stays local (git-ignored, excluded from the sdist). A sanitized subset without the factory calibration blocks is committed for `DEFAULT_ZPA_BANK` (since Phase 1; package data of `fujilib.testing` since Phase 3, #31), taken from the coherent block capture (findings §4.3) |
 | 12 | ~~Expose the undocumented real-time clock and A/D values (§2.6)~~ | **RESOLVED 2026-09-28: yes**, as probed capabilities (§6.6) |
 | 13 | ~~Sample shape: one per poll carrying a `Frame` (wide), or one per channel (long)~~ | **RESOLVED 2026-09-28: wide** (§7.6). All channel values come from one read, and capa's `wide_row` path needs no per-tick workaround. `Frame.as_long_rows()` serves consumers that want long rows |
-| 14 | Asserted channel map for the bench rig | Ch1 CO2, Ch2 CO, Ch3 O2; inferred labels never bind scientific channels |
+| 14 | Asserted channel map for the bench rig | **Adopted 2026-09-28** with Phase 4 on the owner's "proceed"; not separately confirmed: Ch1 CO2, Ch2 CO, Ch3 O2; inferred labels never bind scientific channels |
 | 15 | O2 acceptance for calorimetry (minimum depletion, response time, uncertainty; any standard that applies) | Needed before Modbus O2 is described as fit for purpose (§2.11) |
 | 16 | ~~Fix `anymodbus` and release 0.2.1 before Phase 3~~ | **RESOLVED 2026-09-28:** released; fujilib requires `anymodbus>=0.2.1` |
 | 17 | Defer `FujiManager` until after 0.1.0 | Yes, unless capa needs multi-analyzer management sooner |
@@ -2124,6 +2202,19 @@ complete read-and-record slice.
 | 29 | Resynchronization after an uncertain transaction (§4.2) | **Adopted 2026-09-28** on the owner's "proceed"; not separately confirmed: a quiet window of 0.1 s from the end of the transaction, relying on `anymodbus`'s input reset, instead of listening for `request_timeout` under the lock. Since `anymodbus` 0.3.0 it is that library's `late_reply_window`, which also reads and discards the late bytes |
 | 30 | Which read failures are retried (§4.5) | **Adopted 2026-09-28** on the owner's "proceed"; not separately confirmed: a timeout, a bad CRC, a malformed frame, an unexpected reply and a wrong word count; never an exception reply. Since `anymodbus` 0.3.0 this is its default retry policy, and it does the retrying |
 | 31 | Where the bench bank lives | **Adopted 2026-09-28** on the owner's "proceed"; not separately confirmed: package data of `fujilib.testing`, so `DEFAULT_ZPA_BANK` works from an installed wheel |
+| 32 | Bring `DeviceResult`, `PollSourceAdapter` and a sample-returning poll into Phase 4 | **Adopted 2026-09-28** on the owner's "proceed"; not separately confirmed: `DeviceResult` and `PollSourceAdapter` only. The recorder builds samples and times failed polls, as in the siblings |
+| 33 | Where `read_metadata()` gets the current ranges | **Adopted 2026-09-28** on the owner's "proceed"; not separately confirmed: it reads FC04 `0025h+5` itself (5 transactions with the clock) |
+| 34 | When a channel seen non-zero joins the established channels | **Adopted 2026-09-28** on the owner's "proceed"; not separately confirmed: in the poll that shows it. A recording fixes its columns when it starts, so a later channel is left out of its rows |
+| 35 | What a connection failure does to the session | **Adopted 2026-09-28** on the owner's "proceed"; not separately confirmed: it breaks it, as in `sartoriuslib` and `alicatlib`; later calls fail before I/O; `close()` works; no reconnect (a recorder policy, Phase 5). Timeouts do not break it |
+| 36 | `refresh_ranges()` beside `read_ranges()` | **Adopted 2026-09-28** on the owner's "proceed"; not separately confirmed: dropped; `read_ranges()` refreshes the cache |
+| 37 | `devices/metadata.py` | **Adopted 2026-09-28** on the owner's "proceed"; not separately confirmed: dropped; `AnalyzerMetadata` is in `models.py`, its read in `reads.py` |
+| 38 | A station whose type code names no ZP model; `DeviceHealth` | **Adopted 2026-09-28** on the owner's "proceed"; not separately confirmed: `identify()` raises `FujiProtocolUnsupportedError` and `open_device` closes what it opened. `PARTIAL` means a probe had no definite answer or the type code's table is unknown; a failed identify raises rather than returning `FAILED` |
+| 39 | Which ports discovery scans from the command line | **Adopted 2026-09-28** on the owner's "proceed"; not separately confirmed: named ports, or every host port only with `--all-ports`; the library keeps `ports=None` = every port. Nothing found exits 2, as in `servomexlib` and `sartoriuslib` |
+| 40 | What a `DeviceProfile` holds | **Adopted 2026-09-28** on the owner's "proceed"; not separately confirmed: what code uses (§12 Phase 4). The read regions, word limit and type-code tables stay module constants until a second profile needs them |
+| 41 | What the commands' `--fixture` is | **Adopted 2026-09-28** on the owner's "proceed"; not separately confirmed: a register bank on the simulated analyzer, or `bench`; not arrow replay |
+| 42 | Build the confirm gate before any operation above `READ_ONLY` exists | **Adopted 2026-09-28** on the owner's "proceed"; not separately confirmed: no; it comes with the first write (Phase 6) |
+| 43 | The O2 comparison in Phase 4 | **Adopted 2026-09-28** on the owner's "proceed"; not separately confirmed: off the Phase 4 path; it needs the analog output wired (§13.4 Q3) and acceptance limits (#15) |
+| 44 | The capa adapter spike before 0.1.0 | *(awaiting)* A first draft of the capa adapter on a capa branch, against fujilib as a local path dependency, so the sample shape can still change in fujilib. It can instead be written after release, as the other adapters were; `tests/unit/test_contract_capa.py` already builds capa's record shapes from fujilib's rows |
 
 ### 13.2 Hardware verification
 
@@ -2146,6 +2237,7 @@ Answered by the read-only probes of 2026-09-28. Details and data are in
 | 19 | Map beyond 2000h | Sampled every 256 addresses and every multiple of 1000; nothing found |
 | 20 | The scan's 43 malformed replies | all re-read as exception 02 (3 of 3 each); link artifacts |
 | 28 | fujilib's client, read procedures and quiet window on the analyzer | Done 2026-09-28 (findings §10). Every read procedure works; 300 polls at 7.78 Hz with no failure; with no quiet window a read after a cancelled one was lost in 23 of 30 trials, with the window never; stale data was never accepted |
+| 30 | The facade, discovery, the blocking facade and the commands on the analyzer | Done 2026-09-28 (findings §11). 45 of 45 hardware tests under asyncio and trio; open and identify in 0.3 s; an empty station times out and releases the port |
 
 Still open:
 

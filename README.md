@@ -12,11 +12,30 @@ the unified device-library API; its internals are shaped to this analyzer.
 
 ## Status
 
-**Pre-alpha. Nothing usable yet.** The register map, the codecs and read
-planner, the data models, the Modbus client and a simulated analyzer exist; the
-analyzer facade (`open_device()`) does not. See [`docs/design.md`](docs/design.md)
-for the architecture and the phased plan, and [`CHANGELOG.md`](CHANGELOG.md) for
-what has landed.
+**Pre-alpha, unreleased.** The read-only API works against the development
+analyzer: `open_device()`, identification, polls with validity, metadata,
+settings, logs, discovery, a blocking facade and the `fuji-read`,
+`fuji-discover`, `fuji-configure dump` and `fuji-decode` commands. Streaming and
+recording come next. See [`docs/design.md`](docs/design.md) for the architecture
+and the phased plan, and [`CHANGELOG.md`](CHANGELOG.md) for what has landed.
+
+```python
+import anyio
+
+from fujilib import open_device
+
+
+async def main() -> None:
+    async with await open_device(
+        "COM8", channel_map={"CH1": "co2", "CH2": "co", "CH3": "o2"}
+    ) as anz:
+        frame = await anz.poll()  # every channel and the analyzer status, 2 transactions
+        o2 = frame.channel("CH3")
+        print(o2.value, o2.unit, o2.state)  # 20.2 vol% ok
+
+
+anyio.run(main)
+```
 
 Planned releases:
 

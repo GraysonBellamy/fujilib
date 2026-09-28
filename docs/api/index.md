@@ -9,13 +9,17 @@ Auto-generated from source docstrings via
 
 - [`fujilib.registry`](registry.md) — the register map, regions, the write envelope,
   type codes, channels, units and enums.
-- [`fujilib.devices`](devices.md) — data models, pure decoders, read procedures,
-  capability flags and snapshots.
+- [`fujilib.devices`](devices.md) — `open_device`, the `Analyzer` facade, its session,
+  discovery and profiles; data models, pure decoders, read procedures, capability
+  flags and snapshots.
+- [`fujilib.sync`](sync.md) — the blocking facade: `Fuji.open`, `SyncAnalyzer`,
+  discovery and `SyncPortal`.
 - [`fujilib.protocol`](protocol.md) — the register-word codec, the read planner, the
   Modbus port and client, and the error map.
 - [`fujilib.transport`](transport.md) — the transport contract, `SerialSettings`, the
   serial transport and the scripted fake.
-- [Samples and rows](samples.md) — `Sample`, `sample_to_row()` and `to_pint()`.
+- [Samples and rows](samples.md) — `Sample`, `DeviceResult`, `PollSourceAdapter`,
+  `sample_to_row()` and `to_pint()`.
 - [`fujilib.testing`](testing.md) — arrow-format frame fixtures, the simulated analyzer
   and the bench bank.
 - [`fujilib.errors`](errors.md) — typed exception hierarchy and `ErrorContext`.

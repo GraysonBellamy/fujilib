@@ -11,9 +11,11 @@ models that share its MODBUS map. It is built on
 [`anymodbus`](https://pypi.org/project/anymodbus/).
 
 !!! warning "Pre-alpha"
-    Nothing usable has been released yet. The register map, the data models,
-    the Modbus client and a simulated analyzer exist; the analyzer facade
-    (`open_device()`) does not. The [design](design.md) lays out the plan.
+    Nothing has been released yet. The read-only API works: `open_device()`,
+    identification, polls with validity, metadata, settings, logs, discovery,
+    a blocking facade and the `fuji-*` commands. Streaming, recording and
+    writes are still to come; the [design](design.md) lays out the plan. Start
+    with the [async quickstart](quickstart-async.md).
 
 The authoritative architectural document is the [Design](design.md). What the
 development analyzer actually does on the wire is recorded in

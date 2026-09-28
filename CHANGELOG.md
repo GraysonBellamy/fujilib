@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `read_metadata()` reads the current ranges itself (one more transaction), so the
+  settings snapshot no longer depends on an earlier poll.
 - Require `anyserial>=0.2.0`, which gives every spelling of a port one canonical name,
   opens `\\?\` paths unchanged, and reads a real Windows COM port under trio.
 - Require `anymodbus>=0.3,<0.4` and `anyio>=4.14`. `anymodbus` 0.3 measures the
@@ -21,6 +23,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `open_device()`: opens a serial port (or takes an open transport), attaches to a
+  station and identifies the analyzer; everything it opened is closed again if that
+  fails or is cancelled, and a caller's transport is never closed by it.
+- The `Analyzer` facade: `poll()`, `read_channel()`, `status()`, `channel_status()`,
+  `identify()`, `snapshot()`, `read_ranges()`, `read_metadata()`, `read_clock()`,
+  `read_adc()`, `reprobe()`, `read_error_log()`, `read_calibration_log()`,
+  `read_parameter()`, `read_parameters()` and `read_settings()`. Every method takes a
+  `timeout=` that bounds the whole operation, including the wait for the port.
+  Arguments are checked before anything is sent.
+- `Session`, the one path to the wire: it refuses calls on a closed or broken session
+  and, before any I/O, reads of a capability a probe found absent; holds the port's
+  lock for a whole operation; keeps the last error and the recovered-error count;
+  and keeps what it has learned current. A channel that reads non-zero joins the
+  established channels in the poll that shows it, a change of current range makes the
+  range tables stale, and a capability's availability follows every read of it.
+- Discovery: `find_devices()` probes stations for ZP analyzers, read-only, one read
+  each, ports in parallel; `DiscoveryResult`, `DiscoverySummary` and
+  `summarize_discovery()`. A probe that fails, or a port that will not open, is a row,
+  not an exception.
+- `DeviceProfile` and `ZP_PROFILE`; `DeviceResult` and `PollSourceAdapter`.
+- `fujilib.sync`: `Fuji.open()`, `SyncAnalyzer`, a blocking `find_devices()` and
+  `SyncPortal`, held to the async API by a parity test.
+- `fuji-read`, `fuji-discover` and `fuji-configure dump`, read-only. `fuji-read` and
+  `fuji-configure` take `--fixture` with a register bank, or `bench`, to run against the
+  simulated analyzer.
+- Read-only hardware tests of the facade, discovery, the blocking facade and the
+  commands (`tests/hardware/`), and `docs/hardware-test-day.md`. On the bench unit all
+  45 pass under asyncio and trio (`docs/protocol-findings.md` §11).
+- Quickstarts for the async and the blocking API.
 - `fujilib.transport`: the `Transport` contract; `SerialTransport`, which exposes the
   real `anyserial.SerialPort` so `anymodbus` keeps drain-after-send and input reset;
   `FakeTransport` for byte-exact fixture replay. A port opens under `anyserial`'s

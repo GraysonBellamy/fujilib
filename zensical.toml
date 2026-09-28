@@ -10,14 +10,20 @@ site_dir = "site"
 nav = [
     { Home = "index.md" },
     { Installation = "installation.md" },
+    { Quickstart = [
+        { Async = "quickstart-async.md" },
+        { Sync = "quickstart-sync.md" },
+    ] },
     { Reference = [
         { "Register map" = "registers.md" },
         { "Protocol findings" = "protocol-findings.md" },
+        { "Hardware test day" = "hardware-test-day.md" },
     ] },
     { "API reference" = [
         { Overview = "api/index.md" },
         { "fujilib.registry" = "api/registry.md" },
         { "fujilib.devices" = "api/devices.md" },
+        { "fujilib.sync" = "api/sync.md" },
         { "fujilib.protocol" = "api/protocol.md" },
         { "fujilib.transport" = "api/transport.md" },
         { "Samples and rows" = "api/samples.md" },
