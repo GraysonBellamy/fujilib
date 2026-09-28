@@ -175,7 +175,7 @@ exception 02.
   reply, so the analyzer saw at least these gaps. The data cannot resolve requirements
   below about 1 ms.
 - Limits of this run: gap order was fixed, not randomized; normal → exception was not
-  tested; only counts were kept. Re-run after `anymodbus` 0.2.1 (design §12, Phase 2).
+  tested; only counts were kept. The randomized re-run in §6.3 addresses all three.
 - Round trip: 13–27 ms for one word, 50–63 ms for 64 words. A two-block poll therefore
   takes about 120 ms; the practical ceiling is 7–8 polls per second.
 - The adapter is an FTDI chip at its default 16 ms latency timer, which sets the floor on
@@ -225,6 +225,59 @@ Tight loops with no retries and nothing executed between requests.
 
 These rows are superseded by §6.1.
 
+### 6.3 Randomized re-run, and `anymodbus` 0.2.1 on the analyzer (2026-09-28)
+
+`probe_link.py --mode pairs`. Each trial is two one-word FC04 reads, each either a
+normal read (0000h) or a read that draws exception 02 (00C2h), so all four pairings are
+covered. Trials ran in randomized order, with 10 ms of idle before each trial. The gap is
+measured from the moment the first read returned to the moment `anymodbus` logged the
+second frame for sending. No retries; request timeout 0.3 s. Every trial is kept in the
+raw file.
+
+**What the analyzer needs.** `anymodbus` idle 0, gap busy-waited. 250 trials per cell;
+failures are all silent (no reply within the timeout):
+
+| Gap after the reply | normal → normal | normal → exception | exception → normal | exception → exception |
+|---|---|---|---|---|
+| 0 ms | 0 | 5 | 2 | 1 |
+| 1 ms | 0 | 0 | 0 | 0 |
+| 2 ms | 0 | 0 | 0 | 1 |
+| 5 ms | 0 | 0 | 0 | 0 |
+
+- **This confirms §6.1, now including normal → exception.** Only a zero gap fails
+  consistently: 8 of 1,000 (0.8 %), in three of the four pairings. A gap of 1 ms had no
+  failures in 1,000 trials, whichever kind of reply came first.
+- **The one failure at 2 ms looks like background loss, not a gap requirement.** Its
+  measured gap was 2.08 ms, the neighbouring trials succeeded, and 1 ms and 5 ms had no
+  failures in 2,000 trials. It suggests a loss rate of about 1 in 3,000 requests, which
+  read retries absorb. This run cannot rule out a very small rate specific to 2 ms.
+- Measured gaps were accurate: the medians were 0.08 ms above target at every gap.
+- Round trip, from the frame being sent to the reply being returned, one word:
+  11.8–26.3 ms, median 13.9 ms.
+
+**What `anymodbus` delivers.** The probe added no wait, leaving the gap to `anymodbus`'s
+own `inter_frame_idle` of 5 ms (fujilib's default). 250 trials per pairing:
+
+| `anymodbus` | Gap after a normal reply | Gap after an exception reply | Failed |
+|---|---|---|---|
+| 0.2.0 | 5.09–22.4 ms | **0.05–0.22 ms** | 2 of 500 after an exception |
+| 0.2.1 | 5.49–20.2 ms | 5.22–27.5 ms | 0 of 1,000 |
+
+- **0.2.0 reproduces the defect of §6.2 on the analyzer.** After an exception reply the
+  configured 5 ms collapsed to about 0.1 ms, and failures appeared at the zero-gap rate.
+- **0.2.1 holds the gap after every reply.** The medians of about 12 ms come from the
+  Windows timer (§6.2), not from the setting.
+- fujilib's default of 5 ms leaves a wide margin over the 1 ms the analyzer needs.
+
+Raw files, in `probe_out/` (git-ignored), each recording the probe's arguments, the
+package versions and the SHA-256 of the probe scripts:
+
+| File | Run | Seed |
+|---|---|---|
+| `probe_link_pairs_busywait_20260928T174956Z.json` | busy-wait, `anymodbus` 0.2.1 | 3120660651 |
+| `probe_link_pairs_anymodbus_20260928T175306Z.json` | `anymodbus` 0.2.1 idle | 3025024686 |
+| `probe_link_pairs_anymodbus_20260928T175411Z.json` | `anymodbus` 0.2.0 idle | 2979417567 |
+
 ## 7. Status at capture
 
 - No instrument error, no calibration error, no alarms, no calibration running, no hold.
@@ -242,7 +295,7 @@ These rows are superseded by §6.1.
 |---|---|
 | Region map | per-profile and as measured, with the manual's narrower map as the documented subset |
 | Writes | allowed only to a whitelist of documented user settings and commands; the factory blocks are unreachable by construction |
-| Timing | inter-frame gap 5 ms (the manual's recommendation), measured from the end of every reply; **no** special recovery after an exception (§6.1); `anymodbus` must record the end of every transaction |
+| Timing | inter-frame gap 5 ms (the manual's recommendation), measured from the end of every reply; **no** special recovery after an exception (§6.1, §6.3); `anymodbus` ≥ 0.2.1 records the end of every transaction, verified on the analyzer (§6.3) |
 | Channel layout | from live data and range registers; the type code is a hint, labelled as such |
 | Serial number | read from the "board" code |
 | Clock | exposed; used to complete the partial timestamps in the error log |

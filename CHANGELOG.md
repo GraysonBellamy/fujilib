@@ -22,6 +22,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (design §9).
 - The architecture and phased plan (`docs/design.md`) and the read-only bench
   findings (`docs/protocol-findings.md`).
+- `scripts/probe_link.py --mode pairs`: randomized link-timing trials across all
+  four normal/exception reply pairings, with each gap measured from the previous
+  reply and every trial kept. Its results are in `docs/protocol-findings.md` §6.3.
 - Read-only bench probe scripts (`scripts/probe_*.py`) and
   `scripts/extract_manuals.py`, which extracts searchable text from the vendor
   manuals.

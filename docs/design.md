@@ -181,22 +181,28 @@ FC03 and FC04 address separate tables throughout. Consequences for the design:
 sets it explicitly.
 
 **[bench] What the analyzer needs.** The measurement below times each gap with a
-busy-wait from the moment the previous reply was received. It is 500 requests per row,
-FC04, one word, no retries (findings §6):
+busy-wait from the moment the previous reply was received, in randomized order. It is
+250 trials per cell, FC04, one word, no retries (findings §6.3):
 
-| Sequence | Gap after the reply | Failures |
-|---|---|---|
-| normal → normal | 0 ms | 1.4 % |
-| normal → normal | 1, 2, 3, 5 ms | 0 |
-| exception → exception | 0 ms | 1.0 % |
-| exception → exception | 1, 2, 3, 5 ms | 0 |
-| exception → normal | 0 ms | 0.6 % |
-| exception → normal | 2, 5 ms | 0 |
+| Gap after the reply | normal → normal | normal → exception | exception → normal | exception → exception |
+|---|---|---|---|---|
+| 0 ms | 0 | 5 | 2 | 1 |
+| 1 ms | 0 | 0 | 0 | 0 |
+| 2 ms | 0 | 0 | 0 | 1 |
+| 5 ms | 0 | 0 | 0 | 0 |
 
 The analyzer needs a gap of **at most 1 ms after any reply, exception or not**. There is
-no device-specific recovery after an exception. These are host-side gaps. The FTDI
-latency timer delays the host's view of each reply, so the analyzer saw at least these
-gaps, and the data cannot resolve requirements below about 1 ms.
+no device-specific recovery after an exception. The single failure at 2 ms was isolated
+and is read as background loss (about 1 in 3,000 requests), which read retries absorb.
+An earlier fixed-order run of 500 requests per row agrees (findings §6.1). These are
+host-side gaps. The FTDI latency timer delays the host's view of each reply, so the
+analyzer saw at least these gaps, and the data cannot resolve requirements below about
+1 ms.
+
+**[bench] What `anymodbus` delivers.** With `anymodbus`'s own 5 ms idle and no other
+wait, 0.2.0 collapsed the gap after an exception reply to about 0.1 ms and failed 2 of
+500 trials there. 0.2.1 kept every gap at 5.2 ms or more and failed none of 1,000
+(findings §6.3).
 
 **Correction to the first draft.** The first draft required 20–30 ms after an exception
 reply. That conclusion came from two defects in the measurement method, not from the
@@ -221,7 +227,7 @@ analyzer:
 - There is **no** `exception_recovery` setting.
 - Linux timing is untested.
 
-Round trip is 13–27 ms for one word and 50–63 ms for 64 words through an FTDI adapter at
+Round trip is 12–27 ms for one word and 50–63 ms for 64 words through an FTDI adapter at
 its default 16 ms latency timer. A two-block poll takes about 120 ms, a practical ceiling
 of **7–8 Hz** for one station. The default polling rate is 1 Hz. On a multi-drop line the
 budget is per port: 31 stations cannot each be polled at 1 Hz.
@@ -1667,8 +1673,9 @@ else.
 - `probe_map.py` — dump the documented regions; boundaries, the 64-word cap, unsupported
   function codes; decoded summary.
 - `probe_scan.py` — read every address one word at a time to find the real map.
-- `probe_link.py` — failure rate and latency against inter-frame gap. Its original method
-  was confounded (§2.4); give it a busy-wait mode that measures from the reply.
+- `probe_link.py` — failure rate and latency against inter-frame gap. Its original sweep
+  was confounded (§2.4); ~~give it a busy-wait mode that measures from the reply~~ — done
+  as `--mode pairs` (findings §6.3).
 
 *Output:* [protocol-findings.md](protocol-findings.md) and
 `tests/fixtures/captures/zpa_bench_20260928.json` (kept local, §13.1 #11). The measured
@@ -1677,8 +1684,8 @@ defaults go into
 
 *Remaining, read-only:*
 
-- after `anymodbus` 0.2.1, re-run the link probe with randomized gap order, all four
-  normal/exception pairings and individual outcomes;
+- ~~after `anymodbus` 0.2.1, re-run the link probe with randomized gap order, all four
+  normal/exception pairings and individual outcomes~~ — done 2026-09-28 (findings §6.3);
 - a block-read capture for coherent fixtures.
 
 *Remaining, needing more:* the items in §13.2 that need a write, a power cycle, analog
@@ -1814,7 +1821,8 @@ Answered by the read-only probes of 2026-09-28. Details and data are in
 
 | # | Question | Result |
 |---|---|---|
-| 1 | Inter-frame gap and latency | **≤ 1 ms after any reply, normal or exception**, measured from the reply by busy-wait. The first draft's "20 ms after an exception" was a measurement artifact (§2.4). 13–27 ms per word read, 50–63 ms per 64 words |
+| 1 | Inter-frame gap and latency | **≤ 1 ms after any reply, normal or exception**, measured from the reply by busy-wait, in all four normal/exception pairings in randomized order. The first draft's "20 ms after an exception" was a measurement artifact (§2.4). 12–27 ms per word read, 50–63 ms per 64 words |
+| 24 | The link re-run after `anymodbus` 0.2.1 | Done (findings §6.3). Confirms item 1, including normal → exception. `anymodbus` 0.2.1 keeps its 5 ms idle after every reply on the analyzer (minimum 5.2 ms, 0 of 1,000 failed); 0.2.0 collapsed it to about 0.1 ms after an exception |
 | 2 | Reply to unsupported function codes | FC01 and FC02 answer exception **02**, not 01. FC08 not sent |
 | 3 | 65 words; region boundaries | exception 03; a block crossing a region end is also exception 03; a read starting outside the map is 02 |
 | 5 | Registers 40165–40172 | four low-word-first long words of 1,000,000; *interpreted* as interference compensation coefficients (inferred) |
@@ -1843,8 +1851,6 @@ Still open:
 21. Modbus O2 against the analog output, simultaneously. *Phase 4, needs analog wiring.*
 22. The Premus variant and specification. *Owner, from Hummingbird or Fuji.*
 23. The analyzer's current calibration state (§2.11). *Owner.*
-24. The link re-run after `anymodbus` 0.2.1: randomized order, normal → exception
-    included. *Read-only.*
 25. Linux timing. *If the rig runs Linux.*
 
 ### 13.3 The bench analyzer
