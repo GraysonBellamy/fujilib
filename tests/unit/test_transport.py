@@ -15,7 +15,6 @@ from fujilib.errors import FujiConfigurationError, FujiConnectionError, FujiVali
 from fujilib.transport import serial as serial_module
 from fujilib.transport.base import FUJI_BAUDRATE, SerialSettings, Transport
 from fujilib.transport.fake import FakeTransport
-from fujilib.transport.ports import canonical_port
 from fujilib.transport.serial import SerialTransport, serial_config
 
 if TYPE_CHECKING:
@@ -29,41 +28,66 @@ BACKSLASH = "\\"
 # --- Canonical names ------------------------------------------------------------------
 
 
+def record_opens(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Make ``open_serial_port`` record each path it is given, then find no port there."""
+    opened: list[str] = []
+
+    async def fake_open(path: str, config: SerialConfig) -> SerialPort:
+        opened.append(path)
+        raise anyserial.PortNotFoundError(path)
+
+    monkeypatch.setattr(serial_module, "open_serial_port", fake_open)
+    return opened
+
+
+async def opened_as(monkeypatch: pytest.MonkeyPatch, name: str) -> str:
+    """The name under which ``SerialTransport.open`` opens port ``name``."""
+    opened = record_opens(monkeypatch)
+    with pytest.raises(FujiConnectionError) as info:
+        await SerialTransport.open(SerialSettings(port=name))
+    (path,) = opened
+    assert info.value.context.port == path
+    return path
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows device names")
 @pytest.mark.parametrize(
-    "name",
+    ("name", "canonical"),
     [
-        "COM8",
-        "com8",
-        " COM8 ",
-        BACKSLASH * 2 + "." + BACKSLASH + "COM8",
-        BACKSLASH * 2 + "?" + BACKSLASH + "com8",
+        ("COM8", "COM8"),
+        ("com8", "COM8"),
+        (" COM8 ", "COM8"),
+        (BACKSLASH * 2 + "." + BACKSLASH + "COM8", "COM8"),
+        (BACKSLASH * 2 + "?" + BACKSLASH + "com8", "COM8"),
+        (BACKSLASH * 2 + "." + BACKSLASH + "com10", "COM10"),
     ],
 )
-def test_windows_names_of_one_port_agree(name: str) -> None:
-    assert canonical_port(name, platform="win32") == "COM8"
+async def test_windows_spellings_of_one_port_open_it_by_one_name(
+    monkeypatch: pytest.MonkeyPatch, name: str, canonical: str
+) -> None:
+    assert await opened_as(monkeypatch, name) == canonical
 
 
-def test_windows_names_above_com9() -> None:
-    assert canonical_port(BACKSLASH * 2 + "." + BACKSLASH + "com10", platform="win32") == "COM10"
-
-
-def test_posix_symlinks_resolve_to_their_target(tmp_path: Path) -> None:
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX device paths")
+async def test_a_posix_symlink_opens_its_target(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     target = tmp_path / "ttyUSB0"
     target.touch()
-    indirect = tmp_path / "by-id" / ".." / "ttyUSB0"
-    (tmp_path / "by-id").mkdir()
-    assert canonical_port(str(indirect), platform="linux") == str(target.resolve())
-
-
-def test_posix_names_that_do_not_exist_are_kept() -> None:
-    assert canonical_port("/dev/fujilib-absent", platform="linux") == "/dev/fujilib-absent"
-    assert canonical_port("mock://zp", platform="darwin") == "mock://zp"
+    link = tmp_path / "usb-FTDI-if00-port0"
+    link.symlink_to(target)
+    assert await opened_as(monkeypatch, f" {link} ") == str(target.resolve())
+    assert await opened_as(monkeypatch, "/dev/fujilib-absent") == "/dev/fujilib-absent"
 
 
 @pytest.mark.parametrize("name", ["", "   "])
-def test_an_empty_name_is_refused(name: str) -> None:
+async def test_an_empty_name_is_refused_before_opening(
+    monkeypatch: pytest.MonkeyPatch, name: str
+) -> None:
+    opened = record_opens(monkeypatch)
     with pytest.raises(FujiValidationError, match="empty"):
-        canonical_port(name)
+        await SerialTransport.open(SerialSettings(port=name))
+    assert opened == []
 
 
 # --- Serial transport -----------------------------------------------------------------
@@ -114,8 +138,8 @@ async def test_open_uses_the_canonical_name(monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setattr(serial_module, "open_serial_port", fake_open)
     name = "com8" if sys.platform == "win32" else "/dev/fujilib-absent"
     async with await SerialTransport.open(SerialSettings(port=name)) as transport:
-        assert opened == [canonical_port(name)]
-        assert transport.label == canonical_port(name)
+        assert opened == [anyserial.canonical_port_name(name)]
+        assert transport.label == anyserial.canonical_port_name(name)
         assert transport.settings.port == transport.label
         assert transport.stream is host
         assert is_open(transport)
@@ -145,7 +169,7 @@ async def test_open_failures_are_mapped(
     with pytest.raises(expected) as info:
         await SerialTransport.open(SerialSettings(port="COM8"))
     assert info.value.__cause__ is error
-    assert info.value.context.port == canonical_port("COM8")  # type: ignore[attr-defined]
+    assert info.value.context.port == "COM8"  # type: ignore[attr-defined]
 
 
 async def test_opening_a_port_that_does_not_exist_fails_cleanly() -> None:

@@ -463,23 +463,28 @@ Raw files: `probe_client_smoke_20260928T215219Z.json`,
 `probe_client_polls_20260928T215234Z.json` and
 `probe_client_resync_20260928T215313Z.json`, all with `probe_client.py` `694951e7…`.
 
-### 10.4 Trio cannot read a real COM port on Windows
+### 10.4 Trio could not read a real COM port on Windows (fixed in `anyserial` 0.2.0)
 
-Under trio, every hardware test failed within about 4 ms of its first read, with
-`anyserial.SerialError: [WinError 1460] This operation returned because the timeout
-period expired`. A plain idle `receive()` on `COM8`, with nothing sent, reproduces it:
-under asyncio it waits and is cancelled cleanly; under trio it raises.
+With `anyserial` 0.1.2, every hardware test under trio failed within about 4 ms of its
+first read, with `anyserial.SerialError: [WinError 1460] This operation returned because
+the timeout period expired`. A plain idle `receive()` on `COM8`, with nothing sent,
+reproduced it: under asyncio it waited and was cancelled cleanly; under trio it raised.
 
 - **Cause.** `anyserial` reads with the "wait-for-any" `COMMTIMEOUTS` policy, under
   which an overlapped read with no data completes after about 1 ms with
   `STATUS_TIMEOUT`. That is a success status: asyncio's Proactor returns it as 0 bytes,
-  and `anyserial` reissues the read. Trio raises it as an error, and `anyserial` treats
+  and `anyserial` reissues the read. Trio raised it as an error, and `anyserial` treated
   it as a failed port.
 - **Why CI did not catch it.** The simulator's port pair does not take this path, which
   is why the unit tests pass on trio.
-- **Until `anyserial` fixes it**, fujilib on Windows with a real port must run on asyncio.
-  The hardware tests mark trio on Windows as a strict expected failure (design §4.7
-  item 14).
+- **Until `anyserial` 0.2.0**, fujilib on Windows with a real port had to run on asyncio,
+  and the hardware tests marked trio on Windows as a strict expected failure (design
+  §4.7 item 14).
+- **The fix.** `anyserial` 0.2.0's trio read path treats that `STATUS_TIMEOUT` as the
+  empty completion asyncio reports, and reissues the read. With the expected-failure
+  mark removed, the eight hardware tests pass on `COM8` under both asyncio and trio (16
+  of 16), run twice the same evening: once with `anymodbus` 0.2.1 and once with 0.3.0
+  (§10.5). `anyserial` 0.2.0, `anyio` 4.15.1, `trio` 0.34.0, Python 3.13, Windows 11.
 
 Raw files, in `probe_out/` (git-ignored):
 

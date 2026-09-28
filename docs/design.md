@@ -523,7 +523,6 @@ anymodbus                    RTU framing, CRC, bus lock, inter-frame timing, dec
 transport/     base.py       Transport Protocol + SerialSettings (default 38400 8-N-1)
                serial.py     SerialTransport over anyserial; exposes the real SerialPort
                fake.py       FakeTransport: scripted request -> reply bytes (arrow fixtures)
-               ports.py      canonical port names: COM8 = com8 = \\.\COM8
    │
    ▼
 protocol/      base.py       ProtocolKind (MODBUS_RTU) + ProtocolClient Protocol
@@ -625,9 +624,13 @@ tests exercise the same code path as hardware. `FakeTransport.stream` is itself 
 scripted `ByteStream`) and is used only for byte-exact fixture replay. It therefore never
 exercises drain or input reset; those are covered by the port-pair tests.
 
-`open_device(port: str | Transport)` keeps the family signature. Port names go through
-`anyserial`, which already normalizes Windows COM names to the extended path form.
-fujilib tests that `COM8`, `com8` and the extended path resolve to one canonical port.
+`open_device(port: str | Transport)` keeps the family signature. `SerialTransport.open`
+opens a port under its canonical name: `anyserial.canonical_port_name()` of the name
+with surrounding whitespace removed. On Windows that drops a `\\.\` or `\\?\` prefix and
+upper-cases the rest, so `COM8`, `com8` and `\\.\COM8` are one port; elsewhere a symlink
+resolves to its target. The canonical name labels the transport in errors and rows, and
+is the key a manager will share ports by (§4.2). An empty name is refused before
+anything is opened.
 
 ### 4.2 `ModbusPort` — one bus per serial port
 
@@ -844,7 +847,9 @@ poll.
 
 Item 1 was a **prerequisite of Phase 3** (0.2.1). Items 2–12 were released in 0.3.0
 (2026-09-28), except item 6, which upstream declined; fujilib dropped its workarounds for
-them (§12, Phase 3). They also benefit `servomexlib` and `watlowlib`.
+them (§12, Phase 3). They also benefit `servomexlib` and `watlowlib`. Items 13 and 14,
+in `anyserial`, were released in its 0.2.0 (2026-09-28); fujilib dropped its own
+port-name helper and the hardware tests' trio expected failure.
 
 1. ~~**Record the completion of every transaction.**~~ **Released in 0.2.1
    (2026-09-28).** `_last_io_monotonic` is now set in a `finally` at the end of every
@@ -879,18 +884,21 @@ Found while building Phase 3 (none blocks fujilib; each has a workaround in plac
 
 And in `anyserial`:
 
-13. `normalise_com_path` turns `\\?\COM8` into `\\.\\\?\COM8`, and there is no public
-    helper to canonicalize a port name. fujilib has its own (`transport/ports.py`).
-14. **[bench] Trio cannot read a real COM port on Windows.** An idle `receive()` under
-    trio raises `SerialError` (WinError 1460) about 1 ms after it is called.
+13. ~~`normalise_com_path` turns `\\?\COM8` into `\\.\\\?\COM8`, and there is no public
+    helper to canonicalize a port name.~~ **Released in 0.2.0 (2026-09-28).** A `\\?\`
+    path is opened unchanged, and `canonical_port_name()` gives every spelling of a port
+    one name. fujilib's own helper, `transport/ports.py`, is gone (§4.1).
+14. ~~**[bench] Trio cannot read a real COM port on Windows.**~~ **Fixed in 0.2.0
+    (2026-09-28).** An idle `receive()` under trio raised `SerialError` (WinError 1460)
+    about 1 ms after it was called.
     - `anyserial` reads with the "wait-for-any" `COMMTIMEOUTS` policy, under which an
       overlapped read with no data completes with `STATUS_TIMEOUT`, a success status.
       asyncio's Proactor returns it as 0 bytes and `anyserial` reissues the read. Trio
-      raises it, and `anyserial` treats it as a failed port.
-    - Until `anyserial` returns 0 for that error in its trio read path, fujilib on Windows
-      with a real port must run on asyncio.
+      raised it, and `anyserial` treated it as a failed port. Its trio read path now
+      treats it as the empty completion asyncio reports.
     - The simulator's port pair does not take this path, so CI cannot catch it. The
-      hardware tests mark trio on Windows as a strict expected failure (findings §10.4).
+      hardware tests carried a strict expected failure for trio on Windows until the fix;
+      they now pass on trio (findings §10.4).
 
 And again in `anymodbus`, found adopting 0.3.0:
 
@@ -1769,8 +1777,9 @@ file is used.
 `CONTRIBUTING.md` still contain `sartoriuslib` text (xBPI / SBI, `Balance`, a `commands/`
 package), and its `SECURITY.md` has Servomex-specific wording.
 
-- **Dependencies.** Core: `anyio>=4.14`, `anyserial>=0.1.2,<0.2`,
-  `anymodbus>=0.3,<0.4` (0.3.0 carries §4.7 items 2–12 and needs `anyio` 4.14). Extras:
+- **Dependencies.** Core: `anyio>=4.14`, `anyserial>=0.2.0,<0.3` (0.2.0 carries §4.7
+  items 13 and 14), `anymodbus>=0.3,<0.4` (0.3.0 carries §4.7 items 2–12 and needs
+  `anyio` 4.14). Extras:
   `docs` now, `parquet` with the Parquet sink (others as sinks are added).
   Python ≥ 3.13.
 - **Release process.** Update `CHANGELOG.md`, make an annotated tag `vX.Y.Z`, publish a
@@ -1985,6 +1994,15 @@ The port keeps the pre-send check against the quiet window.
 Checked without hardware (1,242 tests, 100 % coverage) and again on the analyzer
 (findings §10.5).
 
+*Adopting `anyserial` 0.2.0* (2026-09-28). The release carried §4.7 items 13 and 14:
+
+- `transport/ports.py` is gone; `SerialTransport.open` names a port with
+  `anyserial.canonical_port_name()` and still refuses an empty name (§4.1);
+- the hardware tests lost their strict expected failure for trio on Windows.
+
+Checked without hardware (1,247 tests, 100 % coverage) and on the analyzer, where the
+eight hardware tests pass under asyncio and trio (findings §10.4).
+
 ### Phase 4 — Session, facade, discovery, sync, capa spike (4–5 days, plus a hardware session)
 
 - `devices/{session,analyzer,factory,discovery,snapshot,profile,metadata}.py`.
@@ -2052,7 +2070,7 @@ then start with a design and a hardware prototype, and be estimated after that.
 - Further sinks (SQLite, JSONL, Postgres), when needed.
 - Validate ZPB / ZPG / ZPAJ / ZPG3E; add their type-code tables; exercise the RS-232C
   path.
-- The remaining upstream `anymodbus` and `anyserial` items (§4.7 items 2–14).
+- The remaining upstream `anymodbus` item (§4.7 item 15).
 
 ### Sequencing
 
@@ -2150,8 +2168,9 @@ Still open:
     auto-calibration start time the panel shows; no Modbus traffic is needed.*
 27. The encoding of the alarm target channel (§2.6). *Phase 6, or a unit with the alarm
     option.*
-29. Trio with a real Windows COM port (§4.7 item 14). *Fails with `anyserial` 0.1.2; rerun
-    the hardware tests on trio once it is fixed. Linux and macOS untested.*
+29. ~~Trio with a real Windows COM port (§4.7 item 14)~~ — fixed in `anyserial` 0.2.0;
+    the hardware tests pass on trio on the bench (findings §10.4). *Linux and macOS
+    untested.*
 
 ### 13.3 The bench analyzer
 
@@ -2242,5 +2261,5 @@ Sibling libraries and what each contributes:
 | `sartoriuslib` | four-tier `SafetyTier`, the recorder / `PollSource` contract and error samples, `DiscoverySummary`, CLI conventions |
 | `alicatlib` | strict sync parity test, generated-artifact CI check, the wide-sample pattern capa's adapter follows |
 | `anymodbus` ≥ 0.3 | Modbus engine: gap, reply checks, retries, late-reply window and transaction observer; its `MockServer` is the simulator's line (§4.7) |
-| `anyserial` 0.1.2 | serial transport, COM-name normalization and test port pair |
+| `anyserial` ≥ 0.2.0 | serial transport, canonical port names and test port pair; 0.2.0 reads a Windows COM port under trio (§4.7) |
 | `capa` | downstream consumer; its adapters, `SourceRecord` shapes and cone profile define what the library must provide |

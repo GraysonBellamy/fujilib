@@ -1,5 +1,5 @@
 ---
-description: fujilib.transport — the transport contract, serial settings, the serial transport, the scripted fake and canonical port names.
+description: fujilib.transport — the transport contract, serial settings, the serial transport and the scripted fake.
 ---
 
 # `fujilib.transport`
@@ -13,5 +13,3 @@ drain-after-send and input-reset behaviour (design §4.1).
 ::: fujilib.transport.serial
 
 ::: fujilib.transport.fake
-
-::: fujilib.transport.ports

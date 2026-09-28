@@ -14,7 +14,7 @@ Auto-generated from source docstrings via
 - [`fujilib.protocol`](protocol.md) — the register-word codec, the read planner, the
   Modbus port and client, and the error map.
 - [`fujilib.transport`](transport.md) — the transport contract, `SerialSettings`, the
-  serial transport, the scripted fake and canonical port names.
+  serial transport and the scripted fake.
 - [Samples and rows](samples.md) — `Sample`, `sample_to_row()` and `to_pint()`.
 - [`fujilib.testing`](testing.md) — arrow-format frame fixtures, the simulated analyzer
   and the bench bank.

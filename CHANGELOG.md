@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Require `anyserial>=0.2.0`, which gives every spelling of a port one canonical name,
+  opens `\\?\` paths unchanged, and reads a real Windows COM port under trio.
 - Require `anymodbus>=0.3,<0.4` and `anyio>=4.14`. `anymodbus` 0.3 measures the
   inter-frame gap from the end of every attempt, checks each reply against its
   request, discards late replies during a quiet window, and reports every attempt to
@@ -21,8 +23,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `fujilib.transport`: the `Transport` contract; `SerialTransport`, which exposes the
   real `anyserial.SerialPort` so `anymodbus` keeps drain-after-send and input reset;
-  `FakeTransport` for byte-exact fixture replay; `canonical_port()`, under which
-  `COM8`, `com8` and `\\.\COM8` are one port.
+  `FakeTransport` for byte-exact fixture replay. A port opens under `anyserial`'s
+  canonical name, so `COM8`, `com8` and `\\.\COM8` are one port.
 - `fujilib.protocol.modbus.port.ModbusPort`: one `anymodbus` bus per serial port, an
   operation lock, one client per station (1-31), and refusal of a second port on one
   transport. The bus waits out the startup settle and the inter-frame gap, retries
@@ -52,8 +54,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and `FUJILIB_HARDWARE_PORT`), and `scripts/probe_client.py`, which measures the client
   on a real analyzer. On the bench unit every read procedure works, 300 polls ran at
   7.78 Hz with no failure, and the quiet window turns a lost request into a clean read
-  (`docs/protocol-findings.md` §10). On Windows, trio cannot read a real COM port with
-  `anyserial` 0.1.2; use asyncio there.
+  (`docs/protocol-findings.md` §10). The hardware tests pass under asyncio and trio.
 - `fujilib.testing`: `MockAnalyzer` stations on a `MockLine` (`anymodbus`'s
   `MockServer`) over a real serial port pair, with the manual's and the bench unit's
   exception replies, per-request reply

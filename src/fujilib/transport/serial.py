@@ -13,10 +13,14 @@ from dataclasses import replace
 from typing import TYPE_CHECKING, Self
 
 import anyio
-from anyserial import FlowControl, SerialConfig, open_serial_port
+from anyserial import FlowControl, SerialConfig, canonical_port_name, open_serial_port
 
-from fujilib.errors import ErrorContext, FujiConfigurationError, FujiConnectionError
-from fujilib.transport.ports import canonical_port
+from fujilib.errors import (
+    ErrorContext,
+    FujiConfigurationError,
+    FujiConnectionError,
+    FujiValidationError,
+)
 
 if TYPE_CHECKING:
     from types import TracebackType
@@ -52,13 +56,22 @@ class SerialTransport:
 
     @classmethod
     async def open(cls, settings: SerialSettings) -> Self:
-        """Open the port named by ``settings.port``, under its canonical name.
+        r"""Open the port named by ``settings.port``, under its canonical name.
+
+        The canonical name is ``anyserial``'s, so every spelling of one port
+        agrees: ``COM8``, ``com8`` and ``\\.\COM8`` on Windows, a symlink and
+        its target elsewhere (design §4.1).
 
         Raises:
+            FujiValidationError: ``settings.port`` is empty; nothing was opened.
             FujiConfigurationError: ``anyserial`` rejects the settings.
             FujiConnectionError: the port does not exist, is busy or cannot be opened.
         """
-        name = canonical_port(settings.port)
+        stripped = settings.port.strip()
+        if not stripped:
+            msg = "the serial port name is empty"
+            raise FujiValidationError(msg, context=ErrorContext(port=settings.port))
+        name = canonical_port_name(stripped)
         context = ErrorContext(port=name, command_name="open")
         try:
             port = await open_serial_port(name, serial_config(settings))

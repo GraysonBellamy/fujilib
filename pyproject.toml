@@ -38,7 +38,7 @@ classifiers = [
 # and reports every attempt to an observer, which the client relies on (design §4.2-§4.5).
 dependencies = [
     "anyio>=4.14",
-    "anyserial>=0.1.2,<0.2",
+    "anyserial>=0.2.0,<0.3",
     "anymodbus>=0.3,<0.4",
 ]
 
