@@ -164,7 +164,7 @@ select = [
     "A",    # flake8-builtins
 ]
 ignore = [
-    "D100",    # missing module docstring — tolerated for now on stubs
+    "D100",    # missing module docstring
     "D104",    # missing docstring in public package
     "D105",    # magic method docstrings — __str__ / __repr__ rarely need docs
     "D107",    # __init__ docstrings — class docstring covers it

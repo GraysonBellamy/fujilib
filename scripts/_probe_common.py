@@ -1,4 +1,4 @@
-"""Shared helpers for the read-only bench probes (design §12, Phase 2).
+"""Shared helpers for the read-only bench probes.
 
 **Read-only by construction.** :class:`ReadOnlyStation` is the only door to the wire
 and exposes the four Modbus *read* function codes (01-04) and nothing else, so no

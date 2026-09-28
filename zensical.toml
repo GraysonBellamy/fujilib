@@ -7,7 +7,6 @@ repo_name = "GraysonBellamy/fujilib"
 edit_uri = "edit/main/docs/"
 docs_dir = "docs"
 site_dir = "site"
-# Pages are added to the nav as the phases that write them land (design §12).
 nav = [
     { Home = "index.md" },
     { Installation = "installation.md" },

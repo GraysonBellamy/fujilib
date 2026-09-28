@@ -7,10 +7,7 @@ map, over MODBUS RTU (RS-485 or RS-232C) at a fixed 38400 8-N-1. It is built on
 ``fujilib`` is a member of the ``*lib`` instrument-driver family; family harmony
 is defined at the boundary (entry point, frozen models, error hierarchy,
 streaming/sinks/sync/CLI conventions, tooling and the unified device-library
-API). The architecture and the phased plan are in ``docs/design.md``.
-
-Status: pre-alpha. This release exports only the error hierarchy and the
-version; the analyzer API arrives in later phases.
+API). The architecture is described in ``docs/design.md``.
 """
 
 from __future__ import annotations
