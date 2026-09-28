@@ -112,7 +112,8 @@ async def test_enforce_raises_a_timeout_error_with_context() -> None:
             await anyio.sleep(1)
     assert info.value.context.command_name == "poll"
     assert info.value.context.elapsed_s is not None
-    assert info.value.context.elapsed_s >= 0.01
+    # uvloop's clock counts whole milliseconds, so 10 ms can measure a hair under 0.01 s.
+    assert info.value.context.elapsed_s >= 0.01 - 1e-6
     assert dl.remaining() < 0
 
 
