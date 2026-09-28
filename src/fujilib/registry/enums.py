@@ -34,6 +34,7 @@ __all__ = [
     "ManualCalibrationStep",
     "MeasurementPoint",
     "PeriodUnit",
+    "RangeIndex",
     "RangeMethod",
     "ScheduleCycleUnit",
     "ZeroCalibrationMode",
@@ -84,6 +85,18 @@ class PeriodUnit(IntEnum):
 
     HOURS = 0
     MINUTES = 1
+
+
+class RangeIndex(IntEnum):
+    """A range as the registers encode it: 0 is range 1, 1 is range 2."""
+
+    RANGE_1 = 0
+    RANGE_2 = 1
+
+    @property
+    def number(self) -> int:
+        """The 1-based range number."""
+        return self.value + 1
 
 
 class RangeMethod(IntEnum):
