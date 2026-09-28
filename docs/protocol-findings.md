@@ -138,6 +138,40 @@ The A/D values were live: two reads minutes apart differed by a few counts.
 calibration data. Whether the analyzer would accept a write there was not tested and
 will not be.
 
+### 4.3 A coherent block capture (2026-09-28)
+
+The register capture was read one word at a time over several minutes, so its live
+words do not come from one moment. A second read-only capture read the same addresses in
+block reads:
+
+- `probe_map.py` with `anymodbus` 0.2.1, `anyserial` 0.1.2, `anyio` 4.15.1, Python
+  3.13.13 on Windows 11; timeout 0.5 s, inter-frame idle 5 ms, 2 retries, blocks of up
+  to 64 words.
+- Every documented region and the clock and A/D block (03E8h–0418h): 312 input and 172
+  holding words, the same addresses as the committed bank. Ten block reads, all
+  successful, plus the read of type-code digits 27–29, which answered exception 02 as
+  before; 0.63 s in all, from 18:52:38 UTC.
+- Saved as `tests/fixtures/captures/zpa_bench_block_20260928.json` (kept local, like the
+  register capture), SHA-256 `7c97590745e658ee2bdfd8a271605325fe5a8ae894dc86b5601e48b795bbeddd`;
+  the same file as `probe_out/probe_map_20260928T185238Z.json`. Its `input` and `holding`
+  tables have the capture's shape, so `fuji-decode --dump` reads it.
+
+Compared with the register capture, three hours earlier:
+
+| Words | Result |
+|---|---|
+| FC03 0000h–00ABh, all 172 | identical |
+| FC04 0425h–0469h: ranges, type code, serial | identical |
+| FC04 0000h–00C1h except the six words below; error log included | identical |
+| Readings 0000h, 0003h, 0006h | CO2 −0.11 → −0.10 vol%, CO −0.009 → −0.007 vol%, O2 20.30 → 20.18 vol% |
+| Display-state words 00B9h, 00BCh, 00BDh | 6 → 0, 2 → 0, 0 → 16 |
+| Clock 03ECh–03EEh | read 14:46:12 at 14:52:39 PC time: still about 6.5 minutes behind |
+| A/D 03EFh–0418h | 19 of the 21 low words moved, by 1 to 211 counts; every high word identical; reference voltage (No. 15) 38928 |
+
+Everything that is not a live value matched, so the register capture's settings,
+ranges and identity stand. The block capture is the coherent one: its readings, status,
+clock and A/D values come from the same 0.63 s.
+
 ## 5. Replies to requests the analyzer does not support
 
 | Request | Reply | Manual |

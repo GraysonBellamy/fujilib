@@ -1,8 +1,14 @@
 """Read-only register-map probe for a Fuji ZP-series gas analyzer.
 
-Dumps every documented region, tests the region boundaries and the 64-word cap,
-and checks how the analyzer answers function codes it does not implement. Prints a
-decoded summary and writes the raw result to ``probe_out/`` as JSON.
+Dumps every documented region and the observed clock and A/D block in block reads,
+tests the region boundaries and the 64-word cap, and checks how the analyzer answers
+function codes it does not implement. Prints a decoded summary and writes the raw
+result to ``probe_out/`` as JSON, with the probe's settings, the package versions and
+the SHA-256 of the probe scripts.
+
+The dump is one coherent pass, a few blocks within about a second, unlike the
+one-word-at-a-time bank of ``probe_scan.py`` (design §11). Its ``input`` and
+``holding`` tables have the capture's shape, so ``fuji-decode --dump`` reads the file.
 
 Read-only by construction: see :mod:`_probe_common`. Register addresses and meanings
 are from INZ-TN5A1190a-E chapter 7.
@@ -16,10 +22,14 @@ Usage::
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import platform
 import sys
+import time
 from dataclasses import asdict
 from datetime import UTC, datetime
+from importlib.metadata import version
 from pathlib import Path
 
 import anyio
@@ -41,9 +51,11 @@ ALARM_STATES = {0: "none", 1: "H", 2: "L", 3: "HH", 4: "LL"}
 CAL_KINDS = {0: "Z1", 1: "S1", 2: "Z2", 3: "S2"}
 EMPTY = 0xFFFF
 
-#: (label, function code, first address, word count) — whole documented regions.
+#: (label, function code, first address, word count) — whole documented regions, and
+#: the undocumented clock and A/D block (design §2.6).
 REGIONS: tuple[tuple[str, int, int, int], ...] = (
     ("input: measurement and status", FC_READ_INPUT, 0x0000, 0x00C2),
+    ("input: clock and A/D (undocumented)", FC_READ_INPUT, 0x03E8, 0x0418 - 0x03E8 + 1),
     ("input: fixed settings", FC_READ_INPUT, 0x0425, 0x0469 - 0x0425 + 1),
     ("input: type code 27-29 (fw >= 2.24)", FC_READ_INPUT, 0x047A, 3),
     ("holding: user settings", FC_READ_HOLDING, 0x0000, 0x00AC),
@@ -221,14 +233,26 @@ def summarize_cal_record(words: tuple[int, ...]) -> None:
     )
 
 
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
 async def run(args: argparse.Namespace) -> int:
     started = datetime.now(UTC)
+    scripts = Path(__file__).resolve().parent
     report: dict[str, object] = {
         "probe": "probe_map",
         "port": args.port,
         "address": args.address,
         "started_utc": started.isoformat(),
         "inter_frame_idle_s": args.idle,
+        "request_timeout_s": args.timeout,
+        "retries": args.retries,
+        "chunk_words": args.chunk,
+        "python": platform.python_version(),
+        "platform": platform.platform(),
+        "packages": {p: version(p) for p in ("anymodbus", "anyserial", "anyio")},
+        "sha256": {name: _sha256(scripts / name) for name in ("probe_map.py", "_probe_common.py")},
     }
     regions: dict[str, dict[int, int]] = {}
     attempts: list[dict[str, object]] = []
@@ -240,12 +264,16 @@ async def run(args: argparse.Namespace) -> int:
         station = ReadOnlyStation(bus.slave(args.address))
 
         out("== region dump")
+        dump_started = datetime.now(UTC)
+        dump_start = time.perf_counter()
         for label, fc, first, count in REGIONS:
             values, tried = await read_region(station, fc, first, count, args.chunk)
             regions[label] = values
             for item in tried:
                 attempts.append({"region": label, **asdict(item)})
                 out(f"  {label:38s} {item.describe()}")
+        dump_elapsed = time.perf_counter() - dump_start
+        out(f"  region dump took {dump_elapsed:.2f} s")
 
         out("\n== boundary and limit tests")
         for label, fc, address, count, expected in BOUNDARY_TESTS:
@@ -269,10 +297,14 @@ async def run(args: argparse.Namespace) -> int:
     summarize_holding(holding)
 
     report["finished_utc"] = datetime.now(UTC).isoformat()
+    report["captured_utc"] = dump_started.isoformat()
+    report["dump_elapsed_s"] = round(dump_elapsed, 3)
     report["regions"] = {
         label: {f"{a:04X}": v for a, v in sorted(values.items())}
         for label, values in regions.items()
     }
+    report["input"] = {f"{a:04X}": v for a, v in sorted(inputs.items())}
+    report["holding"] = {f"{a:04X}": v for a, v in sorted(holding.items())}
     report["attempts"] = attempts
     report["boundary_tests"] = boundaries
     out_dir = Path(args.out)
@@ -280,6 +312,7 @@ async def run(args: argparse.Namespace) -> int:
     path = out_dir / f"probe_map_{started:%Y%m%dT%H%M%SZ}.json"
     path.write_text(json.dumps(report, indent=2), encoding="utf-8")
     out(f"\nraw results written to {path}")
+    out(f"sha256 {_sha256(path)}")
     return 0
 
 

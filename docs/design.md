@@ -1670,23 +1670,25 @@ in `scripts/_probe_common.py`, which exposes the four read function codes and no
 else.
 
 - `probe_connect.py` — find the station; passive listen; framing check.
-- `probe_map.py` — dump the documented regions; boundaries, the 64-word cap, unsupported
-  function codes; decoded summary.
+- `probe_map.py` — dump the documented regions and the clock and A/D block in block
+  reads; boundaries, the 64-word cap, unsupported function codes; decoded summary.
 - `probe_scan.py` — read every address one word at a time to find the real map.
 - `probe_link.py` — failure rate and latency against inter-frame gap. Its original sweep
   was confounded (§2.4); ~~give it a busy-wait mode that measures from the reply~~ — done
   as `--mode pairs` (findings §6.3).
 
-*Output:* [protocol-findings.md](protocol-findings.md) and
-`tests/fixtures/captures/zpa_bench_20260928.json` (kept local, §13.1 #11). The measured
-defaults go into
-`config.py` in Phase 3, each with its measurement recorded beside it.
+*Output:* [protocol-findings.md](protocol-findings.md),
+`tests/fixtures/captures/zpa_bench_20260928.json` (one word at a time) and
+`tests/fixtures/captures/zpa_bench_block_20260928.json` (block reads, coherent), both
+kept local (§13.1 #11). The measured defaults go into `config.py` in Phase 3, each with
+its measurement recorded beside it.
 
 *Remaining, read-only:*
 
 - ~~after `anymodbus` 0.2.1, re-run the link probe with randomized gap order, all four
   normal/exception pairings and individual outcomes~~ — done 2026-09-28 (findings §6.3);
-- a block-read capture for coherent fixtures.
+- ~~a block-read capture for coherent fixtures~~ — done 2026-09-28 (findings §4.3). It
+  matches the register capture everywhere except the live words.
 
 *Remaining, needing more:* the items in §13.2 that need a write, a power cycle, analog
 wiring or calibration gas.
@@ -1805,7 +1807,7 @@ complete read-and-record slice.
 | 8 | Docs palette, README badges, LICENSE holder spelling, CHANGELOG separator | Purple; none; "GraysonBellamy"; hyphen with ISO date |
 | 9 | Coverage floor (no sibling enforces one) | Owner's call |
 | 10 | ~~Caller-asserted serial number~~ | **MOOT 2026-09-28:** the serial is readable. The register block the manual calls "board" holds `N8A0259T`, matching the nameplate |
-| 11 | ~~The register capture contains this analyzer's serial number and factory calibration tables~~ | **RESOLVED 2026-09-28:** the serial number may appear in the public repository and docs. The raw capture stays local (git-ignored, excluded from the sdist). A sanitized subset without the factory calibration blocks is committed for `DEFAULT_ZPA_BANK` in Phase 3 |
+| 11 | ~~The register capture contains this analyzer's serial number and factory calibration tables~~ | **RESOLVED 2026-09-28:** the serial number may appear in the public repository and docs. The raw capture stays local (git-ignored, excluded from the sdist). A sanitized subset without the factory calibration blocks is committed for `DEFAULT_ZPA_BANK` in Phase 3, taken from the coherent block capture (findings §4.3) |
 | 12 | ~~Expose the undocumented real-time clock and A/D values (§2.6)~~ | **RESOLVED 2026-09-28: yes**, as probed capabilities (§6.6) |
 | 13 | ~~Sample shape: one per poll carrying a `Frame` (wide), or one per channel (long)~~ | **RESOLVED 2026-09-28: wide** (§7.6). All channel values come from one read, and capa's `wide_row` path needs no per-tick workaround. `Frame.as_long_rows()` serves consumers that want long rows |
 | 14 | Asserted channel map for the bench rig | Ch1 CO2, Ch2 CO, Ch3 O2; inferred labels never bind scientific channels |
