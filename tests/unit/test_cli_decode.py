@@ -224,3 +224,10 @@ def test_render() -> None:
     report = {"unit": Unit.PPM, "frame": b"\x01\x02", "at": Path("x"), "cap": Capability.CLOCK}
     payload = json.loads(render(report, "json"))
     assert payload == {"unit": "ppm", "frame": "01 02", "at": "x", "cap": 1}
+
+
+def test_dump_capture_time_per_table() -> None:
+    data = json.loads(BENCH_BANK_PATH.read_text(encoding="utf-8"))
+    data["captured_utc"] = {"input": "2026-09-28T15:43:50+00:00", "holding": "x"}
+    report = describe_dump(data)
+    assert report["clock"] == "2026-09-28 14:46:12"
