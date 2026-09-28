@@ -1,8 +1,8 @@
-"""Unified device-library API conformance: the parts built so far (design §7.8).
+"""Unified device-library API conformance of Sample, ErrorContext, snapshots and to_pint.
 
 The contract is recovered from the siblings' own ``test_unified_api.py`` files
-(``sartoriuslib``, ``watlowlib``, ``nidaqlib``); this mirrors their assertions
-for the pieces fujilib has.
+(``sartoriuslib``, ``watlowlib``, ``nidaqlib``) (design §7.8); this mirrors their
+assertions for these types.
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ from fujilib.errors import ErrorContext
 from fujilib.registry.channels import ChannelId
 from fujilib.units import to_pint as units_to_pint
 
-#: §6 top-level names that exist so far.
+#: The §6 top-level names these types provide.
 TOP_LEVEL = ("sample_to_row", "DeviceSnapshot", "FujiDeviceSnapshot", "to_pint")
 
 
