@@ -60,7 +60,7 @@ class Deadline:
         return math.isfinite(self.expires)
 
     def remaining(self) -> float:
-        """Seconds left, ``math.inf`` without a deadline; negative once expired."""
+        """Seconds left, ``math.inf`` without a deadline; zero or negative once expired."""
         return self.expires - anyio.current_time()
 
     def elapsed(self) -> float:

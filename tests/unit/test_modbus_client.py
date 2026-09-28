@@ -601,9 +601,10 @@ async def test_a_deadline_inside_the_quiet_window_is_refused_without_io() -> Non
 # --- The inter-frame gap, measured at the analyzer ----------------------------------------------
 
 IDLE = 0.02
-# uvloop's clock counts whole milliseconds, so a wait of exactly 20 ms can
-# measure as 0.019999999999996 s. Lower bounds on measured times allow for that.
-ROUNDING = 1e-6
+# uvloop's clock counts whole milliseconds and is read once per loop iteration,
+# so a time the simulator records can fall a tick after the host's own. Lower
+# bounds on gaps measured at the analyzer allow one tick.
+TICK = 0.001
 GAPPED: dict[str, Any] = {
     "inter_frame_idle": IDLE,
     "request_timeout": 0.05,
@@ -644,7 +645,7 @@ async def test_the_gap_runs_from_the_end_of_every_transaction(
         await after(client, A)
         await client.read(B)
     first, second = mock.exchanges
-    assert gap_after(first, second.request) >= IDLE + extra - ROUNDING
+    assert gap_after(first, second.request) >= IDLE + extra - TICK
 
 
 async def test_the_gap_holds_after_a_cancelled_read() -> None:
@@ -654,7 +655,7 @@ async def test_the_gap_holds_after_a_cancelled_read() -> None:
             await client.read(A)
         await client.read(B)
     first, second = mock.exchanges
-    assert second.request.arrived_at - first.request.arrived_at >= 0.03 + IDLE - ROUNDING
+    assert second.request.arrived_at - first.request.arrived_at >= 0.03 + IDLE - TICK
 
 
 async def test_the_gap_holds_between_the_clients_own_retries() -> None:
@@ -662,7 +663,7 @@ async def test_the_gap_holds_between_the_clients_own_retries() -> None:
         mock.inject(FaultKind.DROP)
         await client.read(A)
     first, second = mock.exchanges
-    assert second.request.arrived_at - first.request.arrived_at >= 0.05 + IDLE - ROUNDING
+    assert second.request.arrived_at - first.request.arrived_at >= 0.05 + IDLE - TICK
 
 
 async def test_a_request_is_timed_after_the_gap_not_before() -> None:
@@ -693,7 +694,7 @@ async def test_the_startup_settle_is_waited_once() -> None:
         await client.read(A)
         await client.read(B)
     first, second = mock.exchanges
-    assert first.request.arrived_at - opened >= 0.05 - ROUNDING
+    assert first.request.arrived_at - opened >= 0.05 - TICK
     assert second.request.arrived_at - first.request.arrived_at < 0.05
 
 
