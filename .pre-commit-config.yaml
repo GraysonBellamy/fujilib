@@ -64,6 +64,15 @@ repos:
         pass_filenames: false
         files: ^(src|tests)/
 
+      # docs/registers.md is generated from the registry; on drift this prints
+      # a unified diff and blocks the commit. CI runs the same check (codegen).
+      - id: register-docs-check
+        name: register reference (fujilib.registry -> docs/registers.md)
+        entry: uv run --frozen python scripts/gen_register_docs.py --check
+        language: system
+        pass_filenames: false
+        files: ^(src/fujilib/(registry|devices/capability|protocol/modbus/codec)|scripts/gen_register_docs\.py|docs/registers\.md)
+
 ci:
   autoupdate_schedule: monthly
-  skip: [mypy, pyright]
+  skip: [mypy, pyright, register-docs-check]
