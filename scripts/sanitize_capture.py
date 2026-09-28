@@ -1,16 +1,17 @@
-"""Derive the committed bench bank from the local register capture (design §13.1 #11).
+"""Derive the committed bench bank from the local block capture (design §13.1 #11).
 
-The raw capture (``tests/fixtures/captures/zpa_bench_*.json``) stays local: it
-holds the analyzer's factory calibration and configuration blocks. This keeps
-only what fujilib models and nothing else:
+The raw captures (``tests/fixtures/captures/zpa_bench_*.json``) stay local. The
+source here is the coherent block capture of ``probe_map.py`` (protocol findings
+§4.3): every block was read within about a second, so its readings, status,
+clock and A/D values come from one moment. This keeps only what fujilib models:
 
 - FC04: the documented measurement (0000h-00C1h) and fixed-setting
   (0425h-0469h) regions, and the observed clock and A/D block (03E8h-0418h);
 - FC03: the documented user settings (0000h-00ABh).
 
-The factory blocks (FC03 03E8h-069Bh and 0BB8h-0C66h) and the unexplained FC04
-words (0419h-0424h, 046Ah-0479h) are dropped. The output has the same shape
-as the capture, so ``fuji-decode --dump`` reads either.
+Nothing else is copied: no factory calibration or configuration block, and no
+host details. The output has the capture's ``input`` / ``holding`` shape, so
+``fuji-decode --dump`` reads either.
 
 Usage:
     python scripts/sanitize_capture.py            # write the fixture
@@ -25,7 +26,7 @@ import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-CAPTURE = REPO_ROOT / "tests" / "fixtures" / "captures" / "zpa_bench_20260928.json"
+CAPTURE = REPO_ROOT / "tests" / "fixtures" / "captures" / "zpa_bench_block_20260928.json"
 OUTPUT = REPO_ROOT / "tests" / "fixtures" / "zpa_bench_documented.json"
 
 KEEP = {
@@ -38,17 +39,18 @@ def sanitize(capture: dict[str, object]) -> dict[str, object]:
     out: dict[str, object] = {
         "description": (
             "Documented register blocks of the bench Fuji ZPA (CO2 / CO / O2), plus the "
-            "observed clock and A/D block, derived from the local capture by "
-            "scripts/sanitize_capture.py. Factory calibration and configuration blocks "
-            "are omitted. Assembled one word at a time over several minutes, so the "
-            "blocks are not a coherent snapshot."
+            "observed clock and A/D block, from one coherent block capture (protocol "
+            "findings §4.3). Factory calibration and configuration blocks are omitted."
         ),
-        "source": "scripts/sanitize_capture.py from scripts/probe_scan.py output",
-    }
-    for key in ("station", "serial_settings", "captured_utc", "type_code", "firmware"):
-        out[key] = capture[key]
-    out["regions"] = {
-        table: [f"{first:04X}-{last:04X}" for first, last in spans] for table, spans in KEEP.items()
+        "source": "scripts/sanitize_capture.py from scripts/probe_map.py output",
+        "station": capture["address"],
+        "serial_settings": "38400 8-N-1",
+        "captured_utc": capture["captured_utc"],
+        "packages": capture["packages"],
+        "regions": {
+            table: [f"{first:04X}-{last:04X}" for first, last in spans]
+            for table, spans in KEEP.items()
+        },
     }
     for table, spans in KEEP.items():
         bank = capture[table]

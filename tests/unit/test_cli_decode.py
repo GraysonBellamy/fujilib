@@ -147,7 +147,7 @@ def test_bench_dump(capsys: pytest.CaptureFixture[str]) -> None:
     assert report["identity"]["serial_number"] == "N8A0259T"
     assert report["identity"]["unknown_digits"] == [4, 25, 26]
     assert [c["label_source"] for c in report["channels"]] == ["asserted"] * 3
-    assert report["readings"]["channels"][2]["value"] == "20.30 vol%"
+    assert report["readings"]["channels"][2]["value"] == "20.18 vol%"
     assert report["readings"]["analyzer"]["display"] == "measurement"
     assert len(report["error_log"]) == 14
     assert report["error_log"][0] == {
@@ -155,8 +155,8 @@ def test_bench_dump(capsys: pytest.CaptureFixture[str]) -> None:
         "channel": "CH1",
         "at": "day 6 15:49",
     }
-    assert report["clock"] == "2026-09-28 11:37:44"
-    assert report["adc"]["reference_voltage"] == 38_929
+    assert report["clock"] == "2026-09-28 14:46:12"
+    assert report["adc"]["reference_voltage"] == 38_928
     assert report["settings"]["response_time_s"] == {"CH1": 15, "CH2": 15, "CH3": 15}
     assert report["settings"]["calibration_gas"]["CH3 range 1"] == [0.0, 20.95]
 

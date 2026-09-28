@@ -126,10 +126,10 @@ def test_bench_frame() -> None:
     frame = decode_frame(
         INPUT, bench_channels(), readings_timing=timing(0), status_timing=timing(25)
     )
-    assert frame.channel("CH1").value == -0.11
-    assert frame.channel("CH2").value == -0.009
-    assert frame.channel("CH3").value == 20.3
-    assert frame.channel("CH3").raw_value == 2030
+    assert frame.channel("CH1").value == -0.1
+    assert frame.channel("CH2").value == -0.007
+    assert frame.channel("CH3").value == 20.18
+    assert frame.channel("CH3").raw_value == 2018
     assert all(r.state is ReadingState.OK for r in frame.readings)
     assert frame.channel("CH3").status is not None
     assert frame.channel("CH3").status.range == 1  # type: ignore[union-attr]
@@ -137,7 +137,7 @@ def test_bench_frame() -> None:
     assert frame.analyzer.alarms == (AlarmState.NONE,) * 6
     assert frame.analyzer.display is not None
     assert frame.analyzer.display.screen is DisplayScreen.MEASUREMENT
-    assert frame.analyzer.display.cursor_channel is CH3  # 00BCh reads 2
+    assert frame.analyzer.display.cursor_channel is CH1  # 00BCh reads 0
 
 
 def test_readings_only_frame_has_unknown_validity() -> None:
@@ -294,7 +294,7 @@ def test_calibration_log_keeps_an_undocumented_kind() -> None:
 
 def test_bench_clock() -> None:
     clock = decode_clock(words_of(INPUT, 0x3E8, 7))
-    assert clock == datetime(2026, 9, 28, 11, 37, 44)  # a Monday, weekday register 1
+    assert clock == datetime(2026, 9, 28, 14, 46, 12)  # a Monday, weekday register 1
 
 
 @pytest.mark.parametrize(
@@ -313,8 +313,8 @@ def test_invalid_clock(words: tuple[int, ...]) -> None:
 
 def test_bench_adc() -> None:
     adc = decode_adc(words_of(INPUT, 0x3EF, 42), received_at=T0, t_mono_ns=1)
-    assert adc.reference_voltage == 38_929  # inside the service manual's 35,000-80,000
-    assert adc.inputs[:2] == (65_725, 69_683)
+    assert adc.reference_voltage == 38_928  # inside the service manual's 35,000-80,000
+    assert adc.inputs[:2] == (65_728, 69_533)
     assert len(adc.raw) == 21
     assert len(adc.resistances) == 8
     with pytest.raises(FujiDecodeError):
