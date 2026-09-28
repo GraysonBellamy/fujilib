@@ -11,9 +11,9 @@ models that share its MODBUS map. It is built on
 [`anymodbus`](https://pypi.org/project/anymodbus/).
 
 !!! warning "Pre-alpha"
-    Nothing usable has been released yet. The library currently provides only
-    its error hierarchy; the analyzer API arrives in later phases of the
-    [design](design.md).
+    Nothing usable has been released yet. The register map, the data models,
+    the Modbus client and a simulated analyzer exist; the analyzer facade
+    (`open_device()`) does not. The [design](design.md) lays out the plan.
 
 The authoritative architectural document is the [Design](design.md). What the
 development analyzer actually does on the wire is recorded in

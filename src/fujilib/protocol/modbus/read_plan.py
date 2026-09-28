@@ -34,6 +34,7 @@ __all__ = [
     "IDENTIFY_PLAN",
     "METADATA_PLAN",
     "POLL_PLAN",
+    "RANGES_PLAN",
     "SERVICE_PLAN",
     "SETTINGS_PLAN",
     "TYPE_CODE_EXT_PLAN",
@@ -216,19 +217,22 @@ def _in_region(name: str) -> tuple[RegisterSpec, ...]:
     )
 
 
-def _identify_plan() -> tuple[BlockRead, ...]:
-    # Three separate plans, so ranges, identity and readings stay separate
-    # blocks rather than being packed together.
-    ranges = tuple(s for s in _in_region("fixed_settings") if s.name.startswith("range."))
-    identity = _select("identity.type_code", "identity.serial_number")
-    return plan_reads(ranges) + plan_reads(identity) + plan_reads(_select("reading"))
-
-
 #: ``poll()``: every concentration and all status, two transactions.
 POLL_PLAN: Final = plan_reads(_in_region("measurement"))
 
+#: ``read_ranges()``: the range tables of channels 1-5.
+RANGES_PLAN: Final = plan_reads(
+    s for s in _in_region("fixed_settings") if s.name.startswith("range.")
+)
+
 #: ``identify()``: ranges, type code and serial, and the readings (for presence).
-IDENTIFY_PLAN: Final = _identify_plan()
+#: Three separate plans, so ranges, identity and readings stay separate blocks
+#: rather than being packed together.
+IDENTIFY_PLAN: Final = (
+    RANGES_PLAN
+    + plan_reads(_select("identity.type_code", "identity.serial_number"))
+    + plan_reads(_select("reading"))
+)
 
 #: ``read_settings()``: the whole holding map.
 SETTINGS_PLAN: Final = plan_reads(REGISTRY.in_table(RegisterTable.HOLDING))

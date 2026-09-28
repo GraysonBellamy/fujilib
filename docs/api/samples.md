@@ -1,5 +1,5 @@
 ---
-description: Samples, wide rows, pint unit strings and serial settings.
+description: Samples, wide rows and pint unit strings.
 ---
 
 # Samples and rows
@@ -14,5 +14,3 @@ one wide row with a fixed set of scalar columns (design §7.6).
 ::: fujilib.sinks._schema
 
 ::: fujilib.units
-
-::: fujilib.transport.base

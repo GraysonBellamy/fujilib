@@ -12,10 +12,11 @@ the unified device-library API; its internals are shaped to this analyzer.
 
 ## Status
 
-**Pre-alpha. Nothing usable yet.** The repository holds the design, the
-read-only bench findings, the project scaffolding and the error hierarchy.
-See [`docs/design.md`](docs/design.md) for the architecture and the phased
-plan, and [`CHANGELOG.md`](CHANGELOG.md) for what has landed.
+**Pre-alpha. Nothing usable yet.** The register map, the codecs and read
+planner, the data models, the Modbus client and a simulated analyzer exist; the
+analyzer facade (`open_device()`) does not. See [`docs/design.md`](docs/design.md)
+for the architecture and the phased plan, and [`CHANGELOG.md`](CHANGELOG.md) for
+what has landed.
 
 Planned releases:
 

@@ -15,7 +15,7 @@ from fujilib.devices.capability import Capability
 from fujilib.errors import FujiDecodeError
 from fujilib.registry.channels import ChannelId, Gas
 from fujilib.registry.units import Unit
-from tests.factories import BENCH_BANK_PATH
+from fujilib.testing import BENCH_BANK_PATH
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
 MANUAL_FRAMES = FIXTURES / "manual_frames.txt"

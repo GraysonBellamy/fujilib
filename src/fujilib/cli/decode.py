@@ -14,7 +14,7 @@ Examples::
 
     fuji-decode --hex "01 04 06 04 B0 00 02 00 00 81 0D" --start 0x000C
     fuji-decode --fixture tests/fixtures/manual_frames.txt
-    fuji-decode --dump tests/fixtures/zpa_bench_documented.json --gas CH1=co2 --gas CH3=o2
+    fuji-decode --dump src/fujilib/testing/zpa_bench_documented.json --gas CH1=co2 --gas CH3=o2
 """
 
 from __future__ import annotations

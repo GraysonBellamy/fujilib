@@ -1,1 +1,1 @@
-"""Serial transport settings."""
+"""Transports: the serial port, the scripted fake, and canonical port names."""

@@ -37,6 +37,7 @@ def keys(plan: tuple[BlockRead, ...]) -> list[tuple[int, int, int]]:
     [
         (rp.POLL_PLAN, [(FC04, 0x0000, 61), (FC04, 0x0083, 60)]),
         (rp.IDENTIFY_PLAN, [(FC04, 0x0425, 35), (FC04, 0x0448, 34), (FC04, 0x0000, 36)]),
+        (rp.RANGES_PLAN, [(FC04, 0x0425, 35)]),
         (rp.METADATA_PLAN, [(FC03, 0x0000, 64), (FC03, 0x0040, 64), (FC03, 0x0080, 36)]),
         (rp.SETTINGS_PLAN, [(FC03, 0x0000, 64), (FC03, 0x0040, 64), (FC03, 0x0080, 44)]),
         (rp.CLOCK_PLAN, [(FC04, 0x03E8, 7)]),

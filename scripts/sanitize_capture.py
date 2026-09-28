@@ -11,7 +11,8 @@ clock and A/D values come from one moment. This keeps only what fujilib models:
 
 Nothing else is copied: no factory calibration or configuration block, and no
 host details. The output has the capture's ``input`` / ``holding`` shape, so
-``fuji-decode --dump`` reads either.
+``fuji-decode --dump`` reads either. It is package data of ``fujilib.testing``,
+so ``DEFAULT_ZPA_BANK`` works from an installed wheel.
 
 Usage:
     python scripts/sanitize_capture.py            # write the fixture
@@ -27,7 +28,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CAPTURE = REPO_ROOT / "tests" / "fixtures" / "captures" / "zpa_bench_block_20260928.json"
-OUTPUT = REPO_ROOT / "tests" / "fixtures" / "zpa_bench_documented.json"
+OUTPUT = REPO_ROOT / "src" / "fujilib" / "testing" / "zpa_bench_documented.json"
 
 KEEP = {
     "input": ((0x0000, 0x00C1), (0x0425, 0x0469), (0x03E8, 0x0418)),

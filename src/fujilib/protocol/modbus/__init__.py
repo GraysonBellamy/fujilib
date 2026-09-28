@@ -1,1 +1,1 @@
-"""MODBUS RTU: the register-value codec and the read planner."""
+"""MODBUS RTU: the codec, the read planner, the port, the client and the error map."""

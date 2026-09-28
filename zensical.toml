@@ -19,6 +19,7 @@ nav = [
         { "fujilib.registry" = "api/registry.md" },
         { "fujilib.devices" = "api/devices.md" },
         { "fujilib.protocol" = "api/protocol.md" },
+        { "fujilib.transport" = "api/transport.md" },
         { "Samples and rows" = "api/samples.md" },
         { "fujilib.testing" = "api/testing.md" },
         { "fujilib.errors" = "api/errors.md" },

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 
 from fujilib.devices.models import (
     AnalyzerStatus,
@@ -19,6 +18,7 @@ from fujilib.protocol.base import ProtocolKind
 from fujilib.registry.channels import ChannelId, ChannelRole, Gas, LabelSource
 from fujilib.registry.enums import AlarmState, DisplayScreen, ErrorCode, ManualCalibrationStep
 from fujilib.registry.units import Unit
+from fujilib.testing import BENCH_BANK_PATH
 
 #: A fixed wall-clock origin for synthetic timings.
 T0 = datetime(2026, 9, 28, 16, 0, 0, tzinfo=UTC)
@@ -131,9 +131,6 @@ def frame(
         status_timing=timing(25.0) if detail else None,
         raw=b"\x00" * 242,
     )
-
-
-BENCH_BANK_PATH = Path(__file__).resolve().parent / "fixtures" / "zpa_bench_documented.json"
 
 
 def bench_banks() -> tuple[dict[int, int], dict[int, int]]:
