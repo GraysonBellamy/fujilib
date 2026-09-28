@@ -434,35 +434,6 @@ In all 120 trials A reached the wire before it was cancelled.
   (`probe_client_resync_20260928T203149Z.json`) but not counted. The probe now idles
   before A.
 
-### 10.5 The same checks on `anymodbus` 0.3.0
-
-After fujilib moved to `anymodbus` 0.3.0 (design §4.7), the checks of §10.1–§10.3 were
-run again, read-only, the same evening. `anymodbus` now waits the gap, retries, checks
-each reply and keeps the late-reply window, and fujilib takes the timing and counters
-from its per-attempt reports.
-
-- **Every read procedure.** The results are identical to §10.1, and so are the counters:
-  27 requests, and 3 exception replies, all expected. The eight hardware tests pass
-  under asyncio.
-- **Sustained polls.** 300 polls, no failures, 7.86 polls per second.
-  - Block round trips: medians 48.1 and 47.5 ms, maxima 51.8 and 52.2 ms.
-  - Reply → next request: at least 5.5 ms, median 16.8 ms.
-  - Each block's round trip still excludes the wait: its request time is `anymodbus`'s
-    report of when the request had been sent.
-- **Late replies**, cancelled after 15 ms, 30 trials per window:
-
-| Quiet window | B right first time | B lost, the retry recovered it | Wrong data accepted |
-|---|---|---|---|
-| 0 | 5 | **25** (24 timeouts, 1 reply that did not answer the request) | 0 |
-| 0.1 s (`late_reply_window`) | 30 | 0 | 0 |
-
-The one mismatched reply is new. Since 0.3.0 `anymodbus` checks every reply against its
-request, so it was rejected and retried rather than returned.
-
-Raw files: `probe_client_smoke_20260928T215219Z.json`,
-`probe_client_polls_20260928T215234Z.json` and
-`probe_client_resync_20260928T215313Z.json`, all with `probe_client.py` `694951e7…`.
-
 ### 10.4 Trio could not read a real COM port on Windows (fixed in `anyserial` 0.2.0)
 
 With `anyserial` 0.1.2, every hardware test under trio failed within about 4 ms of its
@@ -495,3 +466,60 @@ Raw files, in `probe_out/` (git-ignored):
 | `probe_client_resync_20260928T203149Z.json` | resync, invalid (cancelled before sending) | `2475306b…` |
 | `probe_client_resync_20260928T203243Z.json` | resync, cancel after 15 ms | `694951e7…` |
 | `probe_client_resync_20260928T203354Z.json` | resync, cancel after 30 ms | `694951e7…` |
+
+### 10.5 The same checks on `anymodbus` 0.3.0
+
+After fujilib moved to `anymodbus` 0.3.0 (design §4.7), the checks of §10.1–§10.3 were
+run again, read-only, the same evening. `anymodbus` now waits the gap, retries, checks
+each reply and keeps the late-reply window, and fujilib takes the timing and counters
+from its per-attempt reports.
+
+- **Every read procedure.** The results are identical to §10.1, and so are the counters:
+  27 requests, and 3 exception replies, all expected. The eight hardware tests pass
+  under asyncio.
+- **Sustained polls.** 300 polls, no failures, 7.86 polls per second.
+  - Block round trips: medians 48.1 and 47.5 ms, maxima 51.8 and 52.2 ms.
+  - Reply → next request: at least 5.5 ms, median 16.8 ms.
+  - Each block's round trip still excludes the wait: its request time is `anymodbus`'s
+    report of when the request had been sent.
+- **Late replies**, cancelled after 15 ms, 30 trials per window:
+
+| Quiet window | B right first time | B lost, the retry recovered it | Wrong data accepted |
+|---|---|---|---|
+| 0 | 5 | **25** (24 timeouts, 1 reply that did not answer the request) | 0 |
+| 0.1 s (`late_reply_window`) | 30 | 0 | 0 |
+
+The one mismatched reply is new. Since 0.3.0 `anymodbus` checks every reply against its
+request, so it was rejected and retried rather than returned.
+
+Raw files: `probe_client_smoke_20260928T215219Z.json`,
+`probe_client_polls_20260928T215234Z.json` and
+`probe_client_resync_20260928T215313Z.json`, all with `probe_client.py` `694951e7…`.
+
+## 11. The analyzer facade on the bench (2026-09-28, night)
+
+The `Analyzer` facade, `open_device`, discovery, the blocking facade and the `fuji-*`
+commands, read-only, on `COM8`, station 1, with the library defaults. `anymodbus`
+0.3.0, `anyserial` 0.2.0, `anyio` 4.15.1, `trio` 0.34.0, Python 3.13, Windows 11.
+
+- **The hardware tests.** `test_hardware_client.py`, `test_hardware_reads.py` and
+  `test_hardware_sync.py`: 45 of 45 pass, under asyncio and trio (`hardware_sync` runs
+  on its own portal's asyncio loop).
+- **Opening.** `open_device` with identification takes 0.30-0.32 s (13 requests
+  including the probes, no retries); `read_metadata()` 0.24-0.25 s; a poll 0.12-0.13 s.
+  Opening, closing and opening the port again at once worked every time.
+- **Readings.** CO2 −0.10, CO −0.006, O2 20.20 vol%, all in state "ok", with the
+  asserted labels.
+- **The clock** still ran about 6.5 minutes behind the host.
+- **50 facade polls** took about 6.5 s, the same 7.7 polls per second as §10.2.
+- **The calibration log** was refused before any request, once the probe had found it
+  absent.
+- **An empty station** (2) timed out after the retries, with the station and port in
+  the error, and the port it had opened was closed, so the analyzer opened again at once.
+- **Discovery** on `COM8`, stations 1 and 2: the analyzer at 1, identified; a timeout
+  at 2.
+- **The cancelled-read test of §10.3** (`test_a_cancelled_read_does_not_disturb_the_next`)
+  failed once in the first full run, under trio: the read after the cancelled one needed
+  one retry, and returned the right words. Run on its own 14 more times (140 trials,
+  asyncio and trio) it never recurred. One retry in about 150 trials is read as the
+  background loss of §6.3; stale data was never accepted.
