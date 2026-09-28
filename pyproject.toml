@@ -186,6 +186,12 @@ ignore = [
 # The bench probes write their JSON results with pathlib at the end of an async
 # run (ASYNC240); fine for a one-shot research script.
 "scripts/**" = ["D", "T20", "S101", "PLR2004", "INP001", "ANN", "ASYNC109", "ASYNC240"]
+# The family's API takes a per-call ``timeout`` at every I/O method. fujilib enforces
+# it as a deadline for the whole operation, including the wait for the port's lock
+# (design §6.4); ASYNC109 would have callers wrap each call in anyio.fail_after instead.
+"src/fujilib/devices/analyzer.py" = ["ASYNC109"]
+"src/fujilib/devices/factory.py" = ["ASYNC109"]
+"src/fujilib/devices/session.py" = ["ASYNC109"]
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"

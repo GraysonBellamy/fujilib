@@ -14,9 +14,13 @@ live data only *suggest* it, and every label records its
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Final
+from types import MappingProxyType
+from typing import TYPE_CHECKING, Final
 
 from fujilib.errors import ErrorContext, FujiValidationError
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 __all__ = [
     "CHANNELS",
@@ -26,6 +30,8 @@ __all__ = [
     "Gas",
     "LabelSource",
     "coerce_channel",
+    "coerce_channel_map",
+    "coerce_gas",
 ]
 
 
@@ -148,3 +154,40 @@ def coerce_channel(channel: ChannelId | str) -> ChannelId:
     except ValueError:
         msg = f"unknown channel {channel!r}; expected CH1-CH12"
         raise FujiValidationError(msg, context=ErrorContext(channel=channel)) from None
+
+
+def coerce_gas(gas: Gas | str) -> Gas:
+    """Resolve ``gas`` to a :class:`Gas`, from a member or its formula in any case (``"O2"``).
+
+    Raises:
+        FujiValidationError: ``gas`` names no gas.
+    """
+    if isinstance(gas, Gas):
+        return gas
+    try:
+        return Gas(gas.strip().lower())
+    except ValueError:
+        known = ", ".join(g.value for g in Gas if g is not Gas.UNKNOWN)
+        msg = f"unknown gas {gas!r}; expected one of {known}"
+        raise FujiValidationError(msg) from None
+
+
+def coerce_channel_map(
+    channel_map: Mapping[ChannelId | str, Gas | str],
+) -> Mapping[ChannelId, Gas]:
+    """Resolve a caller's channel map, as ``open_device`` and ``identify()`` take it.
+
+    Raises:
+        FujiValidationError: a channel or gas is unknown, a channel is asserted
+            as ``unknown``, or one channel is named twice with different gases.
+    """
+    out: dict[ChannelId, Gas] = {}
+    for key, value in channel_map.items():
+        channel, gas = coerce_channel(key), coerce_gas(value)
+        if gas is Gas.UNKNOWN:
+            msg = f"{channel.value} cannot be asserted as unknown; leave it out instead"
+            raise FujiValidationError(msg, context=ErrorContext(channel=channel.value))
+        if out.setdefault(channel, gas) is not gas:
+            msg = f"{channel.value} is asserted as both {out[channel].value} and {gas.value}"
+            raise FujiValidationError(msg, context=ErrorContext(channel=channel.value))
+    return MappingProxyType(dict(sorted(out.items(), key=lambda item: item[0].number)))

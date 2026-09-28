@@ -1,34 +1,56 @@
-"""Unified device-library API conformance of Sample, ErrorContext, snapshots and to_pint.
+"""Unified device-library API conformance (design §7.8).
 
 The contract is recovered from the siblings' own ``test_unified_api.py`` files
-(``sartoriuslib``, ``watlowlib``, ``nidaqlib``) (design §7.8); this mirrors their
-assertions for these types.
+(``sartoriuslib``, ``watlowlib``, ``nidaqlib``); this mirrors their assertions:
+the entry point (§A), discovery results (§B), sample timestamps (§C), poll
+sources (§E), error context (§G), snapshots (§H), the recovered-error count
+(§J), ``to_pint`` (§K) and the top-level names (§6).
 """
 
 from __future__ import annotations
 
 import dataclasses
+import inspect
 from datetime import UTC, datetime, timedelta
 
 import pytest
 
 import fujilib
 from fujilib import (
+    Analyzer,
     Capability,
+    DeviceResult,
     DeviceSnapshot,
+    DiscoveryResult,
+    FujiConnectionError,
     FujiDeviceSnapshot,
+    PollSourceAdapter,
     ProtocolKind,
     Sample,
     Unit,
+    open_device,
     sample_to_row,
     to_pint,
 )
 from fujilib.errors import ErrorContext
 from fujilib.registry.channels import ChannelId
+from fujilib.testing import FaultKind, mock_transport
 from fujilib.units import to_pint as units_to_pint
+from tests.facade import analyzer_on, bench
 
-#: The §6 top-level names these types provide.
-TOP_LEVEL = ("sample_to_row", "DeviceSnapshot", "FujiDeviceSnapshot", "to_pint")
+#: The §6 top-level names.
+TOP_LEVEL = (
+    "open_device",
+    "find_devices",
+    "sample_to_row",
+    "PollSourceAdapter",
+    "DeviceResult",
+    "DiscoveryResult",
+    "DiscoverySummary",
+    "DeviceSnapshot",
+    "FujiDeviceSnapshot",
+    "to_pint",
+)
 
 
 @pytest.mark.parametrize("name", TOP_LEVEL)
@@ -147,3 +169,58 @@ def test_to_pint_contract() -> None:
 
 def test_sample_to_row_is_the_top_level_flattener() -> None:
     assert fujilib.sample_to_row is sample_to_row
+
+
+# --- §A: the entry point ----------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_open_device_is_an_async_context_manager() -> None:
+    async with mock_transport(bench()) as (transport, _line):
+        async with await open_device(transport) as anz:
+            assert isinstance(anz, Analyzer)
+            assert (await anz.snapshot()).connected
+        await anz.close()  # idempotent
+        with pytest.raises(FujiConnectionError):
+            await anz.poll()
+
+
+# --- §B: discovery results ------------------------------------------------------------------
+
+
+def test_discovery_result_by_keyword() -> None:
+    result = DiscoveryResult(
+        ok=False,
+        port="COM8",
+        address=1,
+        baudrate=38_400,
+        protocol=None,
+        device_info=None,
+        error=None,
+        elapsed_s=0.3,
+    )
+    assert result.model is None
+
+
+# --- §E: poll sources ---------------------------------------------------------------------
+
+
+def test_device_result_and_poll_source_adapter() -> None:
+    assert DeviceResult.success(1).ok
+    assert not DeviceResult[int].failure(FujiConnectionError("gone")).ok
+    params = list(inspect.signature(PollSourceAdapter).parameters)
+    assert params == ["name", "device"]
+
+
+# --- §J: recovered errors -------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_the_session_counts_recovered_errors() -> None:
+    mock = bench()
+    async with analyzer_on(mock) as (anz, _line):
+        assert anz.session.recoverable_error_count == 0
+        mock.inject(FaultKind.CORRUPT_CRC)
+        await anz.poll()
+        assert anz.session.recoverable_error_count == 1
+        assert (await anz.snapshot()).recoverable_error_count == 1

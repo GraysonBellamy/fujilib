@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
+import fujilib
 from fujilib.devices.capability import SafetyTier
 from fujilib.errors import FujiConfigurationError, FujiValidationError
 from fujilib.registry.regions import (
@@ -172,8 +174,15 @@ def test_operations() -> None:
 
 
 def test_write_policy_does_not_depend_on_the_register_map() -> None:
+    # The top-level package imports the facade, and with it the register map, so
+    # the package is stood in for here: only the write policy's own imports load.
+    package = str(Path(fujilib.__file__).parent)
     code = (
-        "import sys, fujilib.registry.write_policy; "
+        "import sys, types; "
+        "pkg = types.ModuleType('fujilib'); "
+        f"pkg.__path__ = [{package!r}]; "
+        "sys.modules['fujilib'] = pkg; "
+        "import fujilib.registry.write_policy; "
         "print('fujilib.registry.registers' in sys.modules)"
     )
     result = subprocess.run(

@@ -1,1 +1,1 @@
-"""Timed samples for recording (design §7.6)."""
+"""Timed samples and poll sources for recording (design §7.6)."""
