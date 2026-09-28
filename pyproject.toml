@@ -48,6 +48,9 @@ docs = [
     "mkdocstrings-python>=2.0.4",
 ]
 
+[project.scripts]
+fuji-decode = "fujilib.cli.decode:main"
+
 [project.urls]
 Homepage = "https://github.com/GraysonBellamy/fujilib"
 Repository = "https://github.com/GraysonBellamy/fujilib"

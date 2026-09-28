@@ -98,7 +98,9 @@ jobs:
       - name: Install core dependencies (no extras, no dev groups)
         run: uv sync --no-dev
       - name: Import the package
-        run: uv run --no-sync python -c "import fujilib, fujilib.errors; print(fujilib.__version__)"
+        run: uv run --no-sync python -c "import fujilib, fujilib.registry.registers, fujilib.devices.decode, fujilib.sinks.base, fujilib.cli.decode; print(fujilib.__version__)"
+      - name: Run fuji-decode
+        run: uv run --no-sync fuji-decode --dump tests/fixtures/zpa_bench_documented.json
 
   test:
     name: Tests (py${{ matrix.python-version }} on ${{ matrix.os }})
