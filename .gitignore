@@ -1,0 +1,56 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Generated version file (hatch-vcs)
+src/fujilib/_version.py
+
+# Virtual environments
+.venv/
+venv/
+
+# uv
+.uv-cache/
+
+# Test / type / lint caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.cache/
+
+# Docs build output (zensical)
+site/
+
+# Editor / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# act (local GitHub Actions)
+.secrets
+.act-event*.json
+
+# Vendor manuals — large & proprietary, kept locally for reference only (see docs/design.md §11)
+docs/manuals/
+
+# Ad-hoc bench probe output (local research tooling, not shipped). The probe
+# scripts themselves are tracked: they are the Phase 2 deliverable (design §12).
+/probe_out*/
+
+# Raw bench register captures carry the analyzer's serial number and factory
+# calibration tables; they stay local until the capture policy is settled
+# (design §13.1 #11). A sanitized bank is committed with the simulator in Phase 3.
+/tests/fixtures/captures/zpa_bench_*.json

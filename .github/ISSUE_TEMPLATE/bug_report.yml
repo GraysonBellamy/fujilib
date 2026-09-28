@@ -1,0 +1,45 @@
+name: Bug report
+description: Something is broken or behaves unexpectedly
+labels: [bug]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: Include the exact exception type, message, and `ErrorContext` fields if available.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Minimal reproduction
+      description: Ideally uses `MockAnalyzer` or a fixture, so we can reproduce without hardware.
+      render: python
+  - type: input
+    id: version
+    attributes:
+      label: fujilib version
+    validations:
+      required: true
+  - type: input
+    id: python
+    attributes:
+      label: Python version
+  - type: input
+    id: os
+    attributes:
+      label: OS
+  - type: input
+    id: device
+    attributes:
+      label: Analyzer model and type code, firmware (program) version shown at power-on, station number
+  - type: input
+    id: adapter
+    attributes:
+      label: Serial adapter (e.g. USB-RS-485 chip) if hardware-related
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: DEBUG-level logs from the `fujilib` logger tree if available.
+      render: text
