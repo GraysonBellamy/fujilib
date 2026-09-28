@@ -1,19 +1,12 @@
 """The transport, client and read procedures against a connected ZP analyzer (design §10).
 
-Read-only: nothing here writes a register or sends a command. Doubly gated: deselected
-by the default ``-m`` in ``pyproject.toml``, and skipped unless
-``FUJILIB_ENABLE_HARDWARE_TESTS=1`` and ``FUJILIB_HARDWARE_PORT`` names the port::
-
-    FUJILIB_ENABLE_HARDWARE_TESTS=1 FUJILIB_HARDWARE_PORT=COM8 \\
-        uv run pytest -m hardware tests/hardware
-
-``FUJILIB_HARDWARE_ADDRESS`` sets the station (default 1). The assertions hold for any
-ZP analyzer; what one particular unit reports is recorded in the protocol findings.
+Read-only: nothing here writes a register or sends a command. Gated as every
+hardware test is (``conftest.py``). The assertions hold for any ZP analyzer;
+what one particular unit reports is recorded in the protocol findings.
 """
 
 from __future__ import annotations
 
-import os
 from typing import TYPE_CHECKING
 
 import anyio
@@ -35,29 +28,18 @@ if TYPE_CHECKING:
 
     from fujilib.protocol.modbus.client import ModbusClient
 
-ENABLED = os.environ.get("FUJILIB_ENABLE_HARDWARE_TESTS") == "1"
-PORT = os.environ.get("FUJILIB_HARDWARE_PORT", "")
-ADDRESS = int(os.environ.get("FUJILIB_HARDWARE_ADDRESS", "1"))
-
-pytestmark = [
-    pytest.mark.hardware,
-    pytest.mark.anyio,
-    pytest.mark.skipif(
-        not (ENABLED and PORT),
-        reason="set FUJILIB_ENABLE_HARDWARE_TESTS=1 and FUJILIB_HARDWARE_PORT",
-    ),
-]
+pytestmark = [pytest.mark.hardware, pytest.mark.anyio]
 
 FC04 = 0x04
 
 
 @pytest.fixture
-async def client() -> AsyncGenerator[ModbusClient]:
+async def client(hardware_port: str, hardware_address: int) -> AsyncGenerator[ModbusClient]:
     async with (
-        await SerialTransport.open(SerialSettings(port=PORT)) as transport,
+        await SerialTransport.open(SerialSettings(port=hardware_port)) as transport,
         ModbusPort(transport) as port,
     ):
-        yield port.client(ADDRESS)
+        yield port.client(hardware_address)
 
 
 async def test_identify(client: ModbusClient) -> None:
@@ -106,10 +88,10 @@ async def test_status_ranges_metadata_and_settings(client: ModbusClient) -> None
         serial_number=identity.serial_number,
         ranges=ranges,
         channels=channels,
-        current_range={c: s.range for c, s in status.channels.items()},
         clock=clock,
     )
     assert meta.serial_number == identity.serial_number
+    assert dict(meta.current_range) == {c: s.range for c, s in status.channels.items()}
     assert (meta.clock is not None) == clock
     settings = await reads.read_settings(client, ranges=ranges)
     assert "response_time.o2" in settings

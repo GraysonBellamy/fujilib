@@ -17,12 +17,12 @@ stays live (design §1).
 
 | Procedure | Transactions |
 |---|---|
-| `read_frame` | `0000h+61`, `0083h+60`; the first only without detail |
+| `read_poll`, `read_frame` | `0000h+61`, `0083h+60`; the first only without detail |
 | `read_status` | the same two blocks |
 | `read_ranges` | `0425h+35` |
-| `read_identity` | `0425h+35`, `0448h+34`, `0000h+36`, then the probes |
+| `read_identity` | `0425h+35`, `0448h+34`, `0000h+42`, then the probes |
 | `probe_capabilities` | `03E8h+49` (`03E8h+7` and `03EFh+42` if it fails), `047Ah+3`, `1000h+9` |
-| `read_metadata` | FC03 `0000h+64`, `0040h+64`, `0080h+36`; `03E8h+7` with the clock |
+| `read_metadata` | FC03 `0000h+64`, `0040h+64`, `0080h+36`; `0025h+5`; `03E8h+7` with the clock |
 | `read_settings` | FC03 `0000h+64`, `0040h+64`, `0080h+44` |
 | `read_error_log` | `003Dh+60`, `0079h+10`, then `003Dh+5` to check |
 | `read_calibration_log` | five blocks of 63 words and one of 45, then the first record |
@@ -45,6 +45,7 @@ from fujilib.devices.decode import (
     decode_calibration_log,
     decode_channel_status,
     decode_clock,
+    decode_current_ranges,
     decode_error_log,
     decode_frame,
     decode_identity,
@@ -67,6 +68,7 @@ from fujilib.protocol.modbus.read_plan import (
     ADC_PLAN,
     CALIBRATION_LOG_PROBE,
     CLOCK_PLAN,
+    CURRENT_RANGE_PLAN,
     ERROR_LOG_PLAN,
     IDENTIFY_PLAN,
     METADATA_PLAN,
@@ -109,6 +111,7 @@ if TYPE_CHECKING:
 __all__ = [
     "ClockReading",
     "Identity",
+    "PollRead",
     "ProbeResult",
     "StatusRead",
     "probe_capabilities",
@@ -120,6 +123,7 @@ __all__ = [
     "read_frame",
     "read_identity",
     "read_metadata",
+    "read_poll",
     "read_ranges",
     "read_registers",
     "read_settings",
@@ -133,6 +137,42 @@ _EMPTY_RECORD: Final = frozenset({0xFFFF, 0x00FF})
 
 
 # --- Results ---------------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class PollRead:
+    """The words of one poll, before they are decoded."""
+
+    bank: Mapping[int, int]
+    """The input-register words read, by address."""
+    timings: tuple[TransferTiming, ...]
+    """The timing of each block: the readings block, then the status block."""
+    raw: bytes
+
+    @property
+    def detail(self) -> bool:
+        """Whether the status block was read as well."""
+        return len(self.timings) > 1
+
+    @property
+    def nonzero(self) -> frozenset[ChannelId]:
+        """Channels whose reading triple was not all zero (design §2.9 step 2)."""
+        return nonzero_channels(self.bank)
+
+    @property
+    def current_ranges(self) -> Mapping[ChannelId, int]:
+        """The range each of channels 1-5 is measuring on; in the readings block."""
+        return decode_current_ranges(self.bank)
+
+    def decode(self, channels: Sequence[ChannelInfo]) -> Frame:
+        """The frame of the established ``channels``."""
+        return decode_frame(
+            self.bank,
+            channels,
+            readings_timing=self.timings[0],
+            status_timing=self.timings[1] if self.detail else None,
+            raw=self.raw,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -167,6 +207,8 @@ class Identity:
     ranges: tuple[RangeInfo, ...]
     nonzero: frozenset[ChannelId]
     """Channels whose reading triple was not all zero (design §2.9 step 2)."""
+    current_ranges: Mapping[ChannelId, int]
+    """The range each of channels 1-5 was measuring on."""
     probes: Mapping[Capability, ProbeResult]
     timings: tuple[TransferTiming, ...]
 
@@ -197,6 +239,24 @@ class ClockReading:
 # --- Measurements ----------------------------------------------------------------------------
 
 
+async def read_poll(
+    client: ProtocolClient, *, detail: bool = True, deadline: Deadline | None = None
+) -> PollRead:
+    """Read a poll's words: two transactions, or one without ``detail``.
+
+    The words are decoded separately (:meth:`PollRead.decode`), so a caller
+    can first learn from them which channels have come to life (design §2.9).
+
+    Raises:
+        FujiError: a transaction failed. When the status block fails after the
+            concentrations were read, the error's ``extra["completed"]`` holds
+            the concentration words (design §4.3).
+    """
+    plan = POLL_PLAN if detail else POLL_PLAN[:1]
+    reply = await client.read_plan(plan, deadline=deadline, command="poll")
+    return PollRead(bank=reply.input, timings=reply.timings, raw=reply.raw)
+
+
 async def read_frame(
     client: ProtocolClient,
     channels: Sequence[ChannelInfo],
@@ -210,20 +270,10 @@ async def read_frame(
     state is ``unknown`` rather than a manufactured "ok" (design §4.3).
 
     Raises:
-        FujiError: a transaction failed. When the status block fails after the
-            concentrations were read, the error's ``extra["completed"]`` holds
-            the concentration words (design §4.3).
+        FujiError: as :func:`read_poll`.
     """
-    plan = POLL_PLAN if detail else POLL_PLAN[:1]
-    reply = await client.read_plan(plan, deadline=deadline, command="poll")
-    timings = reply.timings
-    return decode_frame(
-        reply.input,
-        channels,
-        readings_timing=timings[0],
-        status_timing=timings[1] if detail else None,
-        raw=reply.raw,
-    )
+    poll = await read_poll(client, detail=detail, deadline=deadline)
+    return poll.decode(channels)
 
 
 async def read_status(client: ProtocolClient, *, deadline: Deadline | None = None) -> StatusRead:
@@ -277,6 +327,7 @@ async def read_identity(
         serial_number=serial,
         ranges=decode_ranges(bank),
         nonzero=nonzero_channels(bank),
+        current_ranges=decode_current_ranges(bank),
         probes=probes,
         timings=tuple(dict.fromkeys(timings)),
     )
@@ -405,20 +456,21 @@ async def read_metadata(
     serial_number: str,
     ranges: Sequence[RangeInfo],
     channels: Sequence[ChannelInfo],
-    current_range: Mapping[ChannelId, int],
     clock: bool,
     deadline: Deadline | None = None,
 ) -> AnalyzerMetadata:
     """The settings snapshot consumers such as capa carry (design §7.2).
 
-    ``clock`` reads the analyzer's clock as well; pass it only when
-    :attr:`Capability.CLOCK` is supported. A clock that does not decode is
-    reported as ``None``. ``captured_at`` is when the last settings block arrived.
+    The current range of each channel is read with the settings, so the
+    snapshot does not depend on an earlier poll. ``clock`` reads the analyzer's
+    clock as well; pass it only when :attr:`Capability.CLOCK` is supported. A
+    clock that does not decode is reported as ``None``. ``captured_at`` is when
+    the last settings block arrived.
 
     Raises:
         FujiError: a transaction failed.
     """
-    plan = METADATA_PLAN + (CLOCK_PLAN if clock else ())
+    plan = METADATA_PLAN + CURRENT_RANGE_PLAN + (CLOCK_PLAN if clock else ())
     reply = await client.read_plan(plan, deadline=deadline, command="read_metadata")
     settings = reply.replies[len(METADATA_PLAN) - 1]
     clock_value: datetime | None = None
@@ -436,7 +488,7 @@ async def read_metadata(
         serial_number=serial_number,
         ranges=ranges,
         channels=channels,
-        current_range=current_range,
+        current_range=decode_current_ranges(reply.input),
         captured_at=settings.timing.received_at,
         clock=clock_value,
         clock_read_at=clock_read_at,

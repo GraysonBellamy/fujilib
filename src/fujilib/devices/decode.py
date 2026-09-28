@@ -100,6 +100,7 @@ __all__ = [
     "decode_calibration_log",
     "decode_channel_status",
     "decode_clock",
+    "decode_current_ranges",
     "decode_error_log",
     "decode_frame",
     "decode_identity",
@@ -207,6 +208,17 @@ def decode_ranges(bank: Bank) -> tuple[RangeInfo, ...]:
             )
         )
     return tuple(out)
+
+
+def decode_current_ranges(bank: Bank) -> Mapping[ChannelId, int]:
+    """The range each of channels 1-5 is measuring on, 1 or 2 (input 30038-30042).
+
+    Raises:
+        FujiDecodeError: the current-range registers were not read.
+    """
+    return MappingProxyType(
+        {c: _range_number(bank, f"range.ch{c.number}.current") for c in MEASURED_CHANNELS}
+    )
 
 
 def _triple(bank: Bank, channel: ChannelId) -> tuple[int, int, int]:

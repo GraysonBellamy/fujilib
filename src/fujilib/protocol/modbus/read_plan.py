@@ -19,6 +19,7 @@ from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Final
 
 from fujilib.errors import ErrorContext, FujiConfigurationError, FujiValidationError
+from fujilib.registry.channels import MEASURED_CHANNELS
 from fujilib.registry.regions import ZP_REGIONS, RegionMap, RegisterTable
 from fujilib.registry.registers import CALIBRATION_LOG, ERROR_LOG, REGISTRY, LogSpec, RegisterSpec
 
@@ -29,7 +30,9 @@ __all__ = [
     "ADC_PLAN",
     "CALIBRATION_LOG_PROBE",
     "CLOCK_PLAN",
+    "CURRENT_RANGE_PLAN",
     "DEFAULT_READ_POLICY",
+    "DISCOVERY_PROBE",
     "ERROR_LOG_PLAN",
     "IDENTIFY_PLAN",
     "METADATA_PLAN",
@@ -225,13 +228,18 @@ RANGES_PLAN: Final = plan_reads(
     s for s in _in_region("fixed_settings") if s.name.startswith("range.")
 )
 
-#: ``identify()``: ranges, type code and serial, and the readings (for presence).
-#: Three separate plans, so ranges, identity and readings stay separate blocks
-#: rather than being packed together.
+#: The current range of channels 1-5, which ``read_metadata()`` reports with the settings.
+CURRENT_RANGE_PLAN: Final = plan_reads(
+    REGISTRY.resolve(f"range.ch{n}.current") for n in range(1, len(MEASURED_CHANNELS) + 1)
+)
+
+#: ``identify()``: ranges, type code and serial, and the readings (for presence) with
+#: the current ranges beside them. Three separate plans, so ranges, identity and
+#: readings stay separate blocks rather than being packed together.
 IDENTIFY_PLAN: Final = (
     RANGES_PLAN
     + plan_reads(_select("identity.type_code", "identity.serial_number"))
-    + plan_reads(_select("reading"))
+    + plan_reads((*_select("reading"), *CURRENT_RANGE_PLAN[0].specs))
 )
 
 #: ``read_settings()``: the whole holding map.
@@ -240,6 +248,13 @@ SETTINGS_PLAN: Final = plan_reads(REGISTRY.in_table(RegisterTable.HOLDING))
 #: ``read_metadata()``'s holding reads: every setting but the inferred coefficients.
 METADATA_PLAN: Final = plan_reads(
     s for s in REGISTRY.in_table(RegisterTable.HOLDING) if not s.name.startswith("interference.")
+)
+
+#: Discovery: type-code digits 1-3, which name the model on a ZP analyzer (design §7.5).
+DISCOVERY_PROBE: Final = BlockRead(
+    function=RegisterTable.INPUT.read_function,
+    address=REGISTRY.resolve("identity.type_code").address,
+    count=3,
 )
 
 #: The undocumented clock, and the A/D values, apart and together.

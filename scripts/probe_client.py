@@ -190,13 +190,11 @@ async def smoke(client: ReadOnlyClient) -> dict[str, Any]:
     ranges = await reads.read_ranges(client)
     result["ranges_match_identify"] = ranges == identity.ranges
     clock = identity.availability.get(Capability.CLOCK) is Availability.SUPPORTED
-    current = {c: s.range for c, s in status.channels.items()}
     meta = await reads.read_metadata(
         client,
         serial_number=identity.serial_number,
         ranges=ranges,
         channels=channels,
-        current_range=current,
         clock=clock,
     )
     result["metadata"] = {

@@ -22,6 +22,7 @@ from fujilib.devices.decode import (
     decode_calibration_log,
     decode_channel_status,
     decode_clock,
+    decode_current_ranges,
     decode_error_log,
     decode_frame,
     decode_identity,
@@ -69,7 +70,7 @@ ASSERTED = {ChannelId.CH1: Gas.CO2, ChannelId.CH2: Gas.CO, ChannelId.CH3: Gas.O2
 # since these tests count transactions exactly.
 FAST: dict[str, Any] = {"inter_frame_idle": 0.0, "request_timeout": 0.25, "resync_window": 0.01}
 POLL = [(FC04, 0x0000, 61), (FC04, 0x0083, 60)]
-IDENTIFY = [(FC04, 0x0425, 35), (FC04, 0x0448, 34), (FC04, 0x0000, 36)]
+IDENTIFY = [(FC04, 0x0425, 35), (FC04, 0x0448, 34), (FC04, 0x0000, 42)]
 PROBES = [(FC04, 0x03E8, 49), (FC04, 0x047A, 3), (FC04, 0x1000, 9)]
 
 
@@ -324,7 +325,7 @@ def expected_metadata(**changes: Any) -> Any:
         serial_number="N8A0259T",
         ranges=ranges,
         channels=channels(),
-        current_range={c.channel: 1 for c in ranges},
+        current_range=decode_current_ranges(INPUT),
         **changes,
     )
 
@@ -337,13 +338,13 @@ async def test_read_metadata_with_the_clock() -> None:
             serial_number="N8A0259T",
             ranges=ranges,
             channels=channels(),
-            current_range={c.channel: 1 for c in ranges},
             clock=True,
         )
     assert mock.transactions() == [
         (FC03, 0x0000, 64),
         (FC03, 0x0040, 64),
         (FC03, 0x0080, 36),
+        (FC04, 0x0025, 5),
         (FC04, 0x03E8, 7),
     ]
     assert meta.clock == decode_clock(words_of(INPUT, 0x03E8, 7))
@@ -361,12 +362,25 @@ async def test_read_metadata_without_the_clock() -> None:
             serial_number="N8A0259T",
             ranges=ranges,
             channels=channels(),
-            current_range={c.channel: 1 for c in ranges},
             clock=False,
         )
-    assert len(mock.transactions()) == 3
+    assert len(mock.transactions()) == 4
     assert meta.clock is None
     assert meta == expected_metadata(captured_at=meta.captured_at)
+
+
+async def test_read_metadata_reads_the_current_range_itself() -> None:
+    async with pair() as (client, mock):
+        mock.set_register("range.ch3.current", 1)
+        meta = await reads.read_metadata(
+            client,
+            serial_number="N8A0259T",
+            ranges=decode_ranges(INPUT),
+            channels=channels(),
+            clock=False,
+        )
+    assert meta.current_range[ChannelId.CH3] == 2
+    assert meta.current_range[ChannelId.CH1] == 1
 
 
 async def test_a_clock_that_does_not_decode_is_left_out(caplog: pytest.LogCaptureFixture) -> None:
@@ -379,7 +393,6 @@ async def test_a_clock_that_does_not_decode_is_left_out(caplog: pytest.LogCaptur
                 serial_number="N8A0259T",
                 ranges=ranges,
                 channels=channels(),
-                current_range={},
                 clock=True,
             )
     assert meta.clock is None
