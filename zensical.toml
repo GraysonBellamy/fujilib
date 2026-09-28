@@ -16,6 +16,11 @@ nav = [
     ] },
     { "API reference" = [
         { Overview = "api/index.md" },
+        { "fujilib.registry" = "api/registry.md" },
+        { "fujilib.devices" = "api/devices.md" },
+        { "fujilib.protocol" = "api/protocol.md" },
+        { "Samples and rows" = "api/samples.md" },
+        { "fujilib.testing" = "api/testing.md" },
         { "fujilib.errors" = "api/errors.md" },
     ] },
     { Design = "design.md" },
