@@ -1,4 +1,4 @@
-"""The Modbus client of one station: block reads, retries, counters, write primitives.
+"""The Modbus client of one station: block reads, counters and write primitives.
 
 A :class:`ModbusClient` is the only holder of an ``anymodbus.Slave`` (design
 §5.4). It moves words; it knows nothing about what they mean. Every call:
@@ -6,17 +6,23 @@ A :class:`ModbusClient` is the only holder of an ``anymodbus.Slave`` (design
 1. validates its arguments before ``anymodbus`` sees them (design §4.4);
 2. takes the port's operation lock (reentrantly), inside the operation
    deadline, so queue time counts against the deadline (design §6.4);
-3. waits for the port to be ready (gap, settle, quiet window), then stamps
-   the request time and calls ``anymodbus``;
-4. checks that a read returned the requested number of words, which
-   ``anymodbus`` does not;
-5. translates failures at this single boundary (design §4.6).
+3. refuses, before any I/O, a request the port cannot send in time;
+4. calls ``anymodbus``, which checks each reply against the request (its
+   function code, its length, a write's echo), retries reads that were lost
+   or damaged in transit, and reports every attempt to the port;
+5. takes the request's timing and the traffic counters from those reports,
+   and translates failures at this single boundary (design §4.6).
 
-**Reads are retried** by the client, never by ``anymodbus``, when a reply was
-lost, garbled, mismatched or short (design §4.5). Each failed attempt is
-counted by kind; attempts a later success recovered make up
-:attr:`ModbusClient.recoverable_error_count` (unified API §J). An exception
-reply is an answer, not a transit failure, and is never retried.
+**Timing.** ``anymodbus`` reports when each request had been sent (after the
+inter-frame gap, the write and the drain) and when its attempt ended. A
+:class:`~fujilib.devices.models.TransferTiming` is those two moments, so it
+never includes time spent waiting for the line (design §4.2).
+
+**Reads** are retried by ``anymodbus`` when a reply was lost, damaged,
+mismatched or of the wrong length (design §4.5). An exception reply is an
+answer and is not retried. Each failed attempt is counted by kind; failed
+attempts that a later attempt of the same read recovered make up
+:attr:`ModbusClient.recoverable_error_count` (unified API §J).
 
 **Writes are never retried.** The two write primitives check the frozen write
 envelope as the last step before ``anymodbus``, independently of the registry
@@ -25,15 +31,13 @@ exception reply makes its outcome unknown
 (:class:`~fujilib.errors.FujiWriteOutcomeUnknownError`, design §6.4): a lost,
 damaged or mismatched reply, a port that fails while waiting, or a deadline
 that expires. An exception reply is a definite refusal.
-``anymodbus`` does not compare write echoes, so a write's effect is
-established by reading the register back, above this layer.
 """
 
 from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Final
@@ -42,23 +46,20 @@ import anyio
 import anyio.lowlevel
 from anymodbus import (
     BusClosedError,
-    ChecksumError,
     ConnectionLostError,
-    FrameError,
     FrameTimeoutError,
     ModbusExceptionResponse,
-    ModbusUnsupportedFunctionError,
     ProtocolError,
+    TransactionOutcome,
+    UnexpectedResponseError,
 )
 
 from fujilib._deadline import Deadline
 from fujilib._lock import maybe_acquire
-from fujilib._logging import get_logger
 from fujilib.devices.models import TransferTiming
 from fujilib.errors import (
     ErrorContext,
     FujiError,
-    FujiFrameError,
     FujiTimeoutError,
     FujiValidationError,
     FujiWriteOutcomeUnknownError,
@@ -78,21 +79,18 @@ from fujilib.registry.write_policy import check_envelope
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Mapping, Sequence
 
-    from anymodbus import Slave
+    from anymodbus import Slave, TransactionInfo
 
     from fujilib.protocol.modbus.port import ModbusPort
     from fujilib.protocol.modbus.read_plan import BlockRead
 
 __all__ = [
-    "RETRYABLE_FAILURES",
     "BlockReply",
     "ClientCounters",
     "FailureKind",
     "ModbusClient",
     "PlanReply",
 ]
-
-_LOG = get_logger("modbus")
 
 _WORD_MAX: Final = 0xFFFF
 _READ_FUNCTIONS: Final = frozenset({FC_READ_HOLDING, FC_READ_INPUT})
@@ -104,11 +102,10 @@ class FailureKind(StrEnum):
     TIMEOUT = "timeout"
     """No reply within the request timeout."""
     FRAME = "frame"
-    """Bad CRC, or a malformed frame."""
+    """A damaged or malformed reply: a bad CRC, a truncated frame."""
     UNEXPECTED = "unexpected"
-    """A reply that does not answer the request (wrong function code, and the like)."""
-    WORD_COUNT = "word_count"
-    """A well-formed read reply with the wrong number of words."""
+    """A well-formed reply that does not answer the request: another function
+    code, another word count, or a write echo that differs."""
     EXCEPTION = "exception"
     """A Modbus exception reply."""
     CONNECTION = "connection"
@@ -119,11 +116,17 @@ class FailureKind(StrEnum):
     """Anything else ``anymodbus`` raised."""
 
 
-#: Read failures the client retries: the reply was lost or damaged in transit.
-RETRYABLE_FAILURES: Final = frozenset(
-    {FailureKind.TIMEOUT, FailureKind.FRAME, FailureKind.UNEXPECTED, FailureKind.WORD_COUNT}
+_OUTCOME_KIND: Final[Mapping[TransactionOutcome, FailureKind]] = MappingProxyType(
+    {
+        TransactionOutcome.TIMEOUT: FailureKind.TIMEOUT,
+        TransactionOutcome.CHECKSUM_ERROR: FailureKind.FRAME,
+        TransactionOutcome.FRAME_ERROR: FailureKind.FRAME,
+        TransactionOutcome.UNEXPECTED_RESPONSE: FailureKind.UNEXPECTED,
+        TransactionOutcome.EXCEPTION_REPLY: FailureKind.EXCEPTION,
+        TransactionOutcome.CONNECTION_ERROR: FailureKind.CONNECTION,
+        TransactionOutcome.CANCELLED: FailureKind.CANCELLED,
+    }
 )
-
 
 _CONNECTION_ERRORS: Final = (
     BusClosedError,
@@ -140,16 +143,15 @@ def _is_word(value: object) -> bool:
 
 
 def _kind(exc: BaseException) -> FailureKind:
+    """The kind of a failure ``anymodbus`` raised without reporting an attempt."""
     if isinstance(exc, ModbusExceptionResponse):
         return FailureKind.EXCEPTION
     if isinstance(exc, FrameTimeoutError):
         return FailureKind.TIMEOUT
-    if isinstance(exc, (ChecksumError, FrameError, ModbusUnsupportedFunctionError)):
-        # anymodbus raises the last only for a *received* function code it cannot
-        # frame; fujilib sends 03, 04, 06 and 10 only, so it is line damage.
-        return FailureKind.FRAME
-    if isinstance(exc, ProtocolError):
+    if isinstance(exc, UnexpectedResponseError):
         return FailureKind.UNEXPECTED
+    if isinstance(exc, ProtocolError):
+        return FailureKind.FRAME
     if isinstance(exc, _CONNECTION_ERRORS):
         return FailureKind.CONNECTION
     return FailureKind.OTHER
@@ -160,7 +162,7 @@ class ClientCounters:
     """Traffic counters of one station's client. Mutable; read them, don't write them."""
 
     requests: int = 0
-    """Attempts handed to ``anymodbus``."""
+    """Attempts ``anymodbus`` made."""
     retries: int = 0
     """Read attempts that repeated a failed one."""
     recovered: int = 0
@@ -230,7 +232,7 @@ class PlanReply:
 
 @dataclass(frozen=True, slots=True)
 class _Failed:
-    """One failed attempt: the fujilib error, why, and the original exception."""
+    """A failed call: the fujilib error, why, and the original exception."""
 
     error: FujiError
     kind: FailureKind
@@ -282,8 +284,9 @@ class ModbusClient:
             FujiValidationError: the block is not a read of 1-64 words; nothing was sent.
             FujiModbusError: the analyzer answered with an exception.
             FujiModbusTimeoutError: no reply, after every retry.
-            FujiFrameError: bad, malformed or short replies, after every retry.
-            FujiProtocolError: replies that did not answer the request, after every retry.
+            FujiFrameError: damaged or malformed replies, after every retry.
+            FujiProtocolError: replies that did not answer the request (another
+                function code or word count), after every retry.
             FujiTimeoutError: ``deadline`` expired.
             FujiResyncRequiredError: ``deadline`` ends inside a quiet window.
             FujiConnectionError: the port is closed or failed.
@@ -356,36 +359,12 @@ class ModbusClient:
             if fc == FC_READ_HOLDING
             else self._slave.read_input_registers
         )
-
-        def check_count(words: tuple[int, ...], context: ErrorContext) -> _Failed | None:
-            if len(words) == count:
-                return None
-            msg = f"FC{fc:02X} read of {count} words at 0x{address:04X} returned {len(words)}"
-            error = FujiFrameError(msg, context=context.merged(returned=len(words)))
-            return _Failed(error, FailureKind.WORD_COUNT, None)
-
-        failed = 0
-        while True:
-            context = self._context(command, fc, address, count).merged(attempt=failed + 1)
-            outcome = await self._transact(
-                lambda: read(address, count=count), dl, context, verify=check_count
-            )
-            if not isinstance(outcome, _Failed):
-                words, timing = outcome
-                self.counters.recovered += failed
-                return BlockReply(block, words, timing, attempts=failed + 1)
-            if outcome.kind in RETRYABLE_FAILURES and failed < self._port.read_retries:
-                failed += 1
-                self.counters.retries += 1
-                _LOG.info(
-                    "%s: station %d attempt %d failed (%s); retrying",
-                    self.label,
-                    self._address,
-                    failed,
-                    outcome.kind.value,
-                )
-                continue
+        context = self._context(command, fc, address, count)
+        outcome = await self._transact(lambda: read(address, count=count), dl, context)
+        if isinstance(outcome, _Failed):
             raise outcome.error from outcome.cause
+        words, timing, attempts = outcome
+        return BlockReply(block, words, timing, attempts)
 
     # --- Writes --------------------------------------------------------------------------
 
@@ -407,7 +386,7 @@ class ModbusClient:
                 no valid reply confirmed it.
             FujiTimeoutError: ``deadline`` expired before anything was sent.
             FujiResyncRequiredError: ``deadline`` ends inside a quiet window.
-            FujiConnectionError: the port is closed or failed.
+            FujiConnectionError: the port is closed; nothing was sent.
         """
         values = (value,)
         self._check_write(FC_WRITE_SINGLE, address, values, command)
@@ -514,7 +493,7 @@ class ModbusClient:
             ),
         )
 
-    # --- One attempt -----------------------------------------------------------------------
+    # --- One call --------------------------------------------------------------------------
 
     async def _transact[T](
         self,
@@ -522,48 +501,51 @@ class ModbusClient:
         dl: Deadline,
         context: ErrorContext,
         *,
-        verify: Callable[[T, ErrorContext], _Failed | None] | None = None,
         before_send: Callable[[], None] | None = None,
-    ) -> tuple[T, TransferTiming] | _Failed:
-        """One attempt, under the operation lock. Returns the result or why it failed."""
-        await self._port.ready(dl, context=context)
+    ) -> tuple[T, TransferTiming, int] | _Failed:
+        """One call to ``anymodbus``, under the operation lock.
+
+        Returns the result, its timing and the number of attempts, or why it failed.
+        """
+        self._port.check_ready(dl, context=context)
         # Take a pending cancellation (an expired deadline) here, while nothing
         # has been sent, rather than inside anymodbus after ``before_send``.
         await anyio.lowlevel.checkpoint_if_cancelled()
         if before_send is not None:
             before_send()
-        self.counters.requests += 1
-        started = anyio.current_time()
-        t_request_mono, requested_at = time.monotonic_ns(), datetime.now(UTC)
-        certain = False
-        try:
-            result = await call()
-            t_reply_mono, received_at = time.monotonic_ns(), datetime.now(UTC)
-            elapsed = anyio.current_time() - started
-            failure = verify(result, context.merged(elapsed_s=elapsed)) if verify else None
-            if failure is not None:
-                self.counters.count_failure(failure.kind)
-                return failure
-            certain = True
-            timing = TransferTiming(requested_at, received_at, t_request_mono, t_reply_mono)
-            return result, timing
-        except ModbusExceptionResponse as exc:
-            certain = True
-            return self._failed(exc, context, started)
-        except anyio.get_cancelled_exc_class():
-            self.counters.count_failure(FailureKind.CANCELLED)
-            raise
-        except MAPPED_EXCEPTIONS as exc:
-            return self._failed(exc, context, started)
-        finally:
-            self._port.transaction_ended(certain=certain)
+        with self._port.record_attempts() as attempts:
+            try:
+                result = await call()
+            except MAPPED_EXCEPTIONS as exc:
+                return self._failed(exc, context, attempts)
+            finally:
+                self._tally(attempts)
+        return result, _timing(attempts[-1]), len(attempts)
 
-    def _failed(self, exc: BaseException, context: ErrorContext, started: float) -> _Failed:
-        kind = _kind(exc)
-        self.counters.count_failure(kind)
-        elapsed = anyio.current_time() - started
-        error = map_modbus_error(exc, context=context.merged(elapsed_s=elapsed))
-        return _Failed(error, kind, exc)
+    def _tally(self, attempts: Sequence[TransactionInfo]) -> None:
+        for info in attempts:
+            self.counters.requests += 1
+            if info.outcome is not TransactionOutcome.REPLY:
+                self.counters.count_failure(_OUTCOME_KIND.get(info.outcome, FailureKind.OTHER))
+            if info.will_retry:
+                self.counters.retries += 1
+        if attempts and attempts[-1].outcome is TransactionOutcome.REPLY:
+            self.counters.recovered += len(attempts) - 1
+
+    def _failed(
+        self, exc: BaseException, context: ErrorContext, attempts: Sequence[TransactionInfo]
+    ) -> _Failed:
+        if attempts:
+            last = attempts[-1]
+            kind = _OUTCOME_KIND.get(last.outcome, FailureKind.OTHER)
+            context = context.merged(
+                attempt=len(attempts), elapsed_s=last.ended_at - attempts[0].started_at
+            )
+        else:
+            # Refused before any attempt (the bus was closed): nothing was reported.
+            kind = _kind(exc)
+            self.counters.count_failure(kind)
+        return _Failed(map_modbus_error(exc, context=context), kind, exc)
 
     def _context(self, command: str, fc: int, address: int, count: int) -> ErrorContext:
         return ErrorContext(
@@ -578,3 +560,15 @@ class ModbusClient:
 
     def __repr__(self) -> str:
         return f"<ModbusClient {self.label} station {self._address}>"
+
+
+def _timing(info: TransactionInfo) -> TransferTiming:
+    """A reply's timing from ``anymodbus``'s report: from the request sent to the attempt's end."""
+    sent_ns = info.sent_at_ns if info.sent_at_ns is not None else info.ended_at_ns
+    now_ns, now = time.monotonic_ns(), datetime.now(UTC)
+    return TransferTiming(
+        requested_at=now - timedelta(microseconds=(now_ns - sent_ns) / 1000),
+        received_at=now - timedelta(microseconds=(now_ns - info.ended_at_ns) / 1000),
+        t_request_mono_ns=sent_ns,
+        t_reply_mono_ns=info.ended_at_ns,
+    )

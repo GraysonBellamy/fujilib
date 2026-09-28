@@ -7,6 +7,7 @@ import math
 import anyio
 import anyio.lowlevel
 import pytest
+from anymodbus import estimate_late_reply_window
 
 from fujilib._deadline import Deadline
 from fujilib._lock import maybe_acquire
@@ -26,8 +27,10 @@ def test_defaults_are_the_designed_values() -> None:
 
 
 def test_resync_window_covers_the_slowest_documented_reply() -> None:
-    # 30 ms turnaround + a 64-word reply (133 bytes of 10 bits at 38400) + 16 ms latency timer.
-    slowest = 0.030 + 133 * 10 / 38_400 + 0.016
+    # 30 ms turnaround, a 64-word reply (133 bytes), the FTDI 16 ms latency timer.
+    slowest = estimate_late_reply_window(
+        baudrate=38_400, max_turnaround=0.030, max_reply_bytes=133, latency=0.016
+    )
     assert DEFAULTS.resync_window_s > slowest
 
 

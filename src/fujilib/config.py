@@ -25,7 +25,7 @@ class Defaults:
     request_timeout_s: float = 0.5
 
     #: Idle time before each request, measured from the end of the previous
-    #: transaction however it ended. The manual needs at least 2.5 ms and
+    #: attempt however it ended. The manual needs at least 2.5 ms and
     #: recommends 5 ms (TN5A1190a p.17-18). The bench unit needs at most 1 ms
     #: after any reply (findings §6.3). On Windows any sleep this short lasts
     #: about 16 ms, which is harmless at 1 Hz.
@@ -43,12 +43,14 @@ class Defaults:
     #: retried (design §4.5).
     read_retries: int = 2
 
-    #: After a transaction whose reply may still be on the wire (cancelled,
-    #: timed out, garbled or mismatched), no request goes out until this long
-    #: after it ended, so the late bytes land before the next request clears
-    #: the input buffer (design §4.2). A reply ends at most about 81 ms after
-    #: its request: 30 ms turnaround (TN5A1190a p.17-18), about 35 ms to send a
-    #: 64-word reply at 38400 baud, and the FTDI adapter's 16 ms latency timer.
+    #: ``anymodbus``'s late-reply window. After an attempt whose reply may still
+    #: be on the wire (cancelled, timed out, damaged or mismatched), no request
+    #: goes out until this long after it ended; late bytes are read and
+    #: discarded meanwhile (design §4.2). A reply ends at most about 84 ms after
+    #: its request: 30 ms turnaround (TN5A1190a p.17-18), 133 bytes for a 64-word
+    #: reply at 38400 baud, and the FTDI adapter's 16 ms latency timer, as
+    #: ``anymodbus.estimate_late_reply_window`` computes it. On the bench the
+    #: window turned a lost request into a clean read (findings §10.3).
     resync_window_s: float = 0.1
 
 

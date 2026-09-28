@@ -19,7 +19,6 @@ from fujilib._lock import maybe_acquire
 from fujilib.errors import (
     FujiConfigurationError,
     FujiConnectionError,
-    FujiFrameError,
     FujiModbusIllegalDataAddressError,
     FujiModbusIllegalDataValueError,
     FujiModbusTimeoutError,
@@ -31,7 +30,6 @@ from fujilib.errors import (
 )
 from fujilib.protocol.base import ProtocolClient, ProtocolKind
 from fujilib.protocol.modbus.client import (
-    RETRYABLE_FAILURES,
     BlockReply,
     ClientCounters,
     FailureKind,
@@ -223,9 +221,9 @@ async def test_a_read_returns_words_and_timing() -> None:
     [
         (FaultKind.DROP, FailureKind.TIMEOUT),
         (FaultKind.CORRUPT_CRC, FailureKind.FRAME),
-        (FaultKind.WRONG_COUNT, FailureKind.WORD_COUNT),
+        (FaultKind.WRONG_COUNT, FailureKind.UNEXPECTED),
         (FaultKind.WRONG_FUNCTION, FailureKind.UNEXPECTED),
-        (FaultKind.GARBAGE, FailureKind.UNEXPECTED),
+        (FaultKind.GARBAGE, FailureKind.FRAME),
     ],
 )
 async def test_a_damaged_reply_is_retried_and_counted(fault: FaultKind, kind: FailureKind) -> None:
@@ -237,7 +235,6 @@ async def test_a_damaged_reply_is_retried_and_counted(fault: FaultKind, kind: Fa
     assert mock.transactions() == [(FC04, 0, 3)] * 2
     assert client.counters == ClientCounters(requests=2, retries=1, recovered=1, failures={kind: 1})
     assert client.recoverable_error_count == 1
-    assert kind in RETRYABLE_FAILURES
 
 
 async def test_retries_run_out() -> None:
@@ -257,13 +254,14 @@ async def test_retries_run_out() -> None:
     assert context.elapsed_s is not None
 
 
-async def test_a_persistently_short_reply_is_a_frame_error() -> None:
+async def test_a_persistently_short_reply_does_not_answer_the_request() -> None:
     async with fast_pair() as (client, mock):
         mock.inject(FaultKind.WRONG_COUNT, times=None)
-        with pytest.raises(FujiFrameError, match="returned 2") as info:
+        with pytest.raises(FujiProtocolError) as info:
             await client.read(BlockRead(FC04, 0x0000, 3))
-    assert info.value.context.extra["returned"] == 2
-    assert info.value.__cause__ is None
+    assert type(info.value) is FujiProtocolError
+    assert isinstance(info.value.__cause__, anymodbus.UnexpectedResponseError)
+    assert client.counters.failures == {FailureKind.UNEXPECTED: 3}
 
 
 async def test_unexpected_replies_are_protocol_errors_after_the_retries() -> None:
@@ -444,13 +442,14 @@ async def test_a_write_whose_port_fails_after_sending_has_an_unknown_outcome(
             await client.write_register(0x07D1, 1)
         await anyio.sleep(0.05)  # let the simulator take in the request
     assert info.value.context.extra["failure"] == "connection"
-    assert isinstance(info.value.__cause__, anyserial.SerialError)
+    assert isinstance(info.value.__cause__, anymodbus.TransportError)
     assert mock.commands == [(0x07D1, 1)]  # it was applied
 
 
 @pytest.mark.parametrize(
     ("function_code", "failure"),
-    [(None, "unexpected"), (0x07, "frame")],  # 06 answered as 10; a code anymodbus can't frame
+    # 06 answered as 10; and 07, a code a client never sends, with a valid CRC.
+    [(None, "unexpected"), (0x07, "unexpected")],
 )
 async def test_a_write_answered_with_another_function_code_has_an_unknown_outcome(
     function_code: int | None, failure: str
@@ -468,7 +467,9 @@ async def test_a_damaged_function_code_on_a_read_is_retried() -> None:
         mock.inject(FaultKind.WRONG_FUNCTION, function_code=0x07)
         reply = await client.read(A)
     assert reply.words == words(A.address, 3)
-    assert client.counters.failures == {FailureKind.FRAME: 1}
+    # anymodbus reads a reply with a code it never sends to the idle gap and lets
+    # the CRC decide: this one is intact, so it does not answer the request.
+    assert client.counters.failures == {FailureKind.UNEXPECTED: 1}
     assert client.counters.recovered == 1
 
 
@@ -774,7 +775,8 @@ async def test_a_port_that_fails_mid_read_is_a_connection_error_and_not_retried(
         with pytest.raises(FujiConnectionError) as info:
             await client.read(A)
         await anyio.sleep(0.05)  # let the simulator take in the request
-    assert isinstance(info.value.__cause__, anyserial.SerialError)
+    # anymodbus reports a failing port as a TransportError (an OSError).
+    assert isinstance(info.value.__cause__, anymodbus.TransportError)
     assert client.counters.failures == {FailureKind.CONNECTION: 1}
     assert client.counters.retries == 0
     assert len(mock.exchanges) == 1  # the request did go out
@@ -802,13 +804,37 @@ async def test_port_and_client_properties() -> None:
         (ValueError("count"), FailureKind.OTHER),
         (anymodbus.ModbusError("other"), FailureKind.OTHER),
         (anymodbus.FrameTimeoutError("silent"), FailureKind.TIMEOUT),
-        (anymodbus.ModbusUnsupportedFunctionError("fc 0x07"), FailureKind.FRAME),
+        (anymodbus.ModbusUnsupportedFunctionError("fc 0x07"), FailureKind.OTHER),
+        (anymodbus.UnexpectedResponseError("fc 3, expected 4"), FailureKind.UNEXPECTED),
+        (anymodbus.CRCError("crc"), FailureKind.FRAME),
+        (
+            anymodbus.IllegalDataAddressError(function_code=4, exception_code=2),
+            FailureKind.EXCEPTION,
+        ),
+        (anymodbus.BusClosedError("closed"), FailureKind.CONNECTION),
         (OSError("gone"), FailureKind.CONNECTION),
         (anyio.BusyResourceError("receiving"), FailureKind.CONNECTION),
     ],
 )
 def test_failure_kinds(exc: BaseException, kind: FailureKind) -> None:
     assert failure_kind(exc) is kind
+
+
+async def test_a_failure_raised_before_any_attempt_is_counted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # anymodbus can refuse a call outright (a closed bus, an argument it
+    # rejects); no attempt is reported, and the client still counts it.
+    async with fast_pair() as (client, mock):
+
+        async def refuse(self: object, address: int, *, count: int) -> tuple[int, ...]:
+            raise anymodbus.ConfigurationError("refused")
+
+        monkeypatch.setattr(anymodbus.Slave, "read_input_registers", refuse)
+        with pytest.raises(FujiConfigurationError, match="refused"):
+            await client.read(A)
+    assert client.counters == ClientCounters(failures={FailureKind.OTHER: 1})
+    assert mock.exchanges == []
 
 
 def fail_drain(monkeypatch: pytest.MonkeyPatch, client: ModbusClient) -> None:
@@ -826,7 +852,6 @@ def test_counters_count_failures_by_kind() -> None:
     counters.count_failure(FailureKind.TIMEOUT)
     counters.count_failure(FailureKind.FRAME)
     assert counters.failures == {FailureKind.TIMEOUT: 2, FailureKind.FRAME: 1}
-    assert FailureKind.EXCEPTION not in RETRYABLE_FAILURES
 
 
 def test_block_reply_shapes() -> None:

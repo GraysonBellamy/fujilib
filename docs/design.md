@@ -529,7 +529,7 @@ transport/     base.py       Transport Protocol + SerialSettings (default 38400 
 protocol/      base.py       ProtocolKind (MODBUS_RTU) + ProtocolClient Protocol
                modbus/
                  port.py     ModbusPort (internal): owns the one anymodbus.Bus for a port,
-                             operation lock, inter-frame gap, quiet window (resync)
+                             operation lock, attempt reports, quiet-window check
                  client.py   ModbusClient: block reads with retries and counters; the only
                              holder of an anymodbus.Slave; final write-envelope check
                  read_plan.py  region-aware coalescing planner, 64-word cap (reads only)
@@ -686,37 +686,44 @@ measured it from the request after anything but a normal reply (§2.4). 0.2.1 me
 from the end of every transaction, including a cancelled one (§4.7 item 1), and fujilib
 requires 0.2.1.
 
-`anymodbus` waits the gap *inside* the call, and it has no hook for the moment it sends.
-A timestamp taken before the call would therefore be early by the gap: 5 ms, or about
-16 ms on Windows, which moves `t_mono_ns` by up to 8 ms. So the port also records when
-each transaction ended, and the client waits out the gap (and the one-shot startup
-settle) itself, then stamps the request, then calls `anymodbus`, which finds the gap
-already elapsed and sends at once. `anymodbus`'s own gap stays configured as a backstop.
-That covers the client's own read retries, which run with `anymodbus` retries set to 0
-(§4.5).
+`anymodbus` waits out the gap, and the one-shot startup settle, *inside* the call.
+Since 0.3.0 it reports every attempt to a transaction observer, including when the
+request had been sent (after the gap, the write and the drain) and when the attempt
+ended (§4.7 item 7). A `TransferTiming` is those two moments, so it never includes time
+spent waiting for the line. A timestamp taken before the call would be early by the gap:
+5 ms, or about 16 ms on Windows, moving `t_mono_ns` by up to 8 ms. With 0.2.1 fujilib
+avoided that by waiting out the gap itself.
 
 **Resynchronization: the quiet window.** A cancelled or timed-out transaction can leave a
 reply in flight. FC03/04 replies carry no register address, so a late reply can be
-accepted as the answer to the next read of the same length. `anymodbus` clears the input
-buffer before every request, but that removes only bytes already received.
+accepted as the answer to the next read of the same length. Clearing the input buffer
+before a request removes only the bytes already received.
 
-So after any transaction whose outcome is uncertain (cancelled, timed out, garbled,
-mismatched, or of the wrong length), the port sends nothing until `resync_window` has
-passed since it ended. By then any late reply has landed, and the input reset before the
-next request discards it. fujilib never reads the stream itself, which would also collide
-with `anyserial`'s one-receiver rule. A well-formed reply of the right length, or an
-exception reply, is a certain outcome and starts no window.
+So after any attempt whose outcome is uncertain (cancelled, timed out, damaged,
+mismatched, or of the wrong length), the bus sends nothing until the window has passed
+since the attempt ended. Meanwhile it reads and discards whatever arrives, and it also
+waits for the line to be quiet for the inter-frame gap. This is `anymodbus`'s
+`late_reply_window` (0.3.0, §4.7 item 10), which fujilib sets to `resync_window`. A
+well-formed reply of the right length, or an exception reply, is certain and opens no
+window.
 
-- The window is 0.1 s rather than `request_timeout`, from the slowest documented reply
-  (§2.4). One lost reply then costs a poll about 0.6 s, not 1 s.
-- A caller whose operation deadline ends inside the window is refused before any I/O with
-  `FujiResyncRequiredError`.
+- **0.1 s rather than `request_timeout`.** It covers the slowest documented reply:
+  30 ms turnaround, 133 bytes at 38400 baud and 16 ms of adapter latency come to 84 ms
+  (`anymodbus.estimate_late_reply_window`). One lost reply then costs a poll about
+  0.6 s, not 1 s.
+- **Deadlines inside the window are refused.** The port tracks the window from the
+  observer's reports. A caller whose operation deadline ends inside it is refused before
+  any I/O, with `FujiResyncRequiredError`.
+- **The port assumes the worst.** The reports do not say whether an uncertain attempt's
+  request reached the wire (§4.7 item 15), so the port assumes it did.
 - A test shows the hazard is real: with the window at 0, a reply that arrives 50 ms after
   its read timed out is taken as the answer to the next read, at another address.
 - **[bench]** On the analyzer (findings §10.3) the hazard showed up as a lost request
   rather than stale data. With the window at 0, a read sent while a cancelled read's reply
   was still on the half-duplex line went unanswered in 23 of 30 trials, costing a 0.5 s
-  timeout and a retry. With the 0.1 s window, 30 of 30 succeeded at once.
+  timeout and a retry. With the 0.1 s window, 30 of 30 succeeded at once. The run was
+  repeated on `anymodbus`'s `late_reply_window` (findings §10.5): 25 of 30 lost without
+  it, 0 of 30 with it.
 
 ### 4.3 Read planner
 
@@ -763,38 +770,43 @@ plan, the client and a pure decoder, with no state. What a decoder needs beyond 
 (the established channels, the ranges, the current range) is passed in by the session,
 which caches it.
 
-### 4.4 Response checks fujilib adds
+### 4.4 Response checks
 
-`anymodbus` does not verify that a register read returned the requested count, and it
-raises plain `ValueError` (not a `ModbusError`) for out-of-range arguments. The client:
+Since 0.3.0, `anymodbus` checks each reply against its request inside the attempt
+(§4.7 item 3).
 
-- checks `len(words) == count` on every read. A reply of the wrong length is a
-  `FujiFrameError`: it is retried, and it starts a quiet window (§4.2), because it is
-  most likely a late reply to another request;
-- validates arguments itself before calling `anymodbus`.
-
-A `ValueError` from `anymodbus` is therefore a bug, mapped to `FujiConfigurationError` at
-the call boundary only. A value that fails to *decode* is a `FujiProtocolError`, never a
-configuration error.
+- **A mismatched reply** raises `UnexpectedResponseError`: a register read of another
+  length, or a write whose echo differs. On a read it is retried, and it opens a quiet
+  window (§4.2), because it is most likely a late reply to another request.
+- **A bad argument** raises `ConfigurationError`, a `ModbusError`. The client still
+  validates its arguments before calling `anymodbus`, so none should reach it; a bare
+  `ValueError` would be a bug and is not translated.
+- **A value that fails to decode** is a `FujiProtocolError`, never a configuration error.
 
 ### 4.5 Retries and idempotency
 
-`anymodbus` is configured with **zero retries**. `ModbusClient` retries reads itself, so
-every retry is visible and counted (unified API §J). Every failed attempt is counted by
-kind. When a read succeeds after k failed attempts, `recoverable_error_count` grows by k.
+`anymodbus` retries, with `RetryPolicy(retries=read_retries)` (default 2). Its default
+policy retries a timeout or a damaged or mismatched reply, and only for idempotent
+function codes, so a write is never retried.
 
-| Operation | When the reply is lost, garbled, mismatched or of the wrong length |
+Every attempt is reported to the port's observer, and the client counts from the
+reports:
+- every failed attempt, by kind;
+- the retries;
+- `recoverable_error_count`: when a read succeeds after k failed attempts, it grows by k
+  (unified API §J).
+
+| Operation | When the reply is lost, damaged, mismatched or of the wrong length |
 |---|---|
-| Any read | retried by `ModbusClient` up to `retries` (default 2), each retry counted. An exception reply is an answer and is never retried |
+| Any read | retried by `anymodbus` up to `retries` (default 2), every attempt reported and counted. An exception reply is an answer and is never retried |
 | Setting write | not retried. The session reads the register back and reports verified, mismatch or unknown (§6.4) |
 | Operation command (42002–42005) | not retried. The state is re-read from the status registers, and an ambiguous outcome is reported as unknown |
 
 ### 4.6 Error mapping
 
 Applied at one boundary (`protocol/modbus/errors.py`, called by the client), always
-`raise ... from exc`. Order matters: `anymodbus`'s `ProtocolError` and
-`ConfigurationError` are also `ValueError`s, and `FrameTimeoutError` is a `TimeoutError`,
-hence an `OSError`, so the Modbus classes are matched first.
+`raise ... from exc`. Order matters: `FrameTimeoutError` (a `TimeoutError`) and
+`TransportError` are `OSError`s, so the Modbus classes are matched first.
 
 | `anymodbus` | fujilib |
 |---|---|
@@ -804,11 +816,11 @@ hence an `OSError`, so the Modbus classes are matched first.
 | other `ModbusExceptionResponse` | `FujiModbusError`, with the code in the context |
 | `FrameTimeoutError` | `FujiModbusTimeoutError` |
 | `CRCError`, `ChecksumError`, `FrameError` | `FujiFrameError` |
-| `ModbusUnsupportedFunctionError` | `FujiFrameError`. `anymodbus` raises it only for a *received* function code it cannot frame (07, 0B, 0C, 11, …). fujilib sends 03, 04, 06 and 10 only, so such a reply is a damaged byte, often one bit from the real code. It is retried like any damaged frame, never reported as the analyzer refusing a function |
-| `BusClosedError`, `ConnectionLostError` | `FujiConnectionError` |
-| `ConfigurationError`, `ValueError` | `FujiConfigurationError` (see §4.4) |
+| `BusClosedError`, `ConnectionLostError` (including `TransportError`, a port that fails mid-transaction) | `FujiConnectionError` |
+| `ConfigurationError` | `FujiConfigurationError` (see §4.4) |
 | `UnexpectedResponseError`, `ProtocolError` | `FujiProtocolError` |
-| `anyserial.SerialError` (an `OSError`), `anyio.BrokenResourceError`, `BusyResourceError`, `ClosedResourceError` | `FujiConnectionError`. `anymodbus` lets some port failures through untranslated, e.g. an input reset that fails |
+| other `ModbusError`, e.g. `ModbusUnsupportedFunctionError` | `FujiModbusError`. Since 0.3.0 `anymodbus` raises that one only on the send side, which fujilib never reaches. A reply carrying a function code the client never sends is read to the idle gap, and the CRC decides: `CRCError` if damaged, `UnexpectedResponseError` if intact (§4.7 item 12) |
+| `OSError`, `anyio.BrokenResourceError`, `BusyResourceError`, `ClosedResourceError` | `FujiConnectionError`, for a failure outside a transaction; inside one, `anymodbus` translates them |
 
 **Writes.** An exception reply to a write is a definite refusal: nothing was applied.
 Every other failure after the request may have gone out makes the outcome unknown and
@@ -830,43 +842,40 @@ poll.
 
 ### 4.7 Changes to make upstream in `anymodbus` and `anyserial`
 
-Item 1 was a **prerequisite of Phase 3** and is done. The rest remove workarounds and
-also benefit `servomexlib`.
+Item 1 was a **prerequisite of Phase 3** (0.2.1). Items 2–12 were released in 0.3.0
+(2026-09-28), except item 6, which upstream declined; fujilib dropped its workarounds for
+them (§12, Phase 3). They also benefit `servomexlib` and `watlowlib`.
 
 1. ~~**Record the completion of every transaction.**~~ **Released in 0.2.1
    (2026-09-28).** `_last_io_monotonic` is now set in a `finally` at the end of every
    transaction and broadcast (reply, exception, checksum or framing error, timeout,
    cancellation), with regression tests in `tests/integration/test_inter_frame_gap.py`.
-2. Replace the `isinstance(stream, SerialPort)` checks with a capability check, so
-   wrapped streams keep drain and input reset.
-3. Verify the register count of read responses, and compare write echoes to the request.
-4. A public request hook and per-function quantity limits on `MockSlave`, so device
-   libraries stop overriding the private `_handle_request`.
-5. Raise a `ModbusError` subclass, not bare `ValueError`, for bad arguments.
-6. A retry callback, so a library could leave retries to `anymodbus` and still count
-   them.
+2. ~~Replace the `isinstance(stream, SerialPort)` checks with a capability check~~ —
+   0.3.0: any stream's async `drain()` / `reset_input_buffer()` is used.
+3. ~~Verify the register count of read responses, and compare write echoes~~ — 0.3.0:
+   `UnexpectedResponseError`, checked inside each attempt.
+4. ~~A public request hook and per-function quantity limits on `MockSlave`~~ — 0.3.0:
+   `MockSlave.handle()`, `ServerException`, `QuantityLimits`.
+5. ~~Raise a `ModbusError` subclass, not bare `ValueError`, for bad arguments~~ — 0.3.0:
+   `ConfigurationError`.
+6. ~~A retry callback~~ — declined: `RetryPolicy` is a frozen, shareable value. The
+   transaction observer (item 7) serves.
 
 Found while building Phase 3 (none blocks fujilib; each has a workaround in place):
 
-7. **A transaction observer** reporting when each request was sent and its reply
-   received. fujilib waits out the gap itself so its timestamps are honest (§4.2); an
-   observer would make that unnecessary.
-8. **Public server-side request decoding.** `anymodbus.pdu` decodes only responses, and
-   `MockSlave.serve()` owns its stream, so several simulated stations cannot share one
-   line. fujilib's `MockLine` parses request frames itself.
-9. **Translate every port failure.** An `anyserial.SerialError` other than a disconnect,
-   and a failing `reset_input_buffer()` (called before the `try` in `_one_txn`), escape as
-   raw `OSError`s. fujilib maps them (§4.6).
-10. **Late replies after cancellation.** Nothing discards a reply that arrives after its
-    transaction was cancelled or timed out. fujilib's quiet window (§4.2) covers it; a bus
-    option could do the same for every user.
-11. `FaultPlan.corrupt_crc_after_n` and `drop_response_after_n` fire *at* response N
-    (0-based), not after it, as their docstrings say.
-12. **A reply with a function code the framer cannot frame** raises
-    `ModbusUnsupportedFunctionError`, which is documented as the client refusing to
-    *send* an unimplemented function and is not retried. Received in a reply, such a code
-    is line damage (often one bit from the requested code). It should be a retryable
-    `ProtocolError`. fujilib maps it to a frame error (§4.6).
+7. ~~**A transaction observer**~~ — 0.3.0: `TransactionInfo` per attempt, with
+   `sent_at` after the gap, the write and the drain. fujilib's timestamps and counters
+   come from it (§4.2, §4.5).
+8. ~~**Public server-side request decoding**~~ — 0.3.0: request decoders, `MockServer`.
+   fujilib's `MockLine` is a `MockServer` (§10).
+9. ~~**Translate every port failure**~~ — 0.3.0: `TransportError`; the input reset is
+   inside the error handling.
+10. ~~**Late replies after cancellation**~~ — 0.3.0: `TimingConfig.late_reply_window`
+    replaces fujilib's own quiet window (§4.2).
+11. ~~`FaultPlan` docstrings~~ — 0.3.0.
+12. ~~**A reply with a function code the framer cannot frame**~~ — 0.3.0, done
+    differently: the reply is read to the idle gap and the CRC decides between `CRCError`
+    and `UnexpectedResponseError`; reads retry either.
 
 And in `anyserial`:
 
@@ -882,6 +891,14 @@ And in `anyserial`:
       with a real port must run on asyncio.
     - The simulator's port pair does not take this path, so CI cannot catch it. The
       hardware tests mark trio on Windows as a strict expected failure (findings §10.4).
+
+And again in `anymodbus`, found adopting 0.3.0:
+
+15. **Say whether an attempt's request reached the wire.** `TransactionInfo` has
+    `sent_at` (after the drain) but not the bus's own `request_on_wire`. A cancelled
+    attempt may have sent its request, or not; `anymodbus` opens its late-reply window
+    only in the first case. fujilib cannot tell the two apart, so its quiet-window check
+    assumes the worse (§4.2).
 
 ---
 
@@ -1642,13 +1659,13 @@ is retryable. The unified API's typed transient error (§F) is deferred (§7.8).
 **Simulated analyzer.** `fujilib.testing` puts `MockAnalyzer` stations on a `MockLine`,
 over an `anyserial.testing.serial_port_pair()`. Both ends of the pair are real
 `SerialPort` objects, so the real framer, CRC, drain, input reset and timing code run.
-The simulator is fujilib's own, not `anymodbus.testing.MockSlave` (§13.1 #26):
-`MockSlave.serve()` owns its stream, its faults fire once or on every reply, and its
-extension hook is private. It uses only `anymodbus`'s public CRC and ADU helpers.
+Each station is fujilib's own (§13.1 #26): the register model, the exception profiles,
+the write list and the per-request faults. The line is `anymodbus`'s `MockServer`
+(0.3.0), with a small `MockSlave` adapter per station.
 
-- **One line, one reader.** `MockLine` splits the byte stream into request frames. It
-  drops a frame with a bad CRC or for an absent station, so the analyzer stays silent as
-  the manual says, and routes the rest to stations by number.
+- **One line, one reader.** `MockServer` reads each request frame once. It drops a frame
+  with a bad CRC or for an absent station, so the analyzer stays silent as the manual
+  says, and routes the rest to stations by number.
 - **Two exception profiles.** Both follow the manual (TN5A1190a p.13): a request starting
   where its function code cannot be used answers 02; one whose count runs past the
   existing registers, or is over 64 words, answers 03. The bench unit agrees on every
@@ -1752,8 +1769,8 @@ file is used.
 `CONTRIBUTING.md` still contain `sartoriuslib` text (xBPI / SBI, `Balance`, a `commands/`
 package), and its `SECURITY.md` has Servomex-specific wording.
 
-- **Dependencies.** Core: `anyio>=4.13`, `anyserial>=0.1.2,<0.2`,
-  `anymodbus>=0.2.1,<0.3` (0.2.1 carries the §4.7 item 1 fix). Extras:
+- **Dependencies.** Core: `anyio>=4.14`, `anyserial>=0.1.2,<0.2`,
+  `anymodbus>=0.3,<0.4` (0.3.0 carries §4.7 items 2–12 and needs `anyio` 4.14). Extras:
   `docs` now, `parquet` with the Parquet sink (others as sinks are added).
   Python ≥ 3.13.
 - **Release process.** Update `CHANGELOG.md`, make an annotated tag `vX.Y.Z`, publish a
@@ -1951,6 +1968,23 @@ CI, which needs `phase-1` and this work pushed.
 
 On Windows, trio cannot read a real COM port with `anyserial` 0.1.2 (§4.7 item 14).
 
+*Adopting `anymodbus` 0.3.0* (2026-09-28). The release carried §4.7 items 2–12, so
+fujilib dropped the workarounds they replace:
+
+- its word-count check (§4.4);
+- its own inter-frame gap wait, startup settle and end-of-transaction stamp; timestamps
+  come from the transaction observer (§4.2);
+- its quiet window, now `late_reply_window` (§4.2);
+- its retry loop; the counters come from the observer (§4.5);
+- the `ValueError` and unsupported-function-code mappings (§4.6);
+- the simulator's frame reader and dispatcher; the line is `MockServer` (§10).
+
+The port keeps the pre-send check against the quiet window.
+`FailureKind.WORD_COUNT` is gone: a reply of the wrong length is now `UNEXPECTED`.
+
+Checked without hardware (1,242 tests, 100 % coverage) and again on the analyzer
+(findings §10.5).
+
 ### Phase 4 — Session, facade, discovery, sync, capa spike (4–5 days, plus a hardware session)
 
 - `devices/{session,analyzer,factory,discovery,snapshot,profile,metadata}.py`.
@@ -2066,11 +2100,11 @@ complete read-and-record slice.
 | 23 | `manual_ref` gives PDF page numbers (§5.1) | **Adopted 2026-09-28** on the owner's "proceed"; not separately confirmed |
 | 24 | Commit the sanitized bench bank in Phase 1 (§10) | **Adopted 2026-09-28** on the owner's "proceed"; not separately confirmed; taken from the coherent block capture (#11) |
 | 25 | Poll block 1 is `0000h+61` (§4.3) | **Adopted 2026-09-28** on the owner's "proceed"; not separately confirmed |
-| 26 | The simulator: build on `anymodbus.testing.MockSlave`, or a fujilib-owned line dispatcher and register model (§10) | **Adopted 2026-09-28** on the owner's "proceed"; not separately confirmed: fujilib's own, on `anymodbus`'s public CRC and ADU helpers only. `MockSlave.serve()` owns its stream, so stations cannot share a line |
+| 26 | The simulator: build on `anymodbus.testing.MockSlave`, or a fujilib-owned line dispatcher and register model (§10) | **Adopted 2026-09-28** on the owner's "proceed"; not separately confirmed: fujilib's own, on `anymodbus`'s public CRC and ADU helpers only. `MockSlave.serve()` owns its stream, so stations cannot share a line. Since `anymodbus` 0.3.0 the line is its `MockServer`; the stations stay fujilib's |
 | 27 | Where the read procedures live, between the client (words) and the session (gates, caches) | **Adopted 2026-09-28** on the owner's "proceed"; not separately confirmed: `devices/reads.py`, stateless, over the `ProtocolClient` contract |
 | 28 | Build the client's FC06/FC10 primitives, with the envelope check, before any public write path | **Adopted 2026-09-28** on the owner's "proceed"; not separately confirmed: yes. The simulator's write list is written out independently of `WRITE_ENVELOPE` |
-| 29 | Resynchronization after an uncertain transaction (§4.2) | **Adopted 2026-09-28** on the owner's "proceed"; not separately confirmed: a quiet window of 0.1 s from the end of the transaction, relying on `anymodbus`'s input reset, instead of listening for `request_timeout` under the lock |
-| 30 | Which read failures are retried (§4.5) | **Adopted 2026-09-28** on the owner's "proceed"; not separately confirmed: a timeout, a bad CRC, a malformed frame, an unexpected reply and a wrong word count; never an exception reply |
+| 29 | Resynchronization after an uncertain transaction (§4.2) | **Adopted 2026-09-28** on the owner's "proceed"; not separately confirmed: a quiet window of 0.1 s from the end of the transaction, relying on `anymodbus`'s input reset, instead of listening for `request_timeout` under the lock. Since `anymodbus` 0.3.0 it is that library's `late_reply_window`, which also reads and discards the late bytes |
+| 30 | Which read failures are retried (§4.5) | **Adopted 2026-09-28** on the owner's "proceed"; not separately confirmed: a timeout, a bad CRC, a malformed frame, an unexpected reply and a wrong word count; never an exception reply. Since `anymodbus` 0.3.0 this is its default retry policy, and it does the retrying |
 | 31 | Where the bench bank lives | **Adopted 2026-09-28** on the owner's "proceed"; not separately confirmed: package data of `fujilib.testing`, so `DEFAULT_ZPA_BANK` works from an installed wheel |
 
 ### 13.2 Hardware verification
@@ -2207,6 +2241,6 @@ Sibling libraries and what each contributes:
 | `watlowlib` | parameter registry, `DeviceProfile`, manager concurrency contract, snapshot fields, PR and issue templates |
 | `sartoriuslib` | four-tier `SafetyTier`, the recorder / `PollSource` contract and error samples, `DiscoverySummary`, CLI conventions |
 | `alicatlib` | strict sync parity test, generated-artifact CI check, the wide-sample pattern capa's adapter follows |
-| `anymodbus` ≥ 0.2.1 | Modbus engine, and the CRC and ADU helpers the simulator uses; 0.2.1 carries the inter-frame gap fix (§4.7) |
+| `anymodbus` ≥ 0.3 | Modbus engine: gap, reply checks, retries, late-reply window and transaction observer; its `MockServer` is the simulator's line (§4.7) |
 | `anyserial` 0.1.2 | serial transport, COM-name normalization and test port pair |
 | `capa` | downstream consumer; its adapters, `SourceRecord` shapes and cone profile define what the library must provide |

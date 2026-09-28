@@ -65,7 +65,9 @@ pytestmark = pytest.mark.anyio
 FC03, FC04 = 0x03, 0x04
 HOLDING, INPUT = bench_banks()
 ASSERTED = {ChannelId.CH1: Gas.CO2, ChannelId.CH2: Gas.CO, ChannelId.CH3: Gas.O2}
-FAST: dict[str, Any] = {"inter_frame_idle": 0.0, "request_timeout": 0.05, "resync_window": 0.01}
+# A request timeout long enough that a stall under load never forces a retry,
+# since these tests count transactions exactly.
+FAST: dict[str, Any] = {"inter_frame_idle": 0.0, "request_timeout": 0.25, "resync_window": 0.01}
 POLL = [(FC04, 0x0000, 61), (FC04, 0x0083, 60)]
 IDENTIFY = [(FC04, 0x0425, 35), (FC04, 0x0448, 34), (FC04, 0x0000, 36)]
 PROBES = [(FC04, 0x03E8, 49), (FC04, 0x047A, 3), (FC04, 0x1000, 9)]

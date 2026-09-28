@@ -207,9 +207,10 @@ class TransferTiming:
     """Host timing of one Modbus transaction."""
 
     requested_at: datetime
-    """Wall clock (UTC, tz-aware) just before the request was sent."""
+    """Wall clock (UTC, tz-aware) when the request had been sent: after the
+    inter-frame gap, the write and the drain, so no wait for the line is included."""
     received_at: datetime
-    """Wall clock (UTC, tz-aware) just after the reply was read."""
+    """Wall clock (UTC, tz-aware) when the reply had been read."""
     t_request_mono_ns: int
     t_reply_mono_ns: int
 

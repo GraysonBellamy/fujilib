@@ -9,9 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Require `anymodbus>=0.2.1`, which measures the inter-frame idle gap from the
-  end of every transaction, including exception replies, checksum errors,
-  timeouts and cancellations (design §4.7).
+- Require `anymodbus>=0.3,<0.4` and `anyio>=4.14`. `anymodbus` 0.3 measures the
+  inter-frame gap from the end of every attempt, checks each reply against its
+  request, discards late replies during a quiet window, and reports every attempt to
+  an observer (design §4.2-§4.7).
 - `fujilib.testing` is a package, and the sanitized bench bank is its package data
   (`fujilib/testing/zpa_bench_documented.json`), so `DEFAULT_ZPA_BANK` works from an
   installed wheel.
@@ -24,14 +25,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `COM8`, `com8` and `\\.\COM8` are one port.
 - `fujilib.protocol.modbus.port.ModbusPort`: one `anymodbus` bus per serial port, an
   operation lock, one client per station (1-31), and refusal of a second port on one
-  transport. Clients wait out the inter-frame gap and the one-shot startup settle
-  themselves, so a transaction's timing starts when its request goes out. After a
-  cancelled, timed-out, garbled or mismatched transaction, no request goes out until
-  a quiet window has passed, so a late reply cannot answer the next read.
+  transport. The bus waits out the startup settle and the inter-frame gap, retries
+  reads (never writes) lost or damaged in transit, and after a cancelled, timed-out,
+  damaged or mismatched attempt keeps a 0.1 s quiet window in which late bytes are
+  discarded, so a late reply cannot answer the next read. A request whose deadline
+  ends inside that window is refused before any I/O.
 - `fujilib.protocol.modbus.client.ModbusClient`: block reads and read plans with
-  argument checks before any I/O, a word-count check `anymodbus` does not make,
-  per-block `TransferTiming`, and retries of lost, garbled, mismatched or short
-  replies (never of exception replies), counted by kind with
+  argument checks before any I/O. Each block's `TransferTiming` runs from when its
+  request had been sent (after the gap) to the reply, and the traffic counters come from
+  `anymodbus`'s report of every attempt: failures by kind, retries and
   `recoverable_error_count`. FC06 and FC10 write primitives check the frozen write
   envelope last and are never retried. Once a request may have gone out, any failure
   other than an exception reply is reported as an unknown outcome, including a deadline
@@ -52,8 +54,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   7.78 Hz with no failure, and the quiet window turns a lost request into a clean read
   (`docs/protocol-findings.md` §10). On Windows, trio cannot read a real COM port with
   `anyserial` 0.1.2; use asyncio there.
-- `fujilib.testing`: `MockAnalyzer` stations on a `MockLine` over a real serial port
-  pair, with the manual's and the bench unit's exception replies, per-request reply
+- `fujilib.testing`: `MockAnalyzer` stations on a `MockLine` (`anymodbus`'s
+  `MockServer`) over a real serial port pair, with the manual's and the bench unit's
+  exception replies, per-request reply
   faults (drop, delay, bad CRC, wrong count, wrong function code, garbage, exception),
   a request log with arrival times, and a hard failure on any write fujilib must
   never send; `mock_transport()`, `mock_port()`, `mock_analyzer_pair()`,

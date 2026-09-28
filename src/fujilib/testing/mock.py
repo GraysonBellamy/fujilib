@@ -5,14 +5,11 @@ Two pieces, kept apart so several stations can share one line:
 - :class:`MockAnalyzer` is one station: its register banks, the region map it
   answers, the exception replies of one :class:`ExceptionProfile`, and the
   fault plan for its replies. It does no I/O.
-- :class:`MockLine` is the line. It is the only reader of the analyzer end of
-  a serial port pair: it splits the byte stream into request frames, drops a
-  frame with a bad CRC or for an absent station (the analyzer stays silent
-  then), hands each request to its station and sends the reply.
-
-The simulator is written against ``anymodbus``'s public pieces only (the CRC
-and ADU helpers) and parses request frames itself; ``anymodbus``'s own mock
-slave owns its stream, so it cannot share a line.
+- :class:`MockLine` is the line: ``anymodbus``'s ``MockServer`` on the
+  analyzer end of a serial port pair. The server reads each request frame
+  once and drops one with a bad CRC or for an absent station (the analyzer
+  stays silent then). The line records the request and hands it to its
+  station, whose reply goes out with the station's faults applied.
 
 **Exception profiles.** Both follow the manual (TN5A1190a p.13): a read or
 write that *starts* at an address the function cannot use answers 02, and one
@@ -43,7 +40,8 @@ from typing import TYPE_CHECKING, Final
 
 import anyio
 import anyio.abc
-from anymodbus.crc import crc16_modbus_bytes, verify_crc
+from anymodbus.crc import crc16_modbus_bytes
+from anymodbus.testing import MockServer, MockSlave
 
 from fujilib.protocol.modbus.codec import encode_int
 from fujilib.registry.channels import coerce_channel
@@ -84,15 +82,13 @@ _EXC_ILLEGAL_VALUE: Final = 0x03
 _MAX_WORDS: Final = 64
 _WORD_MAX: Final = 0xFFFF
 
-# Request bytes after the station and function-code bytes, CRC included.
-_FIXED_REQUEST_TAIL: Final = {0x01: 6, 0x02: 6, 0x03: 6, 0x04: 6, 0x05: 6, 0x06: 6, 0x08: 6}
+# Function codes whose request body is an address and a count (or a value).
+_FIXED_REQUEST: Final = frozenset({0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x08})
 _VARIABLE_REQUEST: Final = frozenset({0x0F, 0x10})
 # A fixed request body: address and count, or address and value.
 _FIXED_BODY: Final = 4
 # A write-multiple request body before its data: address, count and byte count.
 _VARIABLE_PREFIX: Final = 5
-# Silence that ends a request whose function code has no known length.
-_UNKNOWN_FRAME_GAP_S: Final = 0.002
 
 #: What a client may write, by function code: the manual's writable ranges
 #: minus the inferred coefficients (00A4h-00ABh) and key simulation (07D0h).
@@ -184,7 +180,7 @@ class MockAnalyzerConfig:
 
 @dataclass(frozen=True, slots=True)
 class MockRequest:
-    """One request frame as the line received it."""
+    """One request as the line received it; a frame with a bad CRC never gets here."""
 
     station: int
     function: int
@@ -194,10 +190,10 @@ class MockRequest:
     """Words read or written, or ``None`` for a function code without a count."""
     values: tuple[int, ...]
     """The words written, for FC06 and FC10."""
-    frame: bytes
+    pdu: bytes
+    """The request PDU: function code and body."""
     arrived_at: float
-    """When the last byte arrived, on the AnyIO clock."""
-    crc_ok: bool
+    """When the request had arrived, on the AnyIO clock."""
 
     @property
     def key(self) -> tuple[int, int | None, int | None]:
@@ -426,6 +422,38 @@ class MockAnalyzer:
             return bytes((fc,)) + _word_bytes((address, values[0]))
         return bytes((fc,)) + _word_bytes((address, len(values)))
 
+    def answer(self, exchange: MockExchange) -> tuple[bytes, Fault | None]:
+        """Take in ``exchange``'s request; return the response PDU and the fault for its reply.
+
+        Called by :class:`MockLine`. A request the fault refuses with an
+        exception reply changes nothing; a reply lost or damaged on its way
+        back does not undo what the analyzer already did.
+        """
+        self.exchanges.append(exchange)
+        request = exchange.request
+        if self.on_request is not None:
+            self.on_request(request)
+        fault = self.take_fault(request)
+        refused = fault is not None and fault.kind is FaultKind.EXCEPTION
+        return self.handle(request, apply=not refused), fault
+
+    async def send_reply(
+        self,
+        stream: anyio.abc.ByteStream,
+        exchange: MockExchange,
+        pdu: bytes,
+        fault: Fault | None,
+    ) -> None:
+        """Send the reply to ``exchange`` with ``fault`` applied. Called by :class:`MockLine`."""
+        if fault is not None and fault.kind is FaultKind.DROP:
+            return
+        if fault is not None and fault.kind is FaultKind.DELAY:
+            await anyio.sleep(fault.delay_s)
+        reply = self.reply_frame(exchange.request, pdu, fault)
+        await stream.send(reply)
+        exchange.reply = reply
+        exchange.replied_at = anyio.current_time()
+
     def reply_frame(self, request: MockRequest, pdu: bytes, fault: Fault | None) -> bytes:
         """The reply frame for response ``pdu``, with ``fault`` applied."""
         kind = fault.kind if fault is not None else None
@@ -460,14 +488,13 @@ def _exception(fc: int, code: int) -> bytes:
     return bytes((fc | 0x80, code))
 
 
-def _parse(frame: bytes, arrived_at: float) -> MockRequest:
-    station, fc = frame[0], frame[1]
-    crc_ok = verify_crc(frame)
+def _parse(station: int, pdu: bytes, arrived_at: float) -> MockRequest:
+    fc = pdu[0]
     address: int | None = None
     count: int | None = None
     values: tuple[int, ...] = ()
-    body = frame[2:-2]
-    if fc in _FIXED_REQUEST_TAIL and len(body) == _FIXED_BODY:
+    body = pdu[1:]
+    if fc in _FIXED_REQUEST and len(body) == _FIXED_BODY:
         address = int.from_bytes(body[0:2], "big")
         second = int.from_bytes(body[2:4], "big")
         if fc == FC_WRITE_SINGLE:
@@ -479,11 +506,38 @@ def _parse(frame: bytes, arrived_at: float) -> MockRequest:
         count = int.from_bytes(body[2:4], "big")
         data = body[_VARIABLE_PREFIX:]
         values = tuple(int.from_bytes(data[i : i + 2], "big") for i in range(0, len(data) - 1, 2))
-    return MockRequest(station, fc, address, count, values, frame, arrived_at, crc_ok)
+    return MockRequest(station, fc, address, count, values, pdu, arrived_at)
+
+
+class _Station(MockSlave):
+    """Puts a :class:`MockAnalyzer` on ``anymodbus``'s ``MockServer``."""
+
+    # Set by handle(); the server calls send_response() only after handle().
+    _answering: tuple[MockExchange, Fault | None]
+
+    def __init__(self, analyzer: MockAnalyzer) -> None:
+        # The analyzer keeps its own banks; this slave's are never used.
+        super().__init__(address=analyzer.station, register_count=1, coil_count=1)
+        self.analyzer = analyzer
+        self.pending: list[MockExchange] = []
+
+    def handle(self, request_pdu: bytes) -> bytes:
+        if not self.pending:
+            # A broadcast: the server hands it to every station without a
+            # record. The ZP series documents no broadcast, so it changes nothing.
+            return _exception(request_pdu[0], _EXC_ILLEGAL_FUNCTION)
+        exchange = self.pending.pop()
+        pdu, fault = self.analyzer.answer(exchange)
+        self._answering = (exchange, fault)
+        return pdu
+
+    async def send_response(self, stream: anyio.abc.ByteStream, response_pdu: bytes) -> None:
+        exchange, fault = self._answering
+        await self.analyzer.send_reply(stream, exchange, response_pdu, fault)
 
 
 class MockLine:
-    """A simulated RS-485 line: one reader, requests routed to stations by number."""
+    """A simulated RS-485 line: ``anymodbus``'s ``MockServer``, requests routed by station."""
 
     def __init__(self, *analyzers: MockAnalyzer) -> None:
         """Put ``analyzers`` on the line.
@@ -491,16 +545,17 @@ class MockLine:
         Raises:
             ValueError: two analyzers share a station number.
         """
-        self._stations: dict[int, MockAnalyzer] = {}
+        self._stations: dict[int, _Station] = {}
+        self._server = MockServer(on_request=self._record)
+        self.exchanges: list[MockExchange] = []
+        """Every request received with a valid CRC, for any station, with its reply."""
         for analyzer in analyzers:
             self.add(analyzer)
-        self.exchanges: list[MockExchange] = []
-        """Every frame received, for any station, with its reply."""
 
     @property
     def stations(self) -> Mapping[int, MockAnalyzer]:
         """The analyzers on the line, by station number."""
-        return MappingProxyType(self._stations)
+        return MappingProxyType({n: s.analyzer for n, s in self._stations.items()})
 
     def add(self, analyzer: MockAnalyzer) -> None:
         """Put another analyzer on the line.
@@ -511,67 +566,23 @@ class MockLine:
         if analyzer.station in self._stations:
             msg = f"station {analyzer.station} is already on the line"
             raise ValueError(msg)
-        self._stations[analyzer.station] = analyzer
+        station = _Station(analyzer)
+        self._stations[analyzer.station] = station
+        self._server.add(station)
 
     async def serve(self, stream: anyio.abc.ByteStream) -> None:
         """Answer requests on ``stream`` until it closes or the task is cancelled.
 
-        The line ends quietly when either end closes. On Windows the test port
-        pair reports a closed peer as ``anyserial.SerialError``, an ``OSError``.
+        The line ends quietly when either end closes.
 
         Raises:
             MockWriteViolation: a client wrote where fujilib must never write.
         """
-        try:
-            while True:
-                frame = await self._read_frame(stream)
-                await self._answer(stream, _parse(frame, anyio.current_time()))
-        except (anyio.EndOfStream, anyio.ClosedResourceError, anyio.BrokenResourceError, OSError):
-            return
+        await self._server.serve(stream)
 
-    async def _answer(self, stream: anyio.abc.ByteStream, request: MockRequest) -> None:
-        exchange = MockExchange(request)
+    def _record(self, address: int, pdu: bytes) -> None:
+        exchange = MockExchange(_parse(address, pdu, anyio.current_time()))
         self.exchanges.append(exchange)
-        analyzer = self._stations.get(request.station)
-        if not request.crc_ok or analyzer is None:
-            return
-        analyzer.exchanges.append(exchange)
-        if analyzer.on_request is not None:
-            analyzer.on_request(request)
-        fault = analyzer.take_fault(request)
-        # A refused request changes nothing; a reply lost or damaged on the way
-        # back does not undo what the analyzer already did.
-        refused = fault is not None and fault.kind is FaultKind.EXCEPTION
-        pdu = analyzer.handle(request, apply=not refused)
-        if fault is not None and fault.kind is FaultKind.DROP:
-            return
-        if fault is not None and fault.kind is FaultKind.DELAY:
-            await anyio.sleep(fault.delay_s)
-        reply = analyzer.reply_frame(request, pdu, fault)
-        await stream.send(reply)
-        exchange.reply = reply
-        exchange.replied_at = anyio.current_time()
-
-    @staticmethod
-    async def _read_frame(stream: anyio.abc.ByteStream) -> bytes:
-        frame = bytearray(await _read_exact(stream, 2))
-        fc = frame[1]
-        if fc in _FIXED_REQUEST_TAIL:
-            frame += await _read_exact(stream, _FIXED_REQUEST_TAIL[fc])
-        elif fc in _VARIABLE_REQUEST:
-            prefix = await _read_exact(stream, _VARIABLE_PREFIX)
-            frame += prefix + await _read_exact(stream, prefix[-1] + 2)
-        else:
-            while True:
-                with anyio.move_on_after(_UNKNOWN_FRAME_GAP_S) as scope:
-                    frame += await stream.receive()
-                if scope.cancelled_caught:
-                    break
-        return bytes(frame)
-
-
-async def _read_exact(stream: anyio.abc.ByteStream, n: int) -> bytes:
-    buf = bytearray()
-    while len(buf) < n:
-        buf += await stream.receive(n - len(buf))
-    return bytes(buf)
+        station = self._stations.get(address)
+        if station is not None:
+            station.pending.append(exchange)

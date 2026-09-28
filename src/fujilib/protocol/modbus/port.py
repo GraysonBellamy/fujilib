@@ -3,22 +3,22 @@
 :class:`ModbusPort` owns the single ``anymodbus.Bus`` of a port and hands out
 one :class:`~fujilib.protocol.modbus.client.ModbusClient` per station. It
 never exposes a raw ``anymodbus.Slave``: only the client holds one (design
-§5.4). It keeps three pieces of timing state that ``anymodbus`` cannot keep
-for fujilib:
+§5.4).
 
-- **When the last transaction ended.** Clients wait out the inter-frame gap
-  themselves before stamping a request's time, so a
-  :class:`~fujilib.devices.models.TransferTiming` starts when the request goes
-  out rather than before ``anymodbus``'s own wait for the gap. ``anymodbus``
-  then finds the gap already elapsed and sends at once.
-- **The one-shot startup settle**, for the same reason.
-- **A quiet window after an uncertain transaction.** A cancelled, timed-out,
-  garbled or mismatched transaction may leave its reply on the wire.
-  ``anymodbus`` clears the input buffer before every request, but that only
-  drops bytes that have already arrived. A reply to an FC03/04 read carries no
-  address, so a late one could be accepted as the answer to the next read of
-  the same length. No request therefore goes out until the window has passed
-  and the late bytes, if any, have landed and can be cleared.
+**Timing is ``anymodbus``'s.** The bus waits out the one-shot startup settle
+and the inter-frame gap, measured from the end of every attempt. It retries
+reads (never writes) that were lost or damaged in transit. After an attempt
+whose outcome is uncertain (a timeout, a cancellation, a damaged or mismatched
+reply) it keeps a quiet window: it sends nothing until the window has passed,
+reading and discarding whatever arrives, so a late reply cannot be taken as
+the answer to the next request. A reply to an FC03/04 read carries no
+address, so one of the same length would otherwise be accepted.
+
+**What the port adds.** Every attempt is reported to the port's observer. The
+port records the attempts of the call in progress for its client, which
+takes timestamps and counts from them (design §4.5), and it tracks the quiet
+window, so a request whose deadline ends inside it is refused before
+anything is sent (:class:`~fujilib.errors.FujiResyncRequiredError`).
 
 **Two locks.** ``anymodbus``'s internal lock serializes *transactions*.
 :attr:`ModbusPort.lock` serializes *operations*: sequences such as the two
@@ -35,11 +35,12 @@ from under them.
 from __future__ import annotations
 
 import math
+from contextlib import contextmanager
 from typing import TYPE_CHECKING, Final, Self
 from weakref import WeakValueDictionary
 
 import anyio
-from anymodbus import Bus, BusConfig, RetryPolicy, TimingConfig
+from anymodbus import Bus, BusConfig, RetryPolicy, TimingConfig, TransactionOutcome
 
 from fujilib._lock import maybe_acquire
 from fujilib.config import DEFAULTS
@@ -54,7 +55,10 @@ from fujilib.protocol.base import ProtocolKind
 from fujilib.protocol.modbus.client import ModbusClient
 
 if TYPE_CHECKING:
+    from collections.abc import Generator
     from types import TracebackType
+
+    from anymodbus import TransactionInfo
 
     from fujilib._deadline import Deadline
     from fujilib.transport.base import Transport
@@ -67,6 +71,15 @@ MAX_STATION: Final = 31
 
 #: ``anymodbus`` accepts request timeouts in (0, 60] seconds.
 _MAX_REQUEST_TIMEOUT: Final = 60.0
+
+#: Outcomes that leave the line in a known state and open no quiet window.
+_CERTAIN: Final = frozenset(
+    {
+        TransactionOutcome.REPLY,
+        TransactionOutcome.EXCEPTION_REPLY,
+        TransactionOutcome.BROADCAST_SENT,
+    }
+)
 
 # Open ports by the id of their transport. A port keeps its transport alive,
 # so the id cannot be reused while the entry exists; a port that is dropped
@@ -107,10 +120,11 @@ class ModbusPort:
             transport: The open transport. It must not already carry an open port.
             request_timeout: Seconds to wait for each reply.
             inter_frame_idle: Idle seconds before each request, from the end
-                of the previous transaction.
+                of the previous attempt.
             startup_settle: One-shot idle seconds before the first request.
             read_retries: Extra attempts after a read fails in transit.
-            resync_window: Quiet seconds after an uncertain transaction.
+            resync_window: Quiet seconds after an uncertain attempt
+                (``anymodbus``'s late-reply window).
             owns_transport: Close ``transport`` when the port is closed.
 
         Raises:
@@ -138,21 +152,26 @@ class ModbusPort:
 
         self._transport = transport
         self._owns_transport = owns_transport
-        # anymodbus retries nothing (the client retries and counts, design §4.5)
-        # and settles nothing (the port settles before stamping the first request).
+        # The default retry policy retries timeouts and damaged or mismatched
+        # replies, and only for idempotent function codes: reads, never writes
+        # (design §4.5).
         self._bus = Bus(
             transport.stream,
             config=BusConfig(
                 request_timeout=self._request_timeout,
-                retries=RetryPolicy(retries=0),
-                timing=TimingConfig(inter_frame_idle=self._inter_frame_idle, startup_settle=0.0),
+                retries=RetryPolicy(retries=read_retries),
+                timing=TimingConfig(
+                    inter_frame_idle=self._inter_frame_idle,
+                    startup_settle=self._startup_settle,
+                    late_reply_window=self._resync_window,
+                ),
             ),
+            on_transaction=self._observe,
         )
         self._lock = anyio.Lock()
         self._clients: dict[int, ModbusClient] = {}
-        self._last_end: float | None = None
-        self._settled = False
         self._quiet_until = -math.inf
+        self._attempts: list[TransactionInfo] = []
         self._closed = False
         # Claimed last, so a port that failed to build never holds the transport.
         _CLAIMS[id(transport)] = self
@@ -205,7 +224,7 @@ class ModbusPort:
         return self._resync_window
 
     def quiet_remaining(self) -> float:
-        """Seconds until the quiet window after an uncertain transaction ends; 0 if none."""
+        """Seconds until the quiet window after an uncertain attempt ends; 0 if none."""
         return max(0.0, self._quiet_until - anyio.current_time())
 
     # --- Stations --------------------------------------------------------------------------
@@ -228,17 +247,15 @@ class ModbusPort:
             self._clients[address] = client
         return client
 
-    # --- Timing (called by clients under the operation lock) -------------------------------
+    # --- Attempts (used by clients under the operation lock) ------------------------------
 
-    async def ready(self, deadline: Deadline, *, context: ErrorContext) -> None:
-        """Wait until a request may be sent.
-
-        Waits out the startup settle, the inter-frame gap and any quiet window.
+    def check_ready(self, deadline: Deadline, *, context: ErrorContext) -> None:
+        """Refuse, before any I/O, a request that cannot go out.
 
         Raises:
-            FujiConnectionError: the port or its transport is closed; nothing was sent.
+            FujiConnectionError: the port or its transport is closed.
             FujiResyncRequiredError: ``deadline`` ends before the quiet window
-                does; nothing was sent.
+                does.
         """
         if self._closed:
             msg = f"the Modbus port on {self.label} is closed"
@@ -254,28 +271,26 @@ class ModbusPort:
                 f"{self.quiet_remaining():.3f} s, longer than the time left"
             )
             raise FujiResyncRequiredError(msg, context=context)
-        now = anyio.current_time()
-        if self._last_end is not None:
-            at = self._last_end + self._inter_frame_idle
-        elif not self._settled:
-            self._settled = True
-            at = now + self._startup_settle
-        else:
-            at = now
-        at = max(at, self._quiet_until)
-        if at > now:
-            await anyio.sleep_until(at)
 
-    def transaction_ended(self, *, certain: bool) -> None:
-        """Record that a transaction ended; start a quiet window unless its outcome is certain.
+    @contextmanager
+    def record_attempts(self) -> Generator[list[TransactionInfo]]:
+        """Collect the reports of the attempts made inside the block.
 
-        An outcome is certain when a well-formed reply of the expected length,
-        or an exception reply, was received.
+        Used by a client under the operation lock around each call, so every
+        attempt reported meanwhile is its own; no attempt happens outside one.
         """
-        now = anyio.current_time()
-        self._last_end = now
-        if not certain:
-            self._quiet_until = max(self._quiet_until, now + self._resync_window)
+        attempts: list[TransactionInfo] = []
+        self._attempts = attempts
+        yield attempts
+
+    def _observe(self, info: TransactionInfo) -> None:
+        """``anymodbus``'s report of one attempt."""
+        if info.outcome not in _CERTAIN:
+            # anymodbus opens its window only once the request has started going
+            # out, which the report does not say; the port assumes it did, so a
+            # request it lets through never waits past its deadline.
+            self._quiet_until = max(self._quiet_until, info.ended_at + self._resync_window)
+        self._attempts.append(info)
 
     # --- Lifecycle -------------------------------------------------------------------------
 

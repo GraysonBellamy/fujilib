@@ -434,6 +434,35 @@ In all 120 trials A reached the wire before it was cancelled.
   (`probe_client_resync_20260928T203149Z.json`) but not counted. The probe now idles
   before A.
 
+### 10.5 The same checks on `anymodbus` 0.3.0
+
+After fujilib moved to `anymodbus` 0.3.0 (design §4.7), the checks of §10.1–§10.3 were
+run again, read-only, the same evening. `anymodbus` now waits the gap, retries, checks
+each reply and keeps the late-reply window, and fujilib takes the timing and counters
+from its per-attempt reports.
+
+- **Every read procedure.** The results are identical to §10.1, and so are the counters:
+  27 requests, and 3 exception replies, all expected. The eight hardware tests pass
+  under asyncio.
+- **Sustained polls.** 300 polls, no failures, 7.86 polls per second.
+  - Block round trips: medians 48.1 and 47.5 ms, maxima 51.8 and 52.2 ms.
+  - Reply → next request: at least 5.5 ms, median 16.8 ms.
+  - Each block's round trip still excludes the wait: its request time is `anymodbus`'s
+    report of when the request had been sent.
+- **Late replies**, cancelled after 15 ms, 30 trials per window:
+
+| Quiet window | B right first time | B lost, the retry recovered it | Wrong data accepted |
+|---|---|---|---|
+| 0 | 5 | **25** (24 timeouts, 1 reply that did not answer the request) | 0 |
+| 0.1 s (`late_reply_window`) | 30 | 0 | 0 |
+
+The one mismatched reply is new. Since 0.3.0 `anymodbus` checks every reply against its
+request, so it was rejected and retried rather than returned.
+
+Raw files: `probe_client_smoke_20260928T215219Z.json`,
+`probe_client_polls_20260928T215234Z.json` and
+`probe_client_resync_20260928T215313Z.json`, all with `probe_client.py` `694951e7…`.
+
 ### 10.4 Trio cannot read a real COM port on Windows
 
 Under trio, every hardware test failed within about 4 ms of its first read, with

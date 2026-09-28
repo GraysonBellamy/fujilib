@@ -34,8 +34,8 @@ def response(cls: type[anymodbus.ModbusExceptionResponse], code: int) -> BaseExc
     ("exc", "expected"),
     [
         (response(anymodbus.IllegalFunctionError, 1), FujiModbusIllegalFunctionError),
-        # A reply whose function code anymodbus cannot frame: line damage, not a refusal.
-        (anymodbus.ModbusUnsupportedFunctionError("fc 0x07"), FujiFrameError),
+        # Raised by anymodbus only for a function code it cannot send; fujilib never does.
+        (anymodbus.ModbusUnsupportedFunctionError("fc 0x07"), FujiModbusError),
         (response(anymodbus.IllegalDataAddressError, 2), FujiModbusIllegalDataAddressError),
         (response(anymodbus.IllegalDataValueError, 3), FujiModbusIllegalDataValueError),
         (response(anymodbus.SlaveDeviceFailureError, 4), FujiModbusError),
@@ -56,7 +56,7 @@ def response(cls: type[anymodbus.ModbusExceptionResponse], code: int) -> BaseExc
         (anyio.BrokenResourceError(), FujiConnectionError),
         (anyio.ClosedResourceError(), FujiConnectionError),
         (anyio.BusyResourceError("receiving"), FujiConnectionError),
-        (ValueError("register value out of range"), FujiConfigurationError),
+        (anymodbus.TransportError("stream failed while draining the output"), FujiConnectionError),
     ],
 )
 def test_each_exception_maps_to_its_fujilib_class(
@@ -91,6 +91,8 @@ def test_a_context_without_a_command_still_reads() -> None:
     assert str(mapped).startswith("modbus: crc")
 
 
-def test_other_exceptions_are_not_translated() -> None:
-    with pytest.raises(TypeError, match="RuntimeError"):
-        map_modbus_error(RuntimeError("bug"), context=CONTEXT)
+@pytest.mark.parametrize("exc", [RuntimeError("bug"), ValueError("bug")])
+def test_other_exceptions_are_not_translated(exc: Exception) -> None:
+    # anymodbus raises ConfigurationError for a bad argument; anything else is a bug.
+    with pytest.raises(TypeError, match=type(exc).__name__):
+        map_modbus_error(exc, context=CONTEXT)

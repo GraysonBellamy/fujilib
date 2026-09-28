@@ -3,14 +3,14 @@
 Applied at a single boundary, in the Modbus client, always as
 ``raise mapped from exc`` so the original exception stays reachable.
 
-Order matters. ``anymodbus``'s ``ProtocolError`` and ``ConfigurationError``
-are also ``ValueError``; its ``FrameTimeoutError`` is also a ``TimeoutError``,
-which is an ``OSError``. The Modbus classes are therefore matched before the
-built-in ones. ``anyserial`` raises its own ``SerialError`` (an ``OSError``)
-for port failures that ``anymodbus`` does not translate, and those map to a
-connection error. A bare ``ValueError`` from ``anymodbus`` means an argument
-slipped past fujilib's own checks: a bug, reported as a configuration error
-(design §4.4).
+Order matters. ``anymodbus``'s ``FrameTimeoutError`` is a ``TimeoutError``, and
+so an ``OSError``, and its ``TransportError`` (a failing port) is an ``OSError``
+too, so the Modbus classes are matched before the built-in ones. ``anymodbus``
+translates every stream failure into a ``ModbusError``; the ``anyio`` and
+``OSError`` row remains for a failure outside a transaction.
+
+Anything else is not translated: an exception of another kind, such as a bare
+``ValueError``, is a bug and propagates as it is.
 """
 
 from __future__ import annotations
@@ -29,7 +29,6 @@ from anymodbus import (
     IllegalFunctionError,
     ModbusError,
     ModbusExceptionResponse,
-    ModbusUnsupportedFunctionError,
     ProtocolError,
 )
 from anymodbus import ConfigurationError as ModbusConfigurationError
@@ -57,7 +56,6 @@ __all__ = ["MAPPED_EXCEPTIONS", "map_modbus_error"]
 MAPPED_EXCEPTIONS: Final[tuple[type[BaseException], ...]] = (
     ModbusError,
     OSError,
-    ValueError,
     anyio.BrokenResourceError,
     anyio.BusyResourceError,
     anyio.ClosedResourceError,
@@ -70,10 +68,8 @@ _RULES: Final[Sequence[tuple[tuple[type[BaseException], ...], type[FujiError]]]]
     ((IllegalDataValueError,), FujiModbusIllegalDataValueError),
     ((ModbusExceptionResponse,), FujiModbusError),
     ((FrameTimeoutError,), FujiModbusTimeoutError),
-    # anymodbus raises ModbusUnsupportedFunctionError only for a *received*
-    # function code it cannot frame. fujilib sends 03, 04, 06 and 10, so a reply
-    # carrying another code is line damage, not the analyzer refusing a function.
-    ((ChecksumError, FrameError, ModbusUnsupportedFunctionError), FujiFrameError),
+    ((ChecksumError, FrameError), FujiFrameError),
+    # TransportError, a port that fails mid-transaction, is a ConnectionLostError.
     ((BusClosedError, ConnectionLostError), FujiConnectionError),
     ((ModbusConfigurationError,), FujiConfigurationError),
     ((ProtocolError,), FujiProtocolError),
@@ -82,7 +78,6 @@ _RULES: Final[Sequence[tuple[tuple[type[BaseException], ...], type[FujiError]]]]
         (OSError, anyio.BrokenResourceError, anyio.BusyResourceError, anyio.ClosedResourceError),
         FujiConnectionError,
     ),
-    ((ValueError,), FujiConfigurationError),
 )
 
 

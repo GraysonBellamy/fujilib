@@ -15,7 +15,7 @@ import anyio
 import anymodbus
 import pytest
 from anymodbus import Bus, BusConfig, RetryPolicy, TimingConfig
-from anymodbus.crc import crc16_modbus_bytes
+from anymodbus.crc import crc16_modbus_bytes, verify_crc
 from anymodbus.framer import encode_adu
 from hypothesis import given
 from hypothesis import strategies as st
@@ -66,7 +66,7 @@ def analyzer(profile: ExceptionProfile = ExceptionProfile.BENCH_1_02) -> MockAna
 
 
 def request(fc: int, address: int, count: int, values: tuple[int, ...] = ()) -> MockRequest:
-    return MockRequest(1, fc, address, count, values, b"", 0.0, crc_ok=True)
+    return MockRequest(1, fc, address, count, values, b"", 0.0)
 
 
 # --- Configuration and banks ---------------------------------------------------------------
@@ -321,9 +321,7 @@ async def test_a_request_with_a_bad_crc_gets_no_reply() -> None:
         with anyio.move_on_after(0.05) as scope:
             await transport.stream.receive()
         assert scope.cancelled_caught
-        assert len(line.exchanges) == 1
-        assert not line.exchanges[0].request.crc_ok
-        assert line.exchanges[0].reply is None
+        assert line.exchanges == []  # the line drops it unread, as the analyzer would
     assert mock.exchanges == []
 
 
@@ -429,14 +427,29 @@ async def test_an_exception_fault_carries_its_code() -> None:
             await bus.slave(1).read_input_registers(0, count=1)
 
 
-@pytest.mark.parametrize(("count", "returned"), [(3, 2), (1, 2)])
-async def test_a_wrong_count_reply_is_well_formed(count: int, returned: int) -> None:
-    # anymodbus does not compare the reply's length with the request (design §4.4).
+@pytest.mark.parametrize("count", [3, 1])
+async def test_a_wrong_count_reply_is_well_formed_and_refused(count: int) -> None:
+    # One word too few (too many for a one-word read), with a valid CRC:
+    # anymodbus compares the reply's length with the request (design §4.4).
     mock = analyzer()
     mock.inject(FaultKind.WRONG_COUNT)
     async with raw_bus(mock) as bus:
-        words = await bus.slave(1).read_input_registers(0, count=count)
-    assert len(words) == returned
+        with pytest.raises(anymodbus.UnexpectedResponseError, match="register"):
+            await bus.slave(1).read_input_registers(0, count=count)
+    (exchange,) = mock.exchanges
+    assert exchange.reply is not None
+    assert verify_crc(exchange.reply)
+
+
+async def test_a_broadcast_changes_nothing() -> None:
+    # The ZP series documents no broadcast; the simulator ignores one.
+    mock = analyzer()
+    before = dict(mock.holding)
+    async with raw_bus(mock) as bus:
+        await bus.broadcast_write_register(0x0049, 1)
+        await anyio.sleep(0.05)
+    assert mock.holding == before
+    assert mock.exchanges == []
 
 
 async def test_a_delayed_reply_arrives_late() -> None:

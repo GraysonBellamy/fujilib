@@ -34,12 +34,12 @@ classifiers = [
     "Typing :: Typed",
 ]
 # MODBUS RTU is the analyzer's only protocol, so anymodbus is core, not an extra
-# (design §1, §11). 0.2.1 measures the inter-frame idle from the end of every
-# transaction, which the analyzer's timing relies on (design §4.2, §4.7).
+# (design §1, §11). 0.3 checks replies against the request, discards late replies
+# and reports every attempt to an observer, which the client relies on (design §4.2-§4.5).
 dependencies = [
-    "anyio>=4.13",
+    "anyio>=4.14",
     "anyserial>=0.1.2,<0.2",
-    "anymodbus>=0.2.1,<0.3",
+    "anymodbus>=0.3,<0.4",
 ]
 
 [project.optional-dependencies]
