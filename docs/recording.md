@@ -66,6 +66,22 @@ scalars: a header (`device`, `address`, `t_mono_ns`, `t_utc`, `latency_s`,
 - **A failed poll is a row too.** Its `frame` is `None`, its `error` is set,
   and its row carries `None` in every reading and analyzer column, with the
   error's type and message. Gaps are recorded, never dropped.
+- **Manual calibrations are not in the rows.** A zero or span made at the
+  front panel marks its channels `calibrating`. Feed the frames to a
+  `ManualCalibrationTracker` (`fujilib.devices.panel`) to get one event per
+  calibration: its channels, how it ended, and the readings before and after.
+  Frames read at 1 Hz can miss the second or two a calibration runs; the event
+  then rests on an undocumented register, or says it is ambiguous.
+
+  ```python
+  from fujilib.devices.panel import ManualCalibrationTracker, PanelObservation
+
+  tracker = ManualCalibrationTracker()
+  for sample in samples:  # of one analyzer, in order
+      if sample.frame is not None and (seen := PanelObservation.from_frame(sample.frame)):
+          if event := tracker.feed(seen):
+              print(event.kind, event.outcome, event.channels)
+  ```
 
 ## The schedule
 

@@ -55,7 +55,9 @@ The first release, **0.1.0**, covers:
   library streams and records to memory, CSV or Parquet;
 - a reviewed subset of settings writes and the documented operation commands
   (auto calibration, auto zero, blowback, return to measurement), behind
-  `confirm=True`, pre-I/O validation and read-back verification.
+  `confirm=True`, pre-I/O validation and read-back verification;
+- a record of every manual zero and span made at the front panel while it is
+  connected, since the analyzer keeps no calibration log on older firmware.
 
 ## Design points
 
@@ -66,7 +68,7 @@ The first release, **0.1.0**, covers:
   analyzer's type code is treated as a hint, not an authority.
 - **Writes are hard to get wrong.** Everything fujilib may ever write is a
   frozen envelope of documented user settings and operation commands. Factory
-  parameters, key simulation and manual calibration are out of scope.
+  parameters are out of scope, and fujilib presses no front-panel key.
 - **No hardware needed to develop or test.** A simulated analyzer runs the full
   stack in CI.
 

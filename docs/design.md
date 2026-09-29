@@ -22,7 +22,10 @@ description: Architecture, design decisions, and phased implementation plan for 
 > recording commands) are done, and its unplug test passed. Phase 6 (settings writes,
 > settings documents and the operation commands) is done on the simulator and on the
 > bench analyzer, and goes into 0.1.0 too (§13.1 #59). Phase 5's 12-hour bench
-> recording is outstanding; 0.1.0 follows it.
+> recording is outstanding; 0.1.0 follows it. Phase 7 (the front panel) was reopened by
+> the owner on 2026-09-29 (§13.1 #71). Its first part, watching manual calibrations
+> made at the panel, is done on the simulator and on the bench analyzer, and goes into
+> 0.1.0.
 >
 > - **Where statements come from.** Statements about the device come from the three
 >   manuals in `docs/manuals/` (§14) and are marked **[manual]**. The bench analyzer was
@@ -52,7 +55,7 @@ description: Architecture, design decisions, and phased implementation plan for 
 | Values are **scaled integers** whose decimal point and unit live in *other* registers | The registry stores a scaling *rule*, not a constant. A concentration is decoded as a (value, decimal point, unit) triple read in one transaction. |
 | **Twelve display channels**: up to 5 measured components, then O2-corrected values, corrected averages and an O2 average | The core object is the channel and the central artifact is a `Frame`, as in `servomexlib`. Which gas each channel carries is **asserted by the caller**. The type code and live data only suggest it (§2.9). |
 | A **large writable settings surface** (about 170 holding registers) plus five operation commands | There is a real parameter registry, as in `watlowlib`, with read coalescing. Writes are governed by an **immutable write policy**, not by the registry alone (§5.4). |
-| Manual zero/span calibration is reachable **only by simulating front-panel keys**, and the same keys reach the factory menu | Key simulation is **not planned** (§6.5). Only the documented operation commands are exposed. |
+| Manual zero/span calibration is reachable **only by simulating front-panel keys**, and the same keys reach the factory menu | A manual calibration made at the panel is **watched** from the status registers. Key simulation is limited to the calibration keys, never MODE or SIDE, and comes after a prototype (§6.5, Phase 7). |
 | The front panel stays live; an operator can change ranges and settings at any time | Cached metadata must be refreshable, and scaled writes re-read their scaling immediately before writing. Host locks cannot serialize the operator. |
 | Up to 31 stations on one RS-485 line | One `anymodbus.Bus` per port, owned by one `ModbusPort`. Multi-drop management comes after 0.1.0 (§7.4). |
 | Firmware 2.24 added the calibration log and type-code digits 27–29; the firmware version itself is **not readable** over Modbus | Capabilities are probed, not assumed (`Availability`). Only a well-formed probe answered with illegal-address counts as "unsupported". |
@@ -83,8 +86,13 @@ registry*, joined by one session choke point, with an explicit write policy.
 
 - Changing the station number or serial settings (front panel only, not in the map).
 - Writing factory-mode parameters (linearization, calibration coefficients). The bench
-  unit exposes them to FC03 (§2.3). fujilib does not model them, will never write them,
-  and does not offer key simulation, which could reach the factory menu (§6.5).
+  unit exposes some of them to FC03 (the linearization tables and the "other
+  parameters"), but not the calibration coefficients (§2.3, §2.6). fujilib does not
+  model them and will never write them. The keys it may simulate are the calibration keys only, never MODE or SIDE, so
+  no key sequence it sends can open a menu (§6.5).
+- Reading what the panel shows. Modbus reports which screen is shown, never its text,
+  so a panel-only screen (the maintenance-mode calibration log, say) cannot be read by
+  navigating to it (§13.1 #72).
 - Writing 00A4h–00ABh (interference compensation), whose encoding and purpose are
   inferred, not documented (§2.6).
 - Firmware update. None of the three manuals describes one and no register relates to
@@ -132,7 +140,11 @@ number or an inter-byte gap over 24 bit times produces **no response**.
 - A read that *starts* outside the map is answered with 02. A read that starts inside
   a region and *crosses its end* is answered with **03**.
 
-Function codes that were never sent (FC08 and others) remain unknown.
+- Eight read-only diagnostic and identification function codes were tried: FC07,
+  FC08 (sub-function 0000h), FC0B, FC0C, FC11 (report server ID), FC14, FC18, and
+  FC2B/0Eh (read device identification). All were answered with exception **01**
+  (findings §15.1). No identification is available beyond the registers, and the
+  program version is not readable at all.
 
 ### 2.3 Valid address regions
 
@@ -159,7 +171,7 @@ bridged words, so nothing depends on their value.
 
 | FC | Readable | Beyond the manual |
 |---|---|---|
-| 04 | 0000h–00C1h, 03E8h–0479h | 03E8h–0424h holds a real-time clock and 21 A/D values; 046Ah–0479h |
+| 04 | 0000h–00C1h, 03E8h–0479h | 03E8h–0424h holds a real-time clock and 21 A/D values; 046Ah–0471h the unsmoothed CO2 and CO detector counts; 0472h–0479h |
 | 03 | 0000h–00ABh, 03E8h–069Bh, 0BB8h–0C66h | two blocks of factory calibration and configuration data |
 
 The original one-word scan recorded 43 addresses (23 FC04, 20 FC03) with malformed
@@ -368,8 +380,10 @@ Input registers (FC04).
 | 003D–0082 | 30062–30131 | error log, 14 × (error No.−1, day, hour, minute, channel−1), newest first |
 | 0083–00A4 | 30132–30165 | active errors: 1, 2, 3, 10; then errors 4–9 per channel |
 | 00A5–00B3 | 30166–30180 | per channel: auto-zero running, auto-span running, **hold** |
-| 00B4–00B6 | 30181–30183 | display state: screen, manual-calibration step, top channel |
+| 00B4–00B6 | 30181–30183 | display state: screen, manual-calibration step (on the measurement screen; **[bench]** a menu's page number elsewhere), top channel |
+| 00B9 | 30186 | "do not use"; **[bench]** the last manual calibration: 0 once a channel is selected, 4 while it runs, 6 when it has finished |
 | 00BC, 00BE | 30189, 30191 | manual-calibration cursor channel; alarm 6 state |
+| 00BD | 30190 | not listed; **[bench]** the key being pressed, in 42001's key codes |
 | 0425–0447 | 31062–31096 | per (c, r): number of ranges, unit, range value, decimal point |
 | 0448–0469 | 31097–31130 | type code digits 1–26; board code digits 1–8 |
 | 047A–047C | 31147–31149 | type code digits 27–29 |
@@ -389,7 +403,37 @@ copy does not.
 | 03E8–03EE | real-time clock, BCD: year, month, day, day of week, hour, minute, second |
 | 03EF–0418 | the 21 A/D conversion values of the service manual's table, long words |
 
+**[bench]** Readable but not modelled (findings §15):
+
+- **046A–0471 (FC04):** the CO2 and CO detector counts before smoothing, each twice.
+  They are what the maintenance "Sensor Input" screen shows; the A/D values above are
+  a smoothed copy. 0472h–0478h read 1 now and then, for no known reason.
+- **The two FC03 factory blocks:** these hold no zero or span coefficients. The
+  coefficients the factory screen shows appear in no readable word, so a calibration
+  can be recorded only as it happens (§6.5).
+  - 0C2D–0C34 are the factory menu's "other parameters". On the bench unit **range
+    limit is off**, so readings are not held at 110 %FS, and zero limit is off, which
+    hides negative values on the display only.
+- **The "do not use" words 00B7, 00B8, 00BA, 00BB and 00BF–00C1:** 0 on every screen so
+  far.
+
 The "board" code (0462–0469) is the **serial number**.
+
+**[bench] A manual calibration at the panel** (findings §14):
+
+- The step register (30182) follows it: 4 or 7 while a channel is selected, 5 or 8
+  while the gas settles, 6 or 9 while it runs, then 0. The screen register (30181)
+  stays 0, measurement, throughout.
+- On any other screen, 30182 numbers the menu's pages, and some of those numbers are
+  step values: 5 while the factory password is entered, and 4 and 8 in factory mode
+  (findings §15.2). So fujilib reads it as a step only on the measurement screen (#80).
+- The per-channel zero and span flags (30050–30059) are set from the wait step to the
+  end, so they cover manual calibration as well as automatic.
+- 00B9h and 00BDh (table above) follow it too. They are modelled as observed
+  registers (`display.calibration_result`, `display.key`), read with every poll.
+- It leaves **no readable trace**: no holding word changes, including the two
+  factory blocks. The raw A/D count of the channel's detector does not change
+  either, so it records what the detector saw when the calibration ran.
 
 ### 2.7 Operation commands (FC06 only, write-only)
 
@@ -405,7 +449,8 @@ There is **no register to stop** a running auto calibration, and no register tha
 a manual zero or span calibration; both exist only as key sequences on the panel. The
 panel's forced stop of an auto calibration or auto zero calibration works only while
 key lock is off (ZPA manual p.55–57, p.62). The key register also reaches maintenance
-and factory mode (§6.5), so fujilib never writes 42001.
+and factory mode (§6.5), so fujilib will write it only for the calibration keys
+(Phase 7C), and until then does not write it at all.
 
 A command's reply confirms that the analyzer accepted it, not that it finished
 (TN5A1190a p.11, p.17). Input 30049 is one flag for auto calibration and auto zero
@@ -538,8 +583,10 @@ Consequences for this plan:
    simultaneous Modbus-against-analog comparison has been run across relevant O2
    changes, ranges and response settings (Phase 4).
 3. capa's zero/span-recency preflight cannot be answered from firmware 1.02: it has no
-   calibration log, and the error log records only failed calibrations. On this unit the
-   operator must supply it.
+   calibration log over Modbus (only on the panel), and the error log records only
+   failed calibrations. On this unit
+   fujilib records each zero and span it sees as it happens (Phase 7). One made while
+   nothing is connected, the operator must still supply.
 
 ---
 
@@ -586,6 +633,7 @@ devices/       profile.py    DeviceProfile (ZP_PROFILE): registry + regions + li
                analyzer.py   Analyzer — the public facade
                settings.py   settings documents: diff and apply
                operations.py auto-cal / auto-zero / blowback / return-to-measure; plans, status
+               panel.py      manual calibration at the front panel: plans, watching, events
                factory.py    async open_device(...)  <- THE entry point
                discovery.py  find_devices, DiscoveryResult, DiscoverySummary
                snapshot.py   DeviceSnapshot, FujiDeviceSnapshot
@@ -600,7 +648,8 @@ testing/    arrow.py (fixtures)  mock.py (MockAnalyzer, MockLine)  pair.py (wiri
 errors.py  config.py  units.py  version.py  _logging.py  _lock.py  _deadline.py  py.typed
 ```
 
-There is no `devices/panel.py`: key simulation is not planned (§6.5).
+`devices/panel.py` watches manual calibrations made at the front panel. The key driver
+of Phase 7C will join it there (§6.5).
 
 ### What is deliberately different from the siblings
 
@@ -1064,7 +1113,8 @@ WRITE_ENVELOPE: Final = (  # frozen; not derived from the registry or probing
 ```
 
 - **00A4h–00ABh are excluded:** inferred coefficients (§2.6).
-- **07D0h (key simulation) is excluded** (§6.5).
+- **07D0h (key simulation) is excluded** until Phase 7C adds it for the calibration
+  keys, with the value checked as well as the address (§6.5).
 - **009Eh–00A3h belong to ZPB/ZPG**, and FC10 is the only function that reaches them.
 
 **The reviewed subset.** Inside the envelope, a register is writable only when its
@@ -1252,27 +1302,72 @@ unknown outcome.
 legitimate mid-sweep retries, and resolved it by ignoring the argument. fujilib keeps the
 argument meaningful by defining it as a deadline for the operation.
 
-### 6.5 Remote panel and manual calibration — not planned
+### 6.5 Remote panel and manual calibration
 
 Manual zero and span calibration exist only as front-panel key sequences through register
-42001. fujilib does **not** implement key simulation, for four reasons:
+42001. At the panel, each is ZERO or SPAN, the cursor to the channel, ENT to select it
+(the wait step, while the gas settles) and ENT again to calibrate. The first design ruled
+key simulation out. The owner reopened it on 2026-09-29 (§13.1 #71):
 
-1. **The same keys reach factory mode.** The service manual (TN5A1191b-E §3.1) enters
-   factory mode through the panel with a password printed in the manual, and "14.
-   Coefficient" there edits calibration coefficients. Key simulation would break the
-   factory-data guarantee (§5.4).
-2. **A single key can force a calibration.** On calibration errors 5 and 7, ENT means
-   "force calibration" (§2.8).
-3. **Gas stability can't be judged over Modbus.** During output hold the concentration
-   registers are frozen (§2.5), so a flat Modbus value while gas flows proves nothing.
-4. **The scope is wider than the call.** "At once" and "both" settings extend one
-   calibration to other channels and ranges (§2.6).
+- capa's cone profile records zero and span times and checks them before a test;
+- firmware 1.02 has no calibration log over Modbus to supply them (§2.11); its panel
+  keeps one, which only the display shows (findings §15.6);
+- remote zero and span from the host are wanted, with the operator switching the gas
+  valves by hand and naming the gas.
 
-Auto calibration and auto zero (42003/42004) cover remote calibration where the gas system
-is plumbed for it. If a workflow ever needs manual calibration remotely, it needs a new
-design and hardware prototype first. That design must have verified state transitions,
-operator-controlled progression, reporting of all affected channels, and state-specific
-cleanup. Returning the display to measurement is not proof that a calibration stopped.
+The work is staged (§12, Phase 7). **Watching** manual calibrations made at the panel
+needs no key (7A). The step, the flags, 00B9h and 00BDh show the whole sequence
+(§2.6, findings §14). **Driving** one (7C) comes after a key prototype (7B), and answers
+the first design's four reasons as follows:
+
+1. **The same keys reach factory mode.** Maintenance mode is behind MODE, a menu and a
+   password entered with SIDE; its default is 0000, and it can change the station
+   number. Factory mode is behind a second password, printed in the service manual
+   (TN5A1191b-E §3.1). fujilib will send only ZERO, SPAN, UP, DOWN, ENT and ESC, never
+   MODE or SIDE, and the client will check the *value* of every write to 42001, not
+   only its address (§5.4). By the manual, no sequence of those keys opens a menu.
+2. **A single key can force a calibration.** On errors 5 and 7, ENT forces the
+   calibration (§2.8). ENT is sent only on the channel-selection and wait steps. On the
+   error display, fujilib sends only ESC, then 42002.
+3. **Gas stability can't be judged over Modbus while output hold is on.** The
+   concentrations are held during a calibration then (ZPA p.64). With hold off they are
+   live (findings §14), and a steadiness rule (§13.1 #78) watches them. Where hold is
+   on, the rule falls back to the raw A/D counts, if the prototype shows those stay
+   live. The operator names the gas; fujilib compares it with the calibration-gas
+   setting, and the reading with the gas, before the calibrating key.
+4. **The scope is wider than the call.** "At once" zeroes every channel set to it
+   together, and "both" calibrates both ranges (§2.6). `plan_manual_calibration()`
+   reports every channel and range. The plan is read again before the calibrating key,
+   and the run stops if it has changed.
+
+**How keys are sent.** Every key is one locked operation:
+1. read the step;
+2. write the key once, never retried;
+3. read until the step, the key register (00BDh) and the flags show that it took.
+
+Anything unexpected stops the run, and the cleanup depends on the step it stopped on:
+
+| Step | Cleanup |
+|---|---|
+| channel selection, wait | ESC, which returns to measurement |
+| running | wait for the analyzer to finish |
+| error display | ESC |
+| any other screen | 42002 only |
+
+Cleanup runs shielded, with its own deadline, as the read-back does. It checks that the
+flags have cleared as well as the screen: returning the display to measurement is not
+proof that a calibration stopped.
+
+**Records.** A calibration, watched or driven, is recorded as a `ManualCalibrationEvent`
+(§8):
+- the channels and ranges;
+- the outcome, and how it was decided;
+- the readings before and after, and the deviation from the calibration gas;
+- the raw A/D values at the last read before it ran.
+
+That is what firmware 2.24's calibration log keeps: a detector count and a deviation
+(§13.1 #75). The A/D counts are no finer than the reading (findings §14.4), so they are
+kept as evidence, never as a measurement.
 
 ### 6.6 Probed capabilities
 
@@ -1365,6 +1460,7 @@ async with await open_device(
 | Recording | `record()` over a `PollSource`; `reopen()` after a connection failure | 5 |
 | Parameters (write) | `write_parameter(name, value, *, unit=None, confirm=False)`; `set_response_time`, `set_output_hold`, `set_hold_mode`, `set_hold_value`, `set_range`, `set_range_method`, `set_calibration_gas`; `diff_settings`, `apply_settings` | 6 |
 | Operations | `start_auto_calibration`, `start_auto_zero_calibration`, `start_blowback`, `return_to_measurement`, `plan_auto_calibration()`, `plan_auto_zero_calibration()`, `calibration_status()`, `wait_for_calibration(timeout=...)` | 6 |
+| Front panel | `plan_manual_calibration(channel, kind)`, `wait_for_manual_calibration(timeout=...)`; `ManualCalibrationTracker` over recorded frames | 7 |
 
 Every I/O method takes keyword-only `timeout: float | None = None`. Everything above
 `READ_ONLY` takes `confirm: bool = False`. Channel arguments accept `ChannelId` or `str`.
@@ -1797,6 +1893,23 @@ class CalibrationLogEntry: channel: ChannelId; range: int; kind: CalibrationKind
                            detector_count: int; deviation_percent_fs: float; at: PartialTimestamp
 
 @dataclass(frozen=True, slots=True)
+class ManualCalibrationEvent:               # a zero or span made at the panel (§6.5)
+    kind: ManualCalibrationKind             # ZERO, SPAN
+    outcome: ManualCalibrationOutcome       # COMPLETED, FAILED, CANCELLED, AMBIGUOUS
+    channels: tuple[ChannelId, ...]         # from the zero or span flags, else the cursor
+    ranges: Mapping[ChannelId, int]         # each channel's current range
+    started_at: datetime                    # ZERO or SPAN first seen
+    selected_at: datetime | None            # the wait step first seen
+    ran_after: datetime | None              # it ran between these two reads
+    ran_before: datetime | None
+    ended_at: datetime                      # back on measurement
+    before: Mapping[ChannelId, float | None]    # last reading on the wait step
+    after: Mapping[ChannelId, float | None]     # first reading back on measurement
+    adc_before: AdcValues | None            # the raw A/D values with ``before``
+    new_errors: Mapping[ChannelId, frozenset[ErrorCode]]
+    evidence: tuple[str, ...]               # why the outcome is what it is
+
+@dataclass(frozen=True, slots=True)
 class Sample:                               # one per analyzer per tick, unified API §C
     device: str
     address: int
@@ -1913,6 +2026,12 @@ the write list and the per-request faults. The line is `anymodbus`'s `MockServer
   set beforehand appear at the end. A command during a run changes nothing. This is
   written from the manuals, not from fujilib's operations code, and is unverified on
   hardware: the bench analyzer cannot auto-calibrate.
+- **The front panel's manual calibration**, as the bench analyzer showed it (findings
+  §14). `MockAnalyzer.press(key)` is an operator at the panel: the steps, the cursor
+  with "at once" channels sharing a position, the zero and span flags, 00B9h and
+  00BDh. The calibrating ENT sets the channels' readings to their calibration gases.
+  What the bench has not shown is written from the manuals and marked so in the
+  simulator: the error display, and hold.
 - **Reply faults per request:** drop, delay (a late reply), bad CRC, wrong word count,
   wrong function code, garbage, or an exception. Each fault applies once or every time, to
   every request or to the ones a predicate selects.
@@ -2359,10 +2478,14 @@ Differences from the plan above (decisions §13.1 #45–#56):
   for the command and logs private memory; `scripts/check_soak.py` judges memory by
   its fitted trend; `scripts/recover_parquet.py` recovers a killed Parquet file.
 
-**Release 0.1.0** — monitoring, metadata and acquisition, and the settings writes and
-operation commands of Phase 6 (#59). Before it (#55):
-the 12-hour recording (#58) and ~~the unplug test~~ (passed 2026-09-29), the owner's
-review of `docs/registers.md` (Phase 1's exit), and a decision on the capa spike (#44).
+**Release 0.1.0**: monitoring, metadata and acquisition, the settings writes and
+operation commands of Phase 6 (#59), and the watching of manual calibrations of
+Phase 7A (#71). Before it (#55):
+- the 12-hour recording (#58);
+- ~~the unplug test~~ (passed 2026-09-29);
+- Phase 7A;
+- the owner's review of `docs/registers.md` (Phase 1's exit);
+- a decision on the capa spike (#44).
 
 ### Phase 6 — Settings and operation commands (software and hardware **done 2026-09-29**)
 
@@ -2469,10 +2592,105 @@ Differences from the plan above (decisions §13.1 #59–#70):
   instruction manual's side effects (a moving-average change restarts the average,
   switching the peak alarm on restarts its count).
 
-### Phase 7 — Remote panel and manual calibration — not planned
+### Phase 7 — The front panel: manual calibration watched, then driven (reopened 2026-09-29)
 
-See §6.5. Revisit only if a real workflow needs remote manual calibration. The work would
-then start with a design and a hardware prototype, and be estimated after that.
+The first design did not plan this phase (§6.5): it was to wait for a real workflow,
+then start with a design and a hardware prototype. The owner named the workflow on
+2026-09-29 (#71), in three parts:
+
+- capa's cone profile needs zero and span times, and firmware 1.02 has no calibration
+  log to supply them;
+- zero and span should be started from the host, with the operator switching the gas
+  valves and naming the gas;
+- fujilib may use the keys where they reach what nothing else can.
+
+A calibration the owner made at the panel, watched read-only, answered the first design
+questions (findings §14):
+
+- the calibration leaves no trace in the holding registers;
+- the step register, the zero and span flags and two undocumented words follow it
+  closely;
+- the detector's raw A/D count shows what the calibration was computed from.
+
+The watch probe is `scripts/probe_calibration.py`.
+
+**7A — Watching manual calibrations** (read-only; into 0.1.0):
+
+- The registry gains `display.calibration_result` (00B9h) and `display.key` (00BDh) as
+  observed registers (#73), and `DisplayState` carries both.
+- `devices/panel.py`:
+  - `PanelObservation`: one read of the panel, from a status read or a frame.
+  - `ManualCalibrationTracker`: pure; it turns successive observations into
+    `ManualCalibrationEvent`s. The outcome is completed, failed, cancelled or
+    ambiguous, and the event records the evidence for it. It reads the step only on
+    the measurement screen (#80).
+  - `plan_manual_calibration()`: which channels and ranges a zero or span at the panel
+    would calibrate, and against which gases.
+- On the facade: `plan_manual_calibration(channel, kind)` and
+  `wait_for_manual_calibration(timeout=..., interval=0.5, adc=False)`, with their
+  blocking twins.
+- In the simulator, `MockAnalyzer.press(key)`: the panel as findings §14 found it.
+- No new row columns (#74). A calibration is its own record, which capa's
+  `AnalyzerCalibration` (serial, zero and span time, span gas) can be filled from.
+
+*Exit:*
+- lint, both type checkers, tests at 100 % coverage and the docs build;
+- on the bench, a zero and a span made at the panel while `wait_for_manual_calibration`
+  watches, each reported completed, and a cancel reported cancelled
+  (`examples/watch_manual_calibration.py`, `docs/hardware-test-day.md`).
+
+*Software exit met* on 2026-09-29, locally on Windows and Python 3.13: lint, both
+type checkers, 2,449 unit tests at 100 % branch coverage under asyncio and trio,
+and the docs build. *Hardware exit met* on 2026-09-29 (findings §16): the owner's
+O2 zero and span at the panel were each reported completed, and a cancel
+cancelled. Found while building it and on the bench:
+
+- A poll reads the readings and the zero and span flags in its first block and
+  the step in its second, so a calibration can end between them. The first read
+  back on measurement then still shows the old reading with its flag set. When
+  it does, the tracker takes the readings after from the next read, and
+  `ended_at` stays the first read on measurement.
+- The bench unit has the absent Ch4 and Ch5 set to "at once" as well, so a plan
+  for a zero of Ch1 lists them, marked not established.
+- A cancelled calibration first reported a deviation from the calibration gas
+  it never used; an event now reports deviations only when it ran.
+
+**7B — Key prototype** (one attended session, authorized separately, #79):
+
+- `scripts/probe_panel.py`, on `anymodbus` directly as the probes of Phase 2 were. It
+  sends only ZERO, SPAN, UP, DOWN, the ENT that selects a channel, and ESC, to 42001.
+  It never sends MODE, SIDE, or the ENT that starts a calibration.
+- It answers:
+  - whether a key written to 42001 acts, and shows in 00BDh, as a key pressed at the
+    panel;
+  - how soon the step follows it;
+  - whether key lock or the backlight swallows it;
+  - what ESC and 42002 do from each step.
+- In the same session, the owner answers findings §14.5 at the panel: the error
+  display, the "at once" pair, a "both" channel, and output hold, with the A/D values
+  watched under hold.
+
+*Exit:* findings §15, and the design of 7C revised from them and estimated.
+
+**7C — Remote manual zero and span** (after 0.1.0):
+
+- The key driver of §6.5 in `devices/panel.py`: `manual_calibration(plan,
+  confirm=True)`, an async context manager that cleans up for the step it stops on.
+  The key that starts the calibration is `DANGEROUS`; the other keys are `STATEFUL`.
+- The write envelope gains 07D0h for the six calibration keys, with the value checked
+  in the client and, independently, in the simulator (§5.4, §10).
+- A steadiness rule (#78) and the gas the operator names, checked against the
+  calibration-gas setting and the reading.
+- `fuji-calibrate`, an interactive command that walks the operator through the valves
+  (#76, #77).
+- A calibration record (#75) written beside each run.
+
+*Exit:*
+- the software exit as for 7A;
+- on the bench, with the owner at the gases, a remote zero and span of O2 that each
+  complete;
+- every cleanup path, driven by the simulator and, where it is safe to, by the
+  prototype.
 
 ### Phase 8 — Family and downstream (as hardware, manuals and need allow)
 
@@ -2487,7 +2705,7 @@ then start with a design and a hardware prototype, and be estimated after that.
 ### Sequencing
 
 ```
-decisions ─► Phase 0 ─► Phase 1 ─► Phase 3 ─► Phase 4 ─► Phase 5 ─► Phase 6 ─► 0.1.0
+decisions ─► Phase 0 ─► Phase 1 ─► Phase 3 ─► Phase 4 ─► Phase 5 ─► Phase 6 ─► 7A ─► 0.1.0 ─► 7B ─► 7C
                             ▲         ▲           ▲
 anymodbus 0.2.1 ────────────┼─────────┘           │
 Phase 2 (bench) ────────────┴─────────────────────┘   (findings feed registry, defaults, O2 scope)
@@ -2507,7 +2725,7 @@ engineer-weeks) plus the hardware session and the soak, and the writes at anothe
 |---|---|---|
 | 1 | ~~`Sample` and timestamp names: unified API (`t_mono_ns`, …) or `servomexlib`'s (`monotonic_ns`)~~ | **RESOLVED 2026-09-28: unified API.** It is what `capa` reads from `watlowlib`, `sartoriuslib` and `alicatlib` |
 | 2 | Scope of the first release | ~~Read-only monitoring, metadata and acquisition (0.1.0); a reviewed subset of writes in 0.2.0~~ **Revised 2026-09-29 by the owner (#59):** 0.1.0 has both |
-| 3 | Key simulation and manual calibration | **Not planned** (§6.5) |
+| 3 | Key simulation and manual calibration | ~~Not planned (§6.5)~~ **Revised 2026-09-29 by the owner (#71):** manual calibrations are watched (Phase 7A) and will be driven with the calibration keys only (7C) |
 | 4 | ~~Where the manuals live~~ | **RESOLVED 2026-09-28:** `docs/manuals/`, git-ignored |
 | 5 | Names: `Analyzer`, `FujiManager`, `FujiError`, `Fuji.open`, `fuji-*` | As listed |
 | 6 | Keep the `protocol=` argument although it has one value | Keep, for harmony and sink schemas |
@@ -2575,6 +2793,17 @@ engineer-weeks) plus the hardware session and the soak, and the writes at anothe
 | 68 | Probing the analyzer's own handling of out-of-range values | **Adopted 2026-09-29** on the owner's "proceed"; not separately confirmed: prepared as `scripts/probe_write.py out-of-range` on a register of an absent component; run only if authorized on the day of the bench session |
 | 69 | A warning against periodic writes | **Adopted 2026-09-29** on the owner's "proceed"; not separately confirmed: after `alicatlib`, a warning above `write_warn_per_minute` setting writes a minute, 10 by default, an argument of `open_device` |
 | 70 | When a range write is complete | **Adopted 2026-09-29** on the owner's "fix what the bench session found"; not separately confirmed: once the channel measures on the range, not when the setting reads back (findings §13.2). The current range is read within the read-back budget until it follows; if it never does, or cannot be read, `FujiVerificationError`. The simulator switches the current range after `MockAnalyzerConfig.range_lag_s` |
+| 71 | Phase 7 | **Decided 2026-09-29 by the owner:** reopened. Watching manual calibrations (7A) goes into 0.1.0. Remote manual zero and span from the host (7C) is wanted, with the operator switching the gas valves by hand and naming the gas. fujilib may use the keys where they reach what nothing else can. (First: not planned, #3) |
+| 72 | What the keys are used for | **Adopted 2026-09-29**, as explained to the owner: starting and cancelling a manual zero or span, nothing else. Modbus reports which screen is shown, never its text, so a panel-only screen such as the maintenance-mode calibration log cannot be read by navigating to it; and MODE and SIDE, the keys into the menus and their passwords, are never sent |
+| 73 | 00B9h and 00BDh | **Adopted 2026-09-29** on the owner's "proceed"; not separately confirmed: observed input registers, `display.calibration_result` and `display.key` (findings §14.2), read with the poll. An outcome never rests on 00B9h alone when the step or the flags say otherwise |
+| 74 | Row columns for the panel | **Adopted 2026-09-29** on the owner's "proceed"; not separately confirmed: none. Manual calibrations are records of their own, so the 0.1.0 row shape is unchanged |
+| 75 | What a calibration record keeps | **Adopted 2026-09-29**, at the owner's request to log the A/D values: the readings before and after, the deviation from the calibration gas, and the raw A/D values at the last read before it ran. That is what firmware 2.24's calibration log keeps; the counts are no finer than the reading (findings §14.4) |
+| 76 | A command-line tool for manual calibration | **Adopted 2026-09-29** on the owner's "proceed"; not separately confirmed: `fuji-calibrate`, interactive, in 7C. #66 stands for the operation commands |
+| 77 | Who starts a remote calibration once the gas is steady | **Adopted 2026-09-29** on the owner's "proceed"; not separately confirmed: fujilib judges the gas steady; it asks before the calibrating key unless told not to (`--auto`) |
+| 78 | The steadiness rule | *(awaiting, 7C)* Defaults to tune on the bench: steady within about 0.5 %FS over the longer of 30 s and twice the response time; the reading within about 10 %FS of the named gas; give up after 10 minutes. The A/D counts where the reading is held. On 2026-09-29 O2 settled within 0.01 vol% about 36 s after the gas changed (findings §14.4) |
+| 79 | Calibrations and keys on the bench analyzer | **Decided 2026-09-29 by the owner:** calibrations at the panel by the owner are allowed (an O2 zero and span were made, findings §14). Each session in which fujilib sends a key needs its own authorization |
+| 80 | The step register on a menu screen | **Adopted 2026-09-29 at the owner's request** ("fix the calibration tracker"), after findings §15.2. The menus put page numbers in 30182, some equal to calibration steps, and the tracker had turned a menu walk into five calibration events. 30182 is now a step only while 30181 shows measurement, as the manual defines it (TN5A1190a p.46). `PanelObservation.step` is `NONE` on any other screen, so a menu page neither starts a pass nor continues one. The decoder keeps the raw page number there. An event whose first read after it shows a menu says so in its evidence. The write refusal already checked the screen first (#63) |
+| 81 | Readings while the analyzer warms up after a power cycle | *(awaiting)* For about a minute after power-on the readings are far off, CO2 up to 220 %FS, and no flag says so (findings §15.5). A recording with `--reconnect` rides out the outage and keeps these rows with state `ok`. Options: (a) leave them, and document it; (b) give the polls of a settling period after a reconnect, about 90 s, a state that is not `ok`; (c) detect the warm-up from the analyzer, but nothing found so far marks it. The only trace of a power cycle is that 00B9h and the cursor read 0, which they may do anyway. Recommendation: (b), since a USB unplug and a power cut look the same from the host |
 
 ### 13.2 Hardware verification
 
@@ -2585,7 +2814,7 @@ and data are in [protocol-findings.md](protocol-findings.md).
 |---|---|---|
 | 1 | Inter-frame gap and latency | **≤ 1 ms after any reply, normal or exception**, measured from the reply by busy-wait, in all four normal/exception pairings in randomized order. The first draft's "20 ms after an exception" was a measurement artifact (§2.4). 12–27 ms per word read, 50–63 ms per 64 words |
 | 24 | The link re-run after `anymodbus` 0.2.1 | Done (findings §6.3). Confirms item 1, including normal → exception. `anymodbus` 0.2.1 keeps its 5 ms idle after every reply on the analyzer (minimum 5.2 ms, 0 of 1,000 failed); 0.2.0 collapsed it to about 0.1 ms after an exception |
-| 2 | Reply to unsupported function codes | FC01 and FC02 answer exception **02**, not 01. FC08 not sent |
+| 2 | Reply to unsupported function codes | FC01 and FC02 answer exception **02**, not 01. FC07, FC08/0000h, FC0B, FC0C, FC11, FC14, FC18 and FC2B/0Eh answer **01** (findings §15.1) |
 | 3 | 65 words; region boundaries | exception 03; a block crossing a region end is also exception 03; a read starting outside the map is 02 |
 | 5 | Registers 40165–40172 | four low-word-first long words of 1,000,000; *interpreted* as interference compensation coefficients (inferred) |
 | 6 | Type and serial encoding | ASCII, one character per register, low byte |
@@ -2602,6 +2831,8 @@ and data are in [protocol-findings.md](protocol-findings.md).
 | 12 | Whether key lock (40074) blocks Modbus writes or commands | **It does not block writes** (2026-09-29, findings §13.3). With key lock on, a setting write was acknowledged and verified, and return to measurement was acknowledged. The panel was already on the measurement screen, so whether the command would close a menu under key lock is not shown |
 | 14 | Whether settings survive a power cycle without an explicit save | **They do** (2026-09-29, findings §13.5). A value written over Modbus read back unchanged after the analyzer was off for 10 s; there is no save step |
 | 32 | Whether the analyzer refuses, clamps or stores a value outside a setting's documented range | **It stores it** (2026-09-29, findings §13.6). 61 and 0 written to the response time of NDIR component 4 were acknowledged without an exception and read back as written; fujilib's limits are the only guard. One register tried, of an absent component |
+| 35 | What a manual calibration at the panel leaves in the registers | Done 2026-09-29 (findings §14), watched read-only while the owner zeroed and spanned O2 and cancelled a zero. No holding word changes, the factory blocks included. The step register, the per-channel zero and span flags, 00B9h (the last calibration) and 00BDh (the key being pressed) follow it; the detector's A/D count is not changed by it. fujilib's own watcher then recorded a zero, a span and a cancel as they happened (findings §16) |
+| 40 | What the undocumented registers hold | Done 2026-09-29 (findings §15), read-only, while the owner walked the menus and power-cycled the analyzer. 30182 numbers menu pages off the measurement screen (#80). 046Ah–0471h are the unsmoothed detector counts. The factory blocks hold the "other parameters" at 0C2Dh–0C34h, but no calibration coefficients, and they did not change across a power cycle. The readings are wrong for about a minute after power-on, with no flag set (#81). The register capture of 2026-09-28 has one bad word, 0440h |
 | 34 | Setting writes and commands on the analyzer | Done 2026-09-29 (findings §13). The current range lags a verified range write by tens of milliseconds (findings §13.2), so a range write now waits for it (#70); with that, 10 of 10 stateful tests pass (findings §13.8). A menu at the panel refuses writes, and return to measurement closes it. Every setting matched the saved ones at the end |
 
 Still open:
@@ -2634,6 +2865,18 @@ Still open:
 33. What auto calibration and auto zero calibration do on an analyzer without the
     valve-drive option, and whether 30049 covers the hold extension. *Never on the bench
     unit; a unit with the option and plumbed gases.*
+36. A manual calibration that fails: the error display (step 10), what 00B9h and the
+    flags show, and whether ENT forces it (§2.8). *Phase 7B, at the panel.*
+37. A manual zero of the "at once" pair, and of a channel set to "both": which flags
+    are set, and which ranges change. *Phase 7B, at the panel.*
+38. Output hold during a manual calibration: whether the readings and the A/D values
+    freeze (ZPA p.64 says the readings do). *Phase 7B, at the panel.*
+39. Whether a key written to 42001 acts, and shows in 00BDh, as a key pressed at the
+    panel; whether key lock or the backlight swallows it. *Phase 7B, the key
+    prototype.*
+41. What 00B7h, 00B8h, 00BAh, 00BBh, 00BFh–00C1h and 0472h–0478h mean, why each
+    detector count at 046Ah–0471h appears twice, and the rest of the factory blocks
+    (findings §15.7). *No plan: nothing depends on them.*
 29. ~~Trio with a real Windows COM port (§4.7 item 14)~~ — fixed in `anyserial` 0.2.0;
     the hardware tests pass on trio on the bench (findings §10.4). *Linux and macOS
     untested.*
@@ -2655,17 +2898,19 @@ Still open:
 | Channels | Ch1 CO2 0–10.00 vol%, Ch2 CO 0–1.000 vol%, Ch3 O2 0–21.00 / 0–25.00 vol% | bench |
 | Response time | 15 s on every channel | bench |
 | Panel user-mode menu | Switch Ranges, Calibration Parameters, Parameter Setting; no alarm, peak-alarm, auto-calibration or auto-zero menu | owner, 2026-09-29 |
-| Calibration state | doubtful: O2 20.29 vol%, CO2 −0.11 vol% at capture; error log full of calibration errors 5, 6, 7 | bench |
+| Calibration state | doubtful: O2 20.29 vol%, CO2 −0.11 vol% at capture; error log full of calibration errors 5, 6, 7. O2 zeroed and spanned at the panel on 2026-09-29 (findings §14, §15.6) | bench |
+| Factory "other parameters" | zero limit off, **range limit off** (readings not held at 110 %FS), 4 analog outputs, English, cylinder zero gas, Modbus, varied range on, no DIO | owner, factory screen; 0C2Dh–0C34h (findings §15.3) |
+| Panel calibration log | present on 1.02 in maintenance mode, but not over Modbus | owner, 2026-09-29 (findings §15.6) |
 
 The predictions made from the nameplate held: the channel layout, ranges that differ
 from the nameplate, and firmware older than 2.24. What "ZPA3" denotes is still unknown;
 it is not in the manuals and the registers report `ZPA`.
 
 **Firmware.** Version 1.02 is older than 2.24, which costs this unit two things over
-Modbus: the calibration log and type-code digits 27–29. Neither is needed for
-measurement, status, settings or commands. No update procedure is documented (§1,
-non-goals), so the library is designed to work fully on this firmware rather than to
-depend on an upgrade.
+Modbus: the calibration log (the panel has one) and type-code digits 27–29. Neither is
+needed for measurement, status, settings or commands. No update procedure is documented
+(§1, non-goals), so the library is designed to work fully on this firmware rather than
+to depend on an upgrade.
 
 **Every [bench] statement in this document comes from this one unit on version 1.02.**
 The manual was revised for 2.24, a major version later. The documented map was confirmed
@@ -2684,9 +2929,11 @@ per profile, never as constants of the family.
    the ZPA's analog output wired to the NI DAQ, and at what resolution?
 4. **The capture conditions.** Was the analyzer sampling ambient air when O2 read
    20.29 vol%? When was it last successfully zeroed and spanned?
-5. **Automated calibration.** Is it needed, and is the gas system plumbed for auto
-   calibration? The bench unit's type code lists no valve-drive option (§2.6), so
-   fujilib refuses auto calibration there unless the option is asserted.
+5. ~~**Automated calibration.** Is it needed, and is the gas system plumbed for auto
+   calibration?~~ **Answered 2026-09-29 (#71):** zero and span are wanted from the
+   host, with the valves switched by hand, as manual calibrations driven by keys (Phase
+   7C). The bench unit's type code lists no valve-drive option (§2.6), so fujilib still
+   refuses auto calibration there unless the option is asserted.
 6. **Deployment.** Will the rig run fujilib on Windows or Linux? May the FTDI latency
    timer be lowered from 16 ms?
 7. **Firmware.** Is a firmware upgrade through Fuji service plausible? It is the only

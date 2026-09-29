@@ -113,6 +113,20 @@ await anz.set_range("CH3", 2, confirm=True)
 await anz.set_calibration_gas("CH3", 1, "span", 20.9, unit="vol%", confirm=True)
 ```
 
+## Calibrations made at the front panel
+
+The analyzer keeps no calibration log on older firmware, so fujilib records a
+manual zero or span as it happens. It reads the panel; it presses no key.
+
+```python
+plan = await anz.plan_manual_calibration("CH3", "zero")  # what a zero of CH3 touches
+event = await anz.wait_for_manual_calibration(timeout=600, adc=True)
+print(event.outcome, event.channels, event.calibrated_at, event.deviations)
+```
+
+The event says whether it completed, failed or was cancelled, and why. See
+[Safety](safety.md#manual-calibration-at-the-front-panel).
+
 ## Finding analyzers
 
 ```python

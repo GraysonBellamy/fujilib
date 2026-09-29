@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `DisplayState.calibration_step` is a `ManualCalibrationStep` only on the
+  measurement screen. On a menu screen it is the raw word, which there numbers the
+  menu's pages (30182 reads 1, 2, 5, 22, 26, 78 and more in the maintenance and
+  factory menus), so a menu page is never taken for a calibration step.
+
 - Only a reviewed subset of the register map is writable: the calibration gases
   and calibration scope, the response times, output hold, hold mode and the hold
   values, and each channel's range and range method (`manual` or `auto`). The
@@ -48,6 +53,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Manual calibrations made at the front panel are watched and recorded
+  (`fujilib.devices.panel`). `Analyzer.wait_for_manual_calibration(timeout=...,
+  interval=0.5, adc=False)` polls until a manual zero or span ends and returns a
+  `ManualCalibrationEvent`:
+  - the channels and ranges;
+  - completed, failed, cancelled or ambiguous, with the evidence for it;
+  - the readings before and after, the calibration gas and the deviation from it;
+  - with `adc`, the raw A/D values when it ran.
+
+  `ManualCalibrationTracker` does the same over any series of frames, a
+  recording's included. `Analyzer.plan_manual_calibration(channel, kind)` says
+  which channels and ranges a zero or span at the panel would calibrate: "at once"
+  and "both" widen it. Both have blocking twins. fujilib sends no key.
+- Two undocumented input registers the bench analyzer showed during a manual
+  calibration: `display.calibration_result` (30186: 0 once a channel is selected,
+  4 while it runs, 6 when it has finished) and `display.key` (30190: the key being
+  pressed). `DisplayState` carries both, as `calibration_result` and `key`.
+- `MockAnalyzer.press(key)`: an operator at the simulated front panel, whose
+  manual zero and span follow the bench analyzer. `MockAnalyzerConfig` gains
+  `manual_calibration_s`, `key_hold_s` and `panel_channels`.
+- `scripts/probe_calibration.py`: a read-only probe that snapshots every readable
+  register before and after a calibration made at the panel, and watches the panel
+  meanwhile; `scripts/probe_unknowns.py`, which sends the read-only diagnostic
+  function codes once each and watches the display words no manual explains;
+  `examples/watch_manual_calibration.py`.
 - Setting writes: `Analyzer.write_parameter(name, value, *, unit=None, confirm=False)`
   and `set_response_time`, `set_output_hold`, `set_hold_mode`, `set_hold_value`,
   `set_range`, `set_range_method` and `set_calibration_gas`. Everything above

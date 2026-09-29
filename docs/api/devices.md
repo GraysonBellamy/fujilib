@@ -10,7 +10,8 @@ frozen data models (design §8), the pure decoders from register banks to
 models, the read procedures that join a read plan to a decoder, safety tiers
 and capability flags, and the unified-API snapshots; and the write side:
 encoding a setting, writing it and reading it back, settings documents, and
-the operation commands (design §6.1-§6.4, [Safety](../safety.md)).
+the operation commands (design §6.1-§6.4, [Safety](../safety.md)); and the
+front panel's manual calibrations, planned and watched (design §6.5).
 
 ## Opening and using an analyzer
 
@@ -47,3 +48,7 @@ the operation commands (design §6.1-§6.4, [Safety](../safety.md)).
 ::: fujilib.devices.settings
 
 ::: fujilib.devices.operations
+
+## The front panel
+
+::: fujilib.devices.panel

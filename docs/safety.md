@@ -84,7 +84,8 @@ Everything else is read-only, including settings the manuals document:
 Whatever the registry says, the Modbus client refuses any write outside a
 frozen envelope of documented addresses, as the last step before the wire, so
 a forged register or an address in a file cannot reach the analyzer. Key
-simulation (42001), which also reaches the factory menu, is outside it.
+simulation (42001), which also reaches the factory menu, is outside it for
+now.
 
 Limits are the narrower of the two manuals' where they disagree: the MODBUS
 manual defers setting ranges to the instruction manual. A response time is
@@ -205,6 +206,28 @@ return it with their result. Things to know:
 
 The development analyzer has no auto-calibration option, so auto calibration
 and auto zero calibration have been exercised only on the simulator.
+
+## Manual calibration at the front panel
+
+A manual zero or span is made at the panel: ZERO or SPAN, the cursor to the
+channel, ENT to select it, and ENT again once the reading has settled on the
+gas. **fujilib presses no key.** It watches from the status registers, and
+records what happened:
+
+- `plan_manual_calibration(channel, "zero")` says, without changing anything,
+  which channels and ranges a zero or span of `channel` would calibrate, and
+  against which gases. A zero of a channel set to "at once" zeroes every channel
+  so set, and a channel set to "both" is calibrated on both ranges.
+- `wait_for_manual_calibration(timeout=...)` returns a `ManualCalibrationEvent`
+  when one ends: the channels, whether it completed, failed or was cancelled (or
+  that the reads cannot tell), the readings before and after, and the
+  deviation from the calibration gas.
+
+Settings writes and commands are refused while a manual calibration is under
+way at the panel, as they are during any calibration. Pressing keys over
+Modbus, to start a zero or span from the host, is planned only for the
+calibration keys, never the keys that open the menus, and only after a
+prototype on the bench (design §6.5).
 
 ## On the command line
 

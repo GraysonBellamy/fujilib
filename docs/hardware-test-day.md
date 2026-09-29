@@ -6,9 +6,10 @@ description: The procedure for running fujilib's tests against a real Fuji ZP-se
 
 > The written procedure for the hardware tests (design §10). Each tier needs the
 > owner's authorization before it is ever run; this page covers the read-only
-> tier and the stateful one, which writes settings and restores them. There
-> are no destructive tests: the bench analyzer cannot auto-calibrate. Results
-> go to [protocol-findings.md](protocol-findings.md).
+> tier, the stateful one, which writes settings and restores them, and the
+> watching of a calibration the owner makes at the front panel. There are no
+> destructive tests: the bench analyzer cannot auto-calibrate. Results go to
+> [protocol-findings.md](protocol-findings.md).
 
 ## Bench facts
 
@@ -31,7 +32,7 @@ ports. That sends nothing to the other instruments on the rig.
 |---|---|
 | Every read the library makes: identity, polls, status, metadata, settings, logs, clock, A/D | Any register write |
 | Discovery on the analyzer's own port, its station and the next one | Operation commands: auto calibration, auto zero, blowback, return to measurement |
-| The command-line tools, which only read | Key simulation (never, design §6.5) |
+| The command-line tools, which only read | Key simulation (design §6.5, Phase 7B) |
 | | Probing ports that belong to other instruments |
 
 ## How the bench is driven on the development machine
@@ -148,7 +149,7 @@ would calibrate on whatever gas is at the inlet ([Safety](safety.md)).
 |---|---|
 | Writes of the reviewed settings, each restored | Auto calibration, auto zero calibration (never on this analyzer) |
 | Return to measurement | Blowback (not a ZPA feature) |
-| `scripts/probe_write.py`, step by step | Key simulation (never, design §6.5) |
+| `scripts/probe_write.py`, step by step | Key simulation (design §6.5, Phase 7B) |
 | | Any register outside the reviewed subset |
 
 1. **Pre-flight** as for the read-only session, and save the settings first:
@@ -215,6 +216,40 @@ would calibrate on whatever gas is at the inlet ([Safety](safety.md)).
 
 Stop at the first unexpected result and record it: a write that reads back
 otherwise, an unknown outcome, or a setting left changed.
+
+## Watching a calibration at the panel
+
+fujilib only reads here. The owner calibrates at the front panel, with the
+gases at the inlet, and decides each step; it needs the owner's authorization
+like any session, because it changes the analyzer's calibration. It checks
+that every manual zero and span is recorded as it happened (design §6.5,
+Phase 7A).
+
+1. **Pre-flight** as for the read-only session. Note the calibration gas
+   settings of the channel to be calibrated (`fuji-configure dump`), and
+   whether it is set to zero "at once" or calibrate "both" ranges:
+   `plan_manual_calibration()` lists what a zero or span would touch.
+2. **Start the watcher**, and leave it running:
+
+   ```bash
+   uv run python examples/watch_manual_calibration.py COM8
+   ```
+
+3. **A zero**, with zero gas flowing: ZERO, the cursor to the channel, ENT to
+   select it, and ENT again once the reading is steady. Expected: one line
+   with `"outcome": "completed"`, the channel, the reading before, `after` at
+   the zero gas, and the deviation.
+4. **A span**, with span gas flowing: SPAN, the channel, ENT, ENT. Expected
+   as for the zero, with `after` at the span gas setting.
+5. **A cancel**: ZERO, the channel, ENT, then ESC. Nothing is calibrated.
+   Expected: `"outcome": "cancelled"`.
+6. **Stop the watcher** with Ctrl-C.
+
+The 2026-09-29 sessions recorded the same sequence with
+`scripts/probe_calibration.py` (findings §14) and then with this watcher, which
+reported the zero and span completed and the cancel cancelled (findings §16). A second channel, a channel set
+to "at once" or "both", output hold and a calibration that fails are open
+questions for the key prototype (design §12, Phase 7B).
 
 ## Deliverables
 

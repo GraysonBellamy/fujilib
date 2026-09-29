@@ -8,7 +8,9 @@ Measured on the bench analyzer with the read-only probes in `scripts/`
 (`probe_connect.py`, `probe_map.py`, `probe_scan.py`, `probe_link.py`, and, for
 fujilib's own client, `probe_client.py`, §10). Through §12 only Modbus *read* function
 codes were sent; no register was written and no command was issued. §13 records the
-first writes and commands, made in a session the owner authorized and attended.
+first writes and commands, made in a session the owner authorized and attended. §14
+records a calibration the owner made at the front panel, watched read-only, and §15 a
+read-only session on what the registers still left unexplained.
 
 This document records what was **observed**. The manual is INZ-TN5A1190a-E unless noted.
 Addresses are relative (on-the-wire) hexadecimal. Raw results are in `probe_out/`
@@ -123,7 +125,8 @@ FC03 and FC04 address **separate tables**, including at 03E8h and above.
 | 03E8h–03EEh | **real-time clock**, BCD: year, month, day, day of week, hour, minute, second | read `26 09 28 01 11 51 39` at 11:58:07 PC time on Monday 2026-09-28; advanced correctly between reads; about 6.5 minutes behind the PC |
 | 03EFh–0418h | **21 A/D conversion values**, long words, low word first | values match the service manual's A/D table: the reference voltage (No. 15) read 38929, inside its stated 35,000–80,000 window; IR inputs No. 0 and No. 1 read about 65,700 and 69,700 |
 | 0419h–0424h | zero | |
-| 046Ah–0471h | four long words close to the IR input counts | purpose unknown |
+| 046Ah–0471h | four long words close to the IR input counts | the unsmoothed CO2 and CO detector counts, each twice (§15.4) |
+| 0472h–0479h | zero, but 0472h–0478h read 1 now and then | purpose unknown (§15.4) |
 
 The A/D values were live: two reads minutes apart differed by a few counts.
 
@@ -134,7 +137,9 @@ The A/D values were live: two reads minutes apart differed by a few counts.
 | 009Eh–00A3h | reference-gas and averaging settings (documented for ZPB / ZPG) |
 | 00A4h–00ABh | four long words, each 1,000,000 — the interference compensation coefficients, of which the manual lists only the first |
 | 03E8h–069Bh | factory data: tables of breakpoints (300, 600, 1000 … 20000), long-word coefficients near 100,000 and word coefficients near 10,000 |
-| 0BB8h–0C66h | factory configuration, including a copy of the ranges and of the type code and serial |
+| 0BB8h–0C66h | factory configuration, including a copy of the ranges and of the type code and serial, and the factory menu's "other parameters" at 0C2Dh–0C34h (§15.3) |
+
+Neither block holds the zero and span calibration coefficients (§15.3).
 
 **These two factory blocks must never be written.** They hold the linearization and
 calibration data. Whether the analyzer would accept a write there was not tested and
@@ -183,6 +188,7 @@ clock and A/D values come from the same 0.63 s.
 | 65 words | exception 03 | same |
 | block crossing the end of a region | exception **03** | — |
 | FC03 read of a command register (07D0h) | exception 02 | — |
+| FC07, FC08/0000h, FC0B, FC0C, FC11, FC14, FC18, FC2B/0Eh | exception **01** (§15.1) | — |
 
 A CRC-valid exception of any kind therefore means "a station is present".
 
@@ -342,10 +348,13 @@ package versions and the SHA-256 of the probe scripts:
 
 - Any other analyzer or firmware version.
 - Any write: settings, commands, key simulation. (Setting writes and return to
-  measurement later; see §13. Key simulation, calibration and blowback are never sent.)
+  measurement later; see §13. Key simulation, calibration and blowback are never sent;
+  a calibration made at the panel was watched later, see §14.)
 - Whether key lock affects Modbus writes. (Later; see §13.3.)
 - Persistence of settings across a power cycle. (Later; see §13.5.)
 - Addresses 2000h–FFFFh at full resolution (sampled only).
+- Function codes other than 01–04, 06 and 10h. (Later: eight read-only diagnostic and
+  identification codes answer exception 01; see §15.1.)
 - Multi-drop with more than one station.
 - A comparison of the Modbus O2 value against the analog output.
 - Linux timing. (Normal → exception gap pairs and randomized gap order were measured
@@ -778,3 +787,349 @@ it ran at 16:52 UTC with the same code otherwise. A fresh dump
 in 14.8 s (`stateful_tests_20260929b.log`). The range test took 1.28 s, against
 0.88 s before. The diff against the settings saved at the start of the session
 showed nothing to write, with 162 unchanged.
+
+## 14. A manual calibration at the panel (2026-09-29)
+
+The owner calibrated the O2 channel at the front panel, 17:32–17:38 UTC, while
+`scripts/probe_calibration.py watch` read the analyzer. That probe sends only read
+function codes, so fujilib wrote nothing and pressed no key. The questions were:
+
+- whether the analyzer keeps any trace of a calibration in the registers it
+  answers but the manual does not document, which could stand in for the
+  calibration log that firmware 1.02 lacks (design §2.11, §6.5);
+- what the panel and status registers do during a manual calibration.
+
+Setup: `COM8`, station 1, `anymodbus` 0.3.0, `anyserial` 0.2.0, `anyio` 4.15.1,
+Python 3.13.13, Windows 11. The probe took a full snapshot of every readable region
+(1,379 words: FC04 0000h–00C1h and 03E8h–0479h, FC03 0000h–00ABh, 03E8h–069Bh and
+0BB8h–0C66h) twice before the first calibration and 20 s after each one. In between,
+it read FC04 0000h+61, 0083h+60 and 03E8h+49 every 0.5 s: 661 reads, none lost
+after retries. The raw files are in `probe_out/calwatch_20260929T173222Z/`
+(git-ignored).
+
+Before it, Ch3 was set to zero mode "each" and calibration range "current", so a
+zero or span of Ch3 touches Ch3's range 1 only. Its range 1 calibration gases are
+0.00 (zero) and 20.95 vol% (span). Ch1 and Ch2 are set to "at once". Output hold and
+key lock were off.
+
+The owner made three passes. At the panel, each is ZERO or SPAN, the cursor to the
+channel, ENT to select it, and ENT again to start the calibration:
+
+| UTC | Keys | Steps (30182) | O2 before → after |
+|---|---|---|---|
+| 17:32:49–17:32:54 | ZERO, DOWN, ENT, ENT | 4 → 5 → 6 → 0 | −0.12 → 0.00 vol% on zero gas |
+| 17:34:38–17:34:43 | SPAN, ENT, ENT | 7 → 8 → 9 → 0 | 20.69 → 20.95 vol% on span gas |
+| 17:37:39–17:37:44 | ZERO, ENT, ESC | 4 → 5 → 0 | 20.95 → 20.95: cancelled, nothing calibrated |
+
+No calibration error followed any of them, and Ch1 and Ch2 read −0.09 and −0.006
+vol% throughout.
+
+### 14.1 Nothing in the holding registers changed
+
+Across all three passes **no FC03 word changed**: not the 172 user settings, and
+not one of the 867 words of the two undocumented factory blocks. The zero and span
+are kept somewhere the Modbus map does not reach. The words that did change, outside
+the live readings, clock and A/D values, are two undocumented input words (§14.2)
+and the manual-calibration cursor.
+
+### 14.2 Two undocumented display words
+
+The manual marks 30184–30188 "do not use" and lists nothing at 30190. Two of those
+words follow the panel:
+
+- **00BDh (30190) is the key being pressed**, in the codes of the key register 42001.
+  It read 64 as ZERO was pressed, 8 for DOWN, 32 for each ENT, 128 for SPAN and 16
+  for ESC, each for one read only, then 0. The 16 in the capture of 2026-09-28
+  (§4.3) was therefore an ESC at the panel.
+- **00B9h (30186) follows the last calibration.** It went to 0 when ENT selected
+  the channel (the wait step), to 4 when the calibration started, and to 6 when it
+  finished, and it stayed 6 until the next channel was selected. The cancelled pass
+  left it at 0. The 6 in the register capture of 2026-09-28 (§4.3), with the cursor
+  on Ch3, fits an O2 calibration made at the panel before it. Its value after a
+  calibration error is not known.
+
+### 14.3 The steps and flags
+
+- **The screen register (30181) stayed 0**, measurement, throughout, as the manual
+  says for a manual calibration (TN5A1190a p.46). Only 30182 shows one.
+- **The per-channel zero and span flags cover manual calibration.** The Ch3 zero flag
+  (30052) came on with the wait step, or one read later, and stayed on until the
+  calibration ended. The span flag (30057) did the same. The cancel cleared the zero
+  flag in the same read as the step. The manual does not say whether these flags
+  include manual calibration.
+- **ESC from the wait step goes straight back to measurement**, not to channel
+  selection.
+- **The cursor (30189) kept its channel.** ZERO opened with the cursor on Ch1, one
+  DOWN put it on Ch3, and the next ZERO and SPAN opened on Ch3. The "at once" pair
+  Ch1 and Ch2 took a single cursor position.
+- **A calibration takes one to three seconds** from the second ENT: 1.6 s to the
+  measurement screen for the zero, 2.4 s for the span. The span's new value (20.94)
+  showed while the step still read "running".
+- **The analyzer did not answer for about a second while the zero ran.** Two
+  attempts at one read went unanswered (0.5 s timeouts each); the third was
+  answered, with the step back at 0. Nothing went unanswered during the span.
+
+### 14.4 The O2 detector's raw count
+
+A/D value No. 4, `adc.input5` (03F7h), is the O2 detector. It read 636–637 on zero
+gas and 3351–3353 on span gas, and **a calibration did not change it**: the zero moved
+the reading from −0.12 to 0.00 at 636 counts, and the span from 20.69 to 20.95 at
+3352. So the count is the detector's raw signal, before the calibration is applied.
+
+- That is about 130 counts per vol%, one count about 0.008 vol%, against the
+  Modbus reading's step of 0.01 vol%. It is not a finer O2 measurement.
+- While a gas was steady, it varied by one count, and the reading by one step at most.
+- Recorded at each calibration, with the reading before it, it gives what firmware
+  2.24's calibration log keeps per record (design §2.6): a detector count and the
+  deviation.
+
+When the gas changed from zero to span gas, the O2 reading rose from 1.34 to 20.07
+vol% in 18 s and reached 20.68 about 36 s after the change. It then stayed within
+0.01 vol% until the calibration, with the response time at 15 s.
+
+### 14.5 Not answered here
+
+- What the flags, 00B9h and the step do after a calibration error (step 10), and
+  whether ENT there forces the calibration as the manual says.
+- A zero of the "at once" pair: whether both channels' flags are set.
+- A channel set to "both", which should calibrate both ranges.
+- Output hold on: whether the Modbus readings and the A/D values freeze during a
+  manual calibration (ZPA p.64 says the readings do).
+- Whether a key written to 42001 acts, and shows in 00BDh, as a key at the panel.
+
+## 15. What the registers left unexplained (2026-09-29)
+
+A read-only session at 18:04–18:16 UTC set out to explain the words the analyzer
+answers but no manual describes (§4.1, §4.2), and to try the function codes it had
+never been sent. The owner walked the panel's menus and noted what the maintenance and
+factory screens showed, then switched the analyzer off and on.
+
+The probe was `scripts/probe_unknowns.py`, which sends only read requests and the fixed
+diagnostic frames of §15.1. Its `watch` read the status, the display block (00B4h–00C1h),
+the clock and A/D block with the zero words after it (03E8h–0424h) and 046Ah–0479h
+every 0.3 s: 2,231 answered reads. It took a full snapshot of every readable region
+(1,379 words) twice before the walk, 15 s after the power cycle and at the end.
+
+Setup: `COM8`, station 1, `anymodbus` 0.3.0, `anyserial` 0.2.0, `anyio` 4.15.1,
+Python 3.13.13, Windows 11. Raw files are in `probe_out/`, git-ignored:
+`probe_functions_20260929T180428Z.json` and `unknowns_20260929T180435Z/`.
+
+### 15.1 Function codes the analyzer had never been sent
+
+| Request | Reply |
+|---|---|
+| FC07 read exception status | exception **01** |
+| FC08 sub-function 0000h, return query data | exception 01 |
+| FC0B get comm event counter | exception 01 |
+| FC0C get comm event log | exception 01 |
+| FC11 (17) report server ID | exception 01 |
+| FC14 (20) read file record, file 1, record 0 | exception 01 |
+| FC18 (24) read FIFO queue at 0000h | exception 01 |
+| FC2B/0E (43) read device identification, basic | exception 01 |
+
+- Each reply took 12–14 ms (66 ms for the first). A normal read straight after them was
+  answered.
+- FC08 was sent with sub-function 0000h only, since its other sub-functions restart or
+  silence the link.
+- FC01 and FC02 answer 02 (§5), so the analyzer knows those two function codes but none
+  of these.
+- **The program version cannot be read over Modbus.** The display at power-on is the only
+  place it appears.
+
+### 15.2 30182 numbers the menu pages
+
+The screen register (30181) followed every menu the owner opened. The step register
+(30182), which the manual defines only for a manual calibration on the measurement
+screen (TN5A1190a p.46), numbered the pages of the menus:
+
+| Screen (30181) | 30182 |
+|---|---|
+| 0 measurement, 1 menu, 2 range change, 3 calibration setting | 0 |
+| 7 parameter setting | 0; 1 for one read as the maintenance password was confirmed |
+| 8 maintenance | 0 on the item list; 1 sensor input; 2 error log; 22 and 23 calibration log; 5 while the factory password was entered |
+| 9 factory | 0 on the item list; 26 A/D data; 38 coefficients; 50 other parameters; also 1, 2, 4, 8, 11, 12, 13, 18, 34, 35, 40, 44, 56, 57, 60, 61, 63, 65 and 78 |
+
+- **Several page numbers are calibration step values.** Examples are 5 ("zero: wait")
+  during the password entry, and 4 and 8 in factory mode. Only the screen register tells
+  them apart: during a manual calibration it reads 0 (§14.3).
+- fujilib's calibration tracker read the step whatever the screen showed. Replayed
+  through it, this session's log gave five calibration events: four cancelled and one
+  ambiguous. Nothing was calibrated. It now reads 30182 as a step only on the
+  measurement screen, and so does the decoder (design §13.1 #80). The same replay now
+  gives no event, and §14's log still gives its zero, span and cancel.
+- **The "do not use" words 00B7h, 00B8h, 00BAh, 00BBh and 00BFh–00C1h read 0 on every
+  screen**, as did 0419h–0424h.
+- **00BDh showed every key read, the password keys included.** A program polling fast
+  enough could follow a password entered at the panel.
+- The last-calibration word (00B9h) kept 6 through the menus, and the cursor (00BCh)
+  kept Ch3.
+
+### 15.3 The factory blocks: no calibration coefficients, and the "other parameters"
+
+The two undocumented holding blocks (§4.2) did not change at any point:
+
+- through the menu walk;
+- through the power cycle;
+- through a second visit to factory mode after it.
+
+All 1,039 holding words were the same at the end as at the start. The blocks are
+therefore not a copy that is refreshed at power-on.
+
+**The calibration coefficients are not in them.** The factory "Coefficient" screen showed
+Ch1's zero and span coefficients:
+
+| Range | Zero | Span |
+|---|---|---|
+| 1 | 1.529192 | 0.661410 |
+| 2 | 1.773113 | 0.305870 |
+
+None of the four values appears in any readable region, in any of these encodings:
+
+- one word, or a long word with either word first, scaled by 10^3 to 10^6;
+- the reciprocal of the value, scaled the same way;
+- 32- and 64-bit floating point in each word order;
+- fixed point with 8 to 30 fraction bits.
+
+With §14.1, the conclusion is that the analyzer keeps its zero and span where the
+Modbus map does not reach.
+
+**0C2Dh–0C34h are the factory menu's "other parameters"**, in the order the panel lists
+them:
+
+| Address | Panel | Word |
+|---|---|---|
+| 0C2Dh | zero limit | 0 (off) |
+| 0C2Eh | range limit | 0 (off) |
+| 0C2Fh | AO No. | 4 |
+| 0C30h | language | 1 (Eng) |
+| 0C31h | zero gas | 0 (Cylinder) |
+| 0C32h | protocol | 0 (MO) |
+| 0C33h | varied range | 1 (on) |
+| 0C34h | DIO No. | 0 |
+
+The service manual (TN5A1191b p.29-30) describes the two limits:
+
+- **Zero limit off:** the display hides values below zero. The Modbus readings are
+  negative all the same (−0.09 vol% CO2 throughout).
+- **Range limit off:** readings are not held at 110 %FS. Its default is on, and this unit
+  has it off, so a reading far above full scale is reported as it is (§15.5).
+
+The rest of the block holds these known parts:
+
+- a copy of every channel's ranges at 0BD9h–0BE2h (1000, 1000, 1000, 1000, 2100, 2500,
+  2000, 2000, 1000, 2500);
+- the type code and serial number as ASCII from 0C35h.
+
+In the larger block, 0428h, 0448h, 0468h and 0488h each start a 16-point breakpoint
+table (0, 300, 600 … 20000). 03E8h and 0408h start two measured curves on the same
+0–20000 scale.
+
+**The register capture of 2026-09-28 holds one wrong word.** It gives 0440h as 13824.
+Every snapshot since reads 14000, which is the twelfth point of one of the four identical
+breakpoint tables; the other three read 14000 there. It was a bad read in the one-word
+scan, whose link timing was faulty (§6.2). Every other factory word of that capture
+matches.
+
+### 15.4 The raw detector counts at 046Ah–0471h
+
+The four long words are two values, each twice: the CO2 detector's count (at 046Ah and
+046Ch) and the CO detector's (at 046Eh and 0470h). Each pair was equal in every read.
+O2 is not among them.
+
+**They are the unsmoothed counts that the maintenance "Sensor Input" screen shows.**
+The A/D values at 03EFh on are a smoothed copy:
+
+- The owner read 69467 for Input 2 on that screen. On that screen the A/D value No. 1
+  read 69459–69463, while 046Eh read 69449–69473 and was 69467 in one of the reads.
+- At rest, over 1,573 reads, 046Ah changed in 75 % of them (standard deviation 2.3
+  counts). A/D No. 0 changed in 4 % (1.2 counts). For CO the figures were 90 % (4.8
+  counts) and 9 % (1.7 counts).
+- After the power cycle (§15.5), 046Ah led and A/D No. 0 followed about 10 s later:
+  54309 against 43959 at 18:13:05, and 63987 against 59906 at 18:13:18.
+- The factory "A/D data" screen showed 65695, 69461 and 3337 for Nos. 0, 1 and 4. That
+  fits either set.
+
+**0472h–0478h are usually 0.** For single reads, 0472h and 0474h read 1 together (47
+of the 1,573), or 0476h and 0478h did (31), and once all four. They follow the CO2 and
+CO pairs above, but not the count's value. What they mean is not known.
+
+Why each count appears twice is not known either. One per range is a guess: both
+channels have one range.
+
+### 15.5 A power cycle
+
+The owner switched the analyzer off for about 10 s.
+
+- **It answered 11.8 s after its last reply before the switch-off**, so within about
+  2 s of power-on (the moment was not timed). The first reads were answered with every
+  reading 0.
+- **00B9h and the cursor (00BCh) came back as 0**, from 6 and Ch3. They are not kept
+  over a power cycle. Settings are (§13.5).
+- **The readings were wrong for about a minute, and nothing said so.** Neither the
+  status, hold and error flags nor either error register was set:
+
+| UTC | CO2 vol% | CO vol% | O2 vol% |
+|---|---|---|---|
+| 18:12:52.9 | 0.00 | 0.000 | 0.00 |
+| 18:12:55.9 | **21.95** | **1.046** | 20.58 |
+| 18:13:05.1 | 11.3 | 0.451 | 20.63 |
+| 18:13:18.8 | 1.91 | 0.090 | 20.65 |
+| 18:13:31.1 | 0.22 | 0.010 | 20.65 |
+| 18:13:43.1 | −0.01 | −0.003 | 20.66 |
+| 18:13:59.5 | −0.07, within 0.02 of where it settled | | |
+
+  The first non-zero CO2 reading was 220 % of the 10 vol% range, and CO was over its
+  range too; with range limit off (§15.3), neither was clamped. A recording would keep
+  these rows with state `ok` (design §13.1 #81). The O2 cell read 20.58–20.66 vol% from
+  its first non-zero reading.
+- **The clock ran on**: it read 14:06:16 local time at 18:12:52.9 UTC, 6 min 37 s
+  behind, as before.
+
+### 15.6 Firmware 1.02 has a calibration log at the panel
+
+Maintenance mode has a calibration log on this firmware, although Modbus has none
+(1000h–1707h answer exception 02; §2).
+
+- The newest Ch3 entry read "S1 21.02 9 29 13 32": a span of range 1 at 13:32 on the
+  analyzer's clock. 21.02 is a concentration, presumably the one shown before the span.
+- That is about 17:38:40 UTC, half a minute after §14's watch stopped. It explains why
+  00B9h read 6 when this session began.
+- The detector count of that entry was not noted.
+
+### 15.7 Still not explained
+
+- 00B7h, 00B8h, 00BAh, 00BBh and 00BFh–00C1h, and 0419h–0424h: always 0 so far.
+- 0472h–0478h, and why each count at 046Ah–0471h appears twice.
+- Most of the two factory blocks, word by word.
+- Where the zero and span coefficients are kept. Not in the Modbus map, as far as any
+  encoding tried shows.
+
+## 16. fujilib watching a calibration at the panel (2026-09-29)
+
+The bench check of design §12 Phase 7A, 18:28–18:31 UTC. The owner calibrated O2 at
+the front panel, with zero gas and then span gas at the inlet, while
+`examples/watch_manual_calibration.py` ran fujilib's `wait_for_manual_calibration`
+on `COM8`. It polled every 0.5 s with the A/D block and sent reads only. The code
+was `ab4073b` with the Phase 7A work uncommitted on top, including the tracker fix
+of §15.2. The events are `probe_out/watch_manual_20260929T182828Z.jsonl`
+(git-ignored).
+
+| UTC | At the panel | Event | O2 before → after | Gas | Deviation | O2 count |
+|---|---|---|---|---|---|---|
+| 18:29:44 | ZERO, Ch3, ENT, ENT | zero, **completed**, Ch3 range 1 | −0.01 → 0.00 vol% | 0.00 | −0.01 | 634 |
+| 18:30:47 | SPAN, Ch3, ENT, ENT | span, **completed**, Ch3 range 1 | 20.86 → 20.95 vol% | 20.95 | −0.09 | 3349 |
+| 18:31:06 | ZERO, Ch3, ENT, ESC | zero, **cancelled** | 20.95 → 20.95 vol% | — | — | 3349 |
+
+- Each event came within about a second of the panel's return to measurement, and
+  each rested on a read that showed the step running ("a read showed it running")
+  or, for the cancel, on 00B9h still at 0 after the wait step.
+- The time of each calibration is bracketed by the last read on the wait step and
+  the first that showed it running, half a second apart.
+- The O2 counts agree with §14.4 (636–637 on zero gas, 3352 on span gas).
+- One read went unanswered once during the zero and once during the span, as in
+  §14.3. The retry answered each, and no poll failed.
+- The cancel's event first reported a deviation of 20.95, the reading on span gas
+  against the zero gas, though nothing was calibrated. An event now reports
+  deviations only when the calibration ran.
+
+Phase 7A's hardware exit is met.
