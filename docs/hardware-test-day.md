@@ -133,7 +133,7 @@ bench to pull the adapter's USB plug. Read-only.
    Check that the port came back as `COM8`.
 4. Run it again without `--reconnect`: at the first pull it ends with exit
    code 1, and the CSV and its `.meta.json` (state `failed`) are complete up to
-   the failure.
+   the failure, with 1 disconnect and 0 reconnects.
 
 ## Deliverables
 

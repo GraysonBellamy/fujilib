@@ -601,3 +601,43 @@ that stops taking output cannot hold up the recording; `recover_parquet.py` join
 the soak tools. The same test window then stopped cleanly on Ctrl-C (in 0.1 s) and
 on Ctrl-Break, with the Parquet file readable and the exit logged. Ctrl-Break still
 ends `uv run` itself at once (exit code `0xC000013A`), but not the recording under it.
+On the bench, a rerun started by double-clicking its `.cmd` and stopped with Ctrl-C
+after 26 s ended as `stopped`, with 27 rows in a readable Parquet file and the
+monitor's exit logged.
+
+### 12.2 The unplug test (2026-09-29)
+
+The procedure of `docs/hardware-test-day.md`, read-only, on `COM8`, with the owner
+pulling the adapter's USB plug.
+
+**With `--reconnect`** (13:07:52–13:17:51 UTC, 600 s at 1 Hz, `probe_out/unplug_20260929.csv`):
+the plug was pulled twice, for about 30 s each time as the procedure asks (not
+timed). The capture finished (exit 0,
+state `finished`) with 600 polls, none late or dropped, 108 failed, 2 disconnects and
+2 reconnects, and every tick kept its slot: intervals 0.945–1.033 s, worst start
+22 ms late. The CSV has 600 rows, and its 108 error rows are the two outages:
+
+| Outage | Polls failed | First failure | Then | Polled again |
+|---|---|---|---|---|
+| 1 | 53 (13:09:56.8–13:10:48.7) | `FujiConnectionError`: bus stream was closed while reading the reply | 52 refusals: the connection to COM8 failed | 13:10:49.7, 53 s after the first failure |
+| 2 | 55 (13:11:43.7–13:12:37.7) | `FujiConnectionError`: `[WinError 5] Access is denied` while resetting the input buffer | 54 refusals | 13:12:38.7, 55 s after the first failure |
+
+The first failure of a pull depends on where the poll was when the adapter went:
+reading a reply, or starting a request. The port came back as `COM8`, and the
+reopened analyzer passed the same-analyzer check. Each of the 492 successful rows
+has the asserted labels and state `ok`. The outages outlasted the pulls by roughly
+20–25 s, which fits Windows bringing the adapter back plus the wait for the next
+attempt of the back-off (0.5, 1, 2, 5, 10, then every 30 s); the attempts themselves
+are not logged, so this is not measured.
+
+**Without `--reconnect`** (13:18:21–13:19:55 UTC, `probe_out/unplug_20260929_noreconnect.csv`):
+at the pull the capture ended with state `failed` and the error
+`FujiConnectionError: poll: [Errno 13] stream failed while resetting the input buffer:
+[WinError 5] Access is denied.`. The CSV and its `.meta.json` are complete up to the
+failure: 95 rows (94 polls, then the failed one), `polls` 95 and `failed_polls` 1.
+Its `disconnects` was 0: the summary counted only the outages a `ReconnectPolicy`
+rides out. It now counts the failure that ends a recording too (design §13.1 #48).
+
+Both runs' `.meta.json` record fujilib as `0.1.0.dev33+g7a99f2771.d20260929`: the
+editable install's version was built before the day's commits. The code was that of
+`47e9dfa`.

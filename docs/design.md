@@ -1402,7 +1402,8 @@ async def record(
   `samples_emitted` is exactly what the consumer received. For a run that ends normally,
   `samples_emitted + samples_dropped + samples_late == target_total_samples`.
 - **Disconnects** end the recording: the tick's error sample is delivered, the stream
-  ends, and leaving the `async with` block raises the `FujiConnectionError`. A
+  ends, and leaving the `async with` block raises the `FujiConnectionError`, which
+  `disconnects` counts. A
   `ReconnectPolicy` rides the outage out instead: every tick is an error sample, and
   the source's `reconnect()` (for `PollSourceAdapter`, `Analyzer.reopen()`) is tried on
   a back-off schedule (0.5, 1, 2, 5, 10, then 30 s). A reopen opens the port by name
@@ -2187,7 +2188,7 @@ Differences from the plan above (decisions §13.1 #32–#44):
   `timeout=` is the family's; a test that the write policy imports nothing of the
   register map now loads the package without its `__init__`, which imports the facade.
 
-### Phase 5 — Streaming, sinks, CLI (software **done 2026-09-28**; the 24-hour recording and the unplug test outstanding)
+### Phase 5 — Streaming, sinks, CLI (software **done 2026-09-28**; unplug test passed 2026-09-29; the 24-hour recording outstanding)
 
 - ~~Port `streaming/` (the `sartoriuslib`-shaped recorder), `sinks/` (memory, CSV,
   Parquet) and their sync wrappers~~.
@@ -2216,8 +2217,10 @@ The read-only hardware tests, now including recording, the sinks and the three n
 commands, pass 52 of 52 under asyncio and trio (findings §12). The first 24-hour
 attempt (2026-09-29) polled for 10 h 17 min without a failure or a gap, but its window
 ignored Ctrl-C and was closed, which killed it; 37,000 rows were recovered from its
-Parquet file (findings §12.1). *The 24-hour recording and the unplug test are
-outstanding.*
+Parquet file (findings §12.1). The unplug test passed on 2026-09-29 (findings §12.2):
+with `--reconnect`, two pulls became two outages of error rows on an unbroken 1 Hz
+schedule, each ended by reopening the analyzer on `COM8`; without it, the first pull
+ended the capture with its files complete. *The 24-hour recording is outstanding.*
 
 Differences from the plan above (decisions §13.1 #45–#56):
 
@@ -2249,8 +2252,8 @@ Differences from the plan above (decisions §13.1 #45–#56):
   its fitted trend; `scripts/recover_parquet.py` recovers a killed Parquet file.
 
 **Release 0.1.0** — read-only monitoring, metadata and acquisition. Before it (#55):
-the 24-hour recording and the unplug test, the owner's review of `docs/registers.md`
-(Phase 1's exit), and a decision on the capa spike (#44).
+the 24-hour recording and ~~the unplug test~~ (passed 2026-09-29), the owner's review
+of `docs/registers.md` (Phase 1's exit), and a decision on the capa spike (#44).
 
 ### Phase 6 — Settings and operation commands (5–7 days, stateful hardware)
 
@@ -2350,7 +2353,7 @@ complete read-and-record slice.
 | 45 | How a failed poll's row keeps the recording's columns | **Adopted 2026-09-28** on the owner's "proceed"; not separately confirmed: `Sample.channels`, set by the recorder on every sample; `sample_to_row(sample)` uses them. capa calls `sample_to_row(sample)` without channels and raises on schema drift |
 | 46 | How the recorder learns each analyzer's station, protocol and channels | **Adopted 2026-09-28** on the owner's "proceed"; not separately confirmed: `PollSource.layout()`, read once at the start; an analyzer with no established channel is refused |
 | 47 | What a disconnect does to a recording | **Adopted 2026-09-28** on the owner's "proceed"; not separately confirmed: it ends it after the tick's batch is delivered, raising at the block's exit; an opt-in `ReconnectPolicy` reopens the analyzer (`Analyzer.reopen()`, same serial number and type code required) on a back-off schedule |
-| 48 | The summary's fields | **Adopted 2026-09-28** on the owner's "proceed"; not separately confirmed: the siblings' five plus `target_total_samples`, `samples_dropped`, `error_samples`, `disconnects`, `reconnects`; drift is the lateness of a poll's start; no latency percentiles |
+| 48 | The summary's fields | **Adopted 2026-09-28** on the owner's "proceed"; not separately confirmed: the siblings' five plus `target_total_samples`, `samples_dropped`, `error_samples`, `disconnects`, `reconnects`; drift is the lateness of a poll's start; no latency percentiles. **2026-09-29, at the owner's request** after the unplug test: `disconnects` counts the connection failure that ends a recording too, not only the outages a `ReconnectPolicy` rides out |
 | 49 | Overflow policies | **Adopted 2026-09-28** on the owner's "proceed"; not separately confirmed: `BLOCK`, `DROP_NEWEST` and `DROP_OLDEST`, dropping whole batches, counted apart from late ticks |
 | 50 | How sinks fix their columns | **Adopted 2026-09-28** on the owner's "proceed"; not separately confirmed: from `row_columns()` (never from values), locked at `open()` or by the first batch; an unknown channel raises `FujiSinkSchemaError`; file I/O in worker threads; CSV quotes text |
 | 51 | `pipe()` | **Adopted 2026-09-28** on the owner's "proceed"; not separately confirmed: groups of `batch_size`, a timer flush while idle, the last write finished under cancellation, counts in polls; the commands report the recorder's summary |
@@ -2383,7 +2386,7 @@ Answered by the read-only probes of 2026-09-28. Details and data are in
 | 20 | The scan's 43 malformed replies | all re-read as exception 02 (3 of 3 each); link artifacts |
 | 28 | fujilib's client, read procedures and quiet window on the analyzer | Done 2026-09-28 (findings §10). Every read procedure works; 300 polls at 7.78 Hz with no failure; with no quiet window a read after a cancelled one was lost in 23 of 30 trials, with the window never; stale data was never accepted |
 | 30 | The facade, discovery, the blocking facade and the commands on the analyzer | Done 2026-09-28 (findings §11). 45 of 45 hardware tests under asyncio and trio; open and identify in 0.3 s; an empty station times out and releases the port |
-| 31 | Recording, the sinks and the recording commands on the analyzer | Done 2026-09-28 (findings §12). 52 of 52 hardware tests under asyncio and trio; a 60-second capture at 1 Hz passed every soak check. The first 24-hour attempt was killed after 10 h 17 min without a failed poll (findings §12.1) and is to be run again; the unplug test needs the owner at the bench |
+| 31 | Recording, the sinks and the recording commands on the analyzer | Done 2026-09-28 (findings §12). 52 of 52 hardware tests under asyncio and trio; a 60-second capture at 1 Hz passed every soak check. The first 24-hour attempt was killed after 10 h 17 min without a failed poll (findings §12.1) and is to be run again; the unplug test passed 2026-09-29 (findings §12.2) |
 
 Still open:
 
