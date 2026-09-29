@@ -45,7 +45,7 @@ registry and run `python scripts/gen_register_docs.py`.
 | Table | Registers | Writable | Documented | Observed | Inferred | Contested |
 |---|---|---|---|---|---|---|
 | holding | 162 | 52 | 146 | 0 | 4 | 12 |
-| input | 181 | 0 | 153 | 7 | 21 | 0 |
+| input | 183 | 0 | 153 | 9 | 21 | 0 |
 
 ## Holding registers
 
@@ -489,7 +489,13 @@ registry and run `python scripts/gen_register_docs.py`.
 | 00B4h | 30181 | `display.screen` | DisplayScreen | 04 | READ_ONLY | 0..10 | - | - | documented | TN5A1190a p.37 | Front-panel screen. |
 | 00B5h | 30182 | `display.calibration_step` | ManualCalibrationStep | 04 | READ_ONLY | 0..10 | - | - | documented | TN5A1190a p.37 | Manual-calibration step shown on the panel. |
 | 00B6h | 30183 | `display.top_channel` | uint16 | 04 | READ_ONLY | 0..11 | - | - | documented | TN5A1190a p.37 | Top channel on the panel, channel number - 1. |
+| 00B9h | 30186 | `display.calibration_result` | ManualCalibrationResult | 04 | READ_ONLY | 0..6 | - | - | observed | protocol findings §14.2 | The last manual calibration: 0 once a channel is selected, 4 running, 6 finished. |
 | 00BCh | 30189 | `display.cursor_channel` | uint16 | 04 | READ_ONLY | 0..11 | - | - | documented | TN5A1190a p.37 | Channel under the manual-calibration cursor, channel number - 1. |
+| 00BDh | 30190 | `display.key` | uint16 | 04 | READ_ONLY | 0..255 | - | - | observed | protocol findings §14.2 | The front-panel key being pressed, in the key codes of 42001; 0 for none. |
+
+- `display.calibration_step`: A step only while the screen (30181) shows measurement, as the manual defines it. On the bench unit's other screens it numbered the pages: 1, 2, 22 and 23 for the maintenance menu's sensor input, error log and calibration log, 5 for the factory password, and values up to 78 in factory mode, 4, 8 and 11-13 among them.
+- `display.calibration_result`: Marked 'do not use' by the manual (30186). On the bench unit it went to 0 when ENT selected the channel, 4 when the calibration started and 6 when it finished, and kept 6 until the next selection; a cancel left 0. Its value after a calibration error is not known.
+- `display.key`: Not in the manual's map (30190). On the bench unit it showed ZERO 64, DOWN 8, ENT 32, SPAN 128 and ESC 16 for about one 0.5 s read each, then 0.
 
 ### Clock
 
@@ -648,6 +654,7 @@ Written with FC06, one value each; not reachable by writing a parameter.
 - **DayOfWeek**: 0 `SUNDAY`, 1 `MONDAY`, 2 `TUESDAY`, 3 `WEDNESDAY`, 4 `THURSDAY`, 5 `FRIDAY`, 6 `SATURDAY`
 - **DisplayScreen**: 0 `MEASUREMENT`, 1 `MENU`, 2 `RANGE_CHANGE`, 3 `CALIBRATION_SETTING`, 4 `ALARM_SETTING`, 5 `AUTO_CALIBRATION_SETTING`, 6 `PEAK_ALARM_SETTING`, 7 `PARAMETER_SETTING`, 8 `MAINTENANCE`, 9 `FACTORY`, 10 `AUTO_ZERO_SETTING`
 - **HoldMode**: 0 `LAST_VALUE`, 1 `SETTING`
+- **ManualCalibrationResult**: 0 `NONE`, 4 `RUNNING`, 6 `COMPLETED`
 - **ManualCalibrationStep**: 0 `NONE`, 4 `ZERO_CHANNEL_SELECT`, 5 `ZERO_WAIT`, 6 `ZERO_RUNNING`, 7 `SPAN_CHANNEL_SELECT`, 8 `SPAN_WAIT`, 9 `SPAN_RUNNING`, 10 `ERROR_DISPLAY`
 - **MeasurementPoint**: 0 `LINE_1`, 1 `LINE_2`, 2 `SWITCHING`
 - **PeriodUnit**: 0 `HOURS`, 1 `MINUTES`

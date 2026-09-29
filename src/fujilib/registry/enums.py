@@ -31,6 +31,7 @@ __all__ = [
     "ErrorScope",
     "HoldMode",
     "KeyCode",
+    "ManualCalibrationResult",
     "ManualCalibrationStep",
     "MeasurementPoint",
     "PeriodUnit",
@@ -212,7 +213,10 @@ class DisplayScreen(IntEnum):
 class ManualCalibrationStep(IntEnum):
     """The manual-calibration step shown on the panel (input 30182; TN5A1190a p.46).
 
-    Values 1–3 are not defined by the manual.
+    Values 1–3 are not defined by the manual. On the bench analyzer the screen
+    register (30181) stays ``MEASUREMENT`` while one of these is shown
+    (protocol findings §14.3). On any other screen the word numbers the menu's
+    pages, these values among them, and is not a step (protocol findings §15).
     """
 
     NONE = 0
@@ -223,6 +227,22 @@ class ManualCalibrationStep(IntEnum):
     SPAN_WAIT = 8
     SPAN_RUNNING = 9
     ERROR_DISPLAY = 10
+
+
+class ManualCalibrationResult(IntEnum):
+    """The last manual calibration, as the undocumented input 30186 (00B9h) shows it.
+
+    Observed on the bench analyzer, not documented (protocol findings §14.2): 0
+    once a channel is selected, 4 while the calibration runs, 6 when it has
+    finished, and kept until the next channel is selected. A calibration
+    cancelled before it ran leaves 0. The value after a calibration error is
+    not known.
+    """
+
+    NONE = 0
+    """None has finished since a channel was last selected (or it was cancelled)."""
+    RUNNING = 4
+    COMPLETED = 6
 
 
 class CalibrationKind(IntEnum):
@@ -247,8 +267,11 @@ class CalibrationKind(IntEnum):
 class KeyCode(IntFlag):
     """Front-panel key codes of the key-simulation register 42001.
 
-    **fujilib never writes these** (design §6.5): the same keys reach the
-    factory menu. They exist so ``fuji-decode`` can explain a captured frame.
+    The undocumented input 30190 (00BDh) shows the key being pressed at the
+    panel in the same codes, and 0 otherwise (protocol findings §14.2).
+
+    **fujilib does not write these** (design §6.5): the same keys reach the
+    factory menu. They explain a captured frame and the key register.
     """
 
     MODE = 0x01

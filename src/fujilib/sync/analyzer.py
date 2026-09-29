@@ -47,6 +47,11 @@ if TYPE_CHECKING:
         CalibrationWait,
         CommandResult,
     )
+    from fujilib.devices.panel import (
+        ManualCalibrationEvent,
+        ManualCalibrationKind,
+        ManualCalibrationPlan,
+    )
     from fujilib.devices.profile import DeviceProfile
     from fujilib.devices.reads import ClockReading
     from fujilib.devices.session import Session
@@ -435,6 +440,24 @@ class SyncAnalyzer:
         """Blocking :meth:`Analyzer.wait_for_calibration`."""
         return self._portal.call(
             self._anz.wait_for_calibration, timeout=timeout, interval=interval, since=since
+        )
+
+    def plan_manual_calibration(
+        self,
+        channel: ChannelId | str,
+        kind: ManualCalibrationKind | str,
+        *,
+        timeout: float | None = None,
+    ) -> ManualCalibrationPlan:
+        """Blocking :meth:`Analyzer.plan_manual_calibration`."""
+        return self._portal.call(self._anz.plan_manual_calibration, channel, kind, timeout=timeout)
+
+    def wait_for_manual_calibration(
+        self, *, timeout: float, interval: float = 0.5, adc: bool = False
+    ) -> ManualCalibrationEvent:
+        """Blocking :meth:`Analyzer.wait_for_manual_calibration`."""
+        return self._portal.call(
+            self._anz.wait_for_manual_calibration, timeout=timeout, interval=interval, adc=adc
         )
 
     def __repr__(self) -> str:

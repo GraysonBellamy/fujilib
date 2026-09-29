@@ -52,6 +52,7 @@ from fujilib.registry.enums import (
     DayOfWeek,
     DisplayScreen,
     HoldMode,
+    ManualCalibrationResult,
     ManualCalibrationStep,
     MeasurementPoint,
     PeriodUnit,
@@ -1249,6 +1250,12 @@ def _status() -> Iterator[RegisterSpec]:
         ref="TN5A1190a p.37",
         doc="Manual-calibration step shown on the panel.",
         enum=ManualCalibrationStep,
+        notes=(
+            "A step only while the screen (30181) shows measurement, as the manual defines "
+            "it. On the bench unit's other screens it numbered the pages: 1, 2, 22 and 23 for "
+            "the maintenance menu's sensor input, error log and calibration log, 5 for the "
+            "factory password, and values up to 78 in factory mode, 4, 8 and 11-13 among them."
+        ),
     )
     yield _input(
         "display.top_channel",
@@ -1260,6 +1267,21 @@ def _status() -> Iterator[RegisterSpec]:
         maximum=11,
     )
     yield _input(
+        "display.calibration_result",
+        "Display",
+        0xB9,
+        ref="protocol findings §14.2",
+        doc="The last manual calibration: 0 once a channel is selected, 4 running, 6 finished.",
+        enum=ManualCalibrationResult,
+        evidence=Evidence.OBSERVED,
+        notes=(
+            "Marked 'do not use' by the manual (30186). On the bench unit it went to 0 when "
+            "ENT selected the channel, 4 when the calibration started and 6 when it "
+            "finished, and kept 6 until the next selection; a cancel left 0. Its value "
+            "after a calibration error is not known."
+        ),
+    )
+    yield _input(
         "display.cursor_channel",
         "Display",
         0xBC,
@@ -1267,6 +1289,20 @@ def _status() -> Iterator[RegisterSpec]:
         doc="Channel under the manual-calibration cursor, channel number - 1.",
         minimum=0,
         maximum=11,
+    )
+    yield _input(
+        "display.key",
+        "Display",
+        0xBD,
+        ref="protocol findings §14.2",
+        doc="The front-panel key being pressed, in the key codes of 42001; 0 for none.",
+        minimum=0,
+        maximum=0xFF,
+        evidence=Evidence.OBSERVED,
+        notes=(
+            "Not in the manual's map (30190). On the bench unit it showed ZERO 64, DOWN 8, "
+            "ENT 32, SPAN 128 and ESC 16 for about one 0.5 s read each, then 0."
+        ),
     )
     yield _input(
         "alarm6.state",

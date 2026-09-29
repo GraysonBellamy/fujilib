@@ -54,6 +54,33 @@ calibration's would. A command that arrives while one runs changes nothing,
 and so does blowback, which has no status register. None of this is verified
 on hardware: the bench analyzer has no calibration valves to drive.
 
+**The front panel** is a test control, :meth:`MockAnalyzer.press`: an
+operator pressing keys at the panel. Its manual calibration follows what the
+bench analyzer showed (protocol findings §14):
+
+- ZERO or SPAN opens channel selection (step 4 or 7) with the cursor where it
+  was. UP and DOWN move it; for a zero, the channels set to "at once" share
+  one position.
+- ENT selects the channel: the wait step (5 or 8), the channels' zero or span
+  flags, and 30186 at 0.
+- ENT again runs it (6 or 9, 30186 at 4) for
+  :attr:`MockAnalyzerConfig.manual_calibration_s`. It then sets each channel's
+  reading to its calibration gas on its current range, and ends on the
+  measurement step with 30186 at 6.
+- ESC from selection or wait returns to measurement. 30190 shows each key for
+  :attr:`MockAnalyzerConfig.key_hold_s`.
+
+What the bench has not shown is written from the manuals (ZPA manual
+p.64-67, p.75-77, p.89) and is unverified:
+
+- A channel in :attr:`MockAnalyzer.calibration_errors` ends on the error
+  display (step 10), with its error set and 30186 left at 4. ESC clears the
+  display. ENT forces the calibration on error 5 or 7, and clears the display
+  otherwise.
+- Output hold sets the channels' hold flags from the wait step to the end;
+  their readings are not held.
+- MODE opens the menu screen and ESC closes it; no menu is modelled beyond that.
+
 The simulator validates library integration. It does not validate USB
 timing, UART behaviour on real hardware, or analyzer semantics it was
 programmed to assume.
@@ -147,6 +174,22 @@ _CURRENT_RANGE: Final = 0x25  # range.ch1.current; Ch2-Ch5 follow
 _SELECTED_RANGE: Final = 0x69  # range.ch1.selected; Ch2-Ch5 follow
 _RANGE_METHOD: Final = 0x6E  # range.ch1.method; Ch2-Ch5 follow
 _CHANNELS: Final = range(1, 6)
+_ZERO_MODE: Final = 0x19  # calibration.ch1.zero_mode; Ch2-Ch5 follow
+_KEY_MODE: Final = 0x01
+_KEY_UP: Final = 0x04
+_KEY_DOWN: Final = 0x08
+_KEY_ESC: Final = 0x10
+_KEY_ENT: Final = 0x20
+_KEY_ZERO: Final = 0x40
+_KEY_SPAN: Final = 0x80
+_SCREEN_MENU: Final = 1
+_STEP_NONE: Final = 0
+_STEP_ERROR: Final = 10
+_SELECT_STEP: Final = MappingProxyType({_KEY_ZERO: 4, _KEY_SPAN: 7})
+_SELECT_STEPS: Final = frozenset({4, 7})
+_WAIT_STEPS: Final = frozenset({5, 8})
+#: Errors on which ENT forces the calibration (ZPA manual p.89).
+_FORCEABLE: Final = frozenset({5, 7})
 # A reply with another function code but the same length: 03/04 and 06/10.
 _OTHER_FUNCTION: Final = MappingProxyType(
     {
@@ -227,6 +270,12 @@ class MockAnalyzerConfig:
     """Simulated seconds per second of a calibration's flow times."""
     range_lag_s: float = 0.0
     """Seconds after a range write before the channel measures on the range selected."""
+    manual_calibration_s: float = 0.0
+    """Seconds a manual calibration runs after the ENT that starts it (1.6-2.4 s on the bench)."""
+    key_hold_s: float = 0.3
+    """Seconds 30190 shows a key pressed at the panel."""
+    panel_channels: tuple[int, ...] = (1, 2, 3, 4, 5)
+    """The measured channels the panel's calibration cursor offers."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -325,6 +374,24 @@ class MockCalibration:
 
 
 @dataclass(slots=True)
+class _ManualCalibration:
+    """A manual zero or span under way at the simulated panel."""
+
+    zero: bool
+    channels: tuple[int, ...]
+    ends_at: float | None = None
+    """When it finishes running, on the AnyIO clock; ``None`` until ENT runs it."""
+    errors: dict[int, int] | None = None
+    """The errors it ended on, while the error display shows them."""
+    forced: bool = False
+
+    @property
+    def forceable(self) -> bool:
+        """Whether ENT on the error display forces it (errors 5 and 7 only)."""
+        return self.errors is not None and all(e in _FORCEABLE for e in self.errors.values())
+
+
+@dataclass(slots=True)
 class Fault:
     """A fault for the replies to matching requests."""
 
@@ -371,6 +438,10 @@ class MockAnalyzer:
         self.range_lag_s = self.config.range_lag_s
         self.range_changes: dict[int, tuple[int, float]] = {}
         """Range switches still to come, by channel: the current-range word and when."""
+        self.keys: list[tuple[int, float]] = []
+        """Keys pressed at the panel, as ``(key code, AnyIO time)``."""
+        self._key_until: float | None = None
+        self._manual: _ManualCalibration | None = None
 
     # --- Test controls -------------------------------------------------------------------
 
@@ -533,11 +604,147 @@ class MockAnalyzer:
         request = exchange.request
         self._switch_ranges(request.arrived_at)
         self._advance(request.arrived_at)
+        self._advance_panel(request.arrived_at)
         if self.on_request is not None:
             self.on_request(request)
         fault = self.take_fault(request)
         ignored = fault is not None and fault.kind in {FaultKind.EXCEPTION, FaultKind.IGNORE}
         return self.handle(request, apply=not ignored), fault
+
+    # --- The front panel -----------------------------------------------------------------
+
+    def press(self, key: int, *, at: float | None = None) -> None:
+        """Press ``key`` (a 42001 key code) at the front panel, now or at AnyIO time ``at``."""
+        now = anyio.current_time() if at is None else at
+        self._advance_panel(now)
+        self.keys.append((key, now))
+        self.set_register("display.key", key)
+        self._key_until = now + self.config.key_hold_s
+        screen = self.register("display.screen")[0]
+        step = self.register("display.calibration_step")[0]
+        if screen == _SCREEN_MENU:
+            if key == _KEY_ESC:
+                self.set_register("display.screen", 0)
+        elif screen != 0:
+            return
+        elif step == _STEP_NONE:
+            self._press_on_measurement(key)
+        elif step in _SELECT_STEPS:
+            self._press_on_selection(key, step)
+        elif step in _WAIT_STEPS:
+            self._press_on_wait(key, step, now)
+        elif step == _STEP_ERROR:
+            self._press_on_error(key)
+
+    def _press_on_measurement(self, key: int) -> None:
+        if key in _SELECT_STEP:
+            self.set_register("display.calibration_step", _SELECT_STEP[key])
+            self._put_cursor(self._positions(zero=key == _KEY_ZERO), self._cursor())
+        elif key == _KEY_MODE:
+            self.set_register("display.screen", _SCREEN_MENU)
+
+    def _press_on_selection(self, key: int, step: int) -> None:
+        zero = step == _SELECT_STEP[_KEY_ZERO]
+        positions = self._positions(zero=zero)
+        here = self._position_of(positions, self._cursor())
+        if key in {_KEY_UP, _KEY_DOWN}:
+            there = max(0, min(here + (1 if key == _KEY_DOWN else -1), len(positions) - 1))
+            self._put_cursor(positions, positions[there][0])
+        elif key == _KEY_ENT:
+            channels = positions[here]
+            self.set_register("display.calibration_step", step + 1)
+            self.set_register("display.calibration_result", 0)
+            self._set_flags(channels, zero=zero, on=True)
+            self._manual = _ManualCalibration(zero=zero, channels=channels)
+        elif key == _KEY_ESC:
+            self.set_register("display.calibration_step", _STEP_NONE)
+
+    def _press_on_wait(self, key: int, step: int, now: float) -> None:
+        manual = self._manual
+        assert manual is not None  # noqa: S101 - the wait step is reached only through ENT
+        if key == _KEY_ENT:
+            self.set_register("display.calibration_step", step + 1)
+            self.set_register("display.calibration_result", 4)
+            manual.ends_at = now + self.config.manual_calibration_s
+            self._advance_panel(now)
+        elif key == _KEY_ESC:
+            self._set_flags(manual.channels, zero=manual.zero, on=False)
+            self.set_register("display.calibration_step", _STEP_NONE)
+            self._manual = None
+
+    def _press_on_error(self, key: int) -> None:
+        manual = self._manual
+        if key == _KEY_ENT and manual is not None and manual.forceable:
+            manual.forced = True
+            self._end_manual(manual)
+        elif key in {_KEY_ENT, _KEY_ESC}:
+            if manual is not None:
+                self._set_flags(manual.channels, zero=manual.zero, on=False)
+            self.set_register("display.calibration_step", _STEP_NONE)
+            self._manual = None
+
+    def _advance_panel(self, now: float) -> None:
+        if self._key_until is not None and now >= self._key_until:
+            self.set_register("display.key", 0)
+            self._key_until = None
+        manual = self._manual
+        if (
+            manual is not None
+            and manual.errors is None
+            and manual.ends_at is not None
+            and now >= manual.ends_at
+        ):
+            self._end_manual(manual)
+
+    def _end_manual(self, manual: _ManualCalibration) -> None:
+        errors = {c: e for c, e in self.calibration_errors.items() if c in manual.channels}
+        if errors and not manual.forced:
+            for c in errors:
+                del self.calibration_errors[c]
+            manual.errors = errors
+            for c, code in errors.items():
+                self.set_register(f"error.ch{c}.e{code}.active", 1)
+            self.set_register("status.calibration_error", 1)
+            self.set_register("display.calibration_step", _STEP_ERROR)
+            return
+        for c in manual.channels:
+            rng = self.input.get(_CURRENT_RANGE + c - 1, 0)
+            gas = self.holding.get(4 * (c - 1) + 2 * rng + (0 if manual.zero else 1), 0)
+            self.set_register(f"reading.ch{c}.value", gas)
+        self._set_flags(manual.channels, zero=manual.zero, on=False)
+        self.set_register("display.calibration_step", _STEP_NONE)
+        self.set_register("display.calibration_result", 6)
+        self._manual = None
+
+    def _set_flags(self, channels: tuple[int, ...], *, zero: bool, on: bool) -> None:
+        flag = "zero_calibrating" if zero else "span_calibrating"
+        hold = on and bool(self.holding.get(_OUTPUT_HOLD, 0))
+        for c in channels:
+            self.set_register(f"status.ch{c}.{flag}", int(on))
+            self.set_register(f"status.ch{c}.hold", int(hold))
+
+    def _positions(self, *, zero: bool) -> list[tuple[int, ...]]:
+        """The cursor's positions, in order; for a zero, the "at once" channels share one."""
+        channels = self.config.panel_channels
+        together = tuple(c for c in channels if zero and self.holding.get(_ZERO_MODE + c - 1, 0))
+        positions: list[tuple[int, ...]] = []
+        for c in channels:
+            if c not in together:
+                positions.append((c,))
+            elif c == together[0]:
+                positions.append(together)
+        return positions
+
+    @staticmethod
+    def _position_of(positions: Sequence[tuple[int, ...]], channel: int) -> int:
+        return next((i for i, p in enumerate(positions) if channel in p), 0)
+
+    def _cursor(self) -> int:
+        return self.register("display.cursor_channel")[0] + 1
+
+    def _put_cursor(self, positions: Sequence[tuple[int, ...]], channel: int) -> None:
+        first = positions[self._position_of(positions, channel)][0]
+        self.set_register("display.cursor_channel", first - 1)
 
     # --- Ranges -------------------------------------------------------------------------------
 

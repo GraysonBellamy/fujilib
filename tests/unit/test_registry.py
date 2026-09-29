@@ -98,7 +98,7 @@ def test_log_layouts() -> None:
 
 
 def test_size_and_groups() -> None:
-    assert len(REGISTRY) == 343
+    assert len(REGISTRY) == 345
     assert len(REGISTRY.groups()) == len(set(REGISTRY.groups()))
     assert len(REGISTRY.select("calibration_gas")) == 20
     assert len(REGISTRY.select("reading")) == 36

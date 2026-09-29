@@ -35,6 +35,7 @@ from fujilib.registry.enums import (
     DayOfWeek,
     DisplayScreen,
     ErrorCode,
+    ManualCalibrationStep,
     PeriodUnit,
     ScheduleCycleUnit,
 )
@@ -171,6 +172,23 @@ def test_status_decoding() -> None:
     assert decode_analyzer_status(bank).errors == {ErrorCode.LIGHT_SOURCE}
     with pytest.raises(FujiDecodeError):
         decode_channel_status(bank, ChannelId.CH6)
+
+
+@pytest.mark.parametrize(
+    ("screen", "word", "step"),
+    [
+        (0, 5, ManualCalibrationStep.ZERO_WAIT),
+        (int(DisplayScreen.MAINTENANCE), 5, 5),  # the factory password page (findings §15)
+        (int(DisplayScreen.FACTORY), 26, 26),
+    ],
+)
+def test_the_step_is_a_step_only_on_the_measurement_screen(
+    screen: int, word: int, step: ManualCalibrationStep | int
+) -> None:
+    display = decode_analyzer_status({**INPUT, 0xB4: screen, 0xB5: word}).display
+    assert display is not None
+    assert display.calibration_step == step
+    assert isinstance(display.calibration_step, ManualCalibrationStep) is (screen == 0)
 
 
 # --- Validity rule -------------------------------------------------------------------------

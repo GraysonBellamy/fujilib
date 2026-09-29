@@ -27,6 +27,7 @@ Example::
 from __future__ import annotations
 
 import math
+from dataclasses import replace
 from functools import partial
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Self
@@ -34,7 +35,7 @@ from typing import TYPE_CHECKING, Self
 import anyio
 
 from fujilib._deadline import Deadline
-from fujilib.devices import operations, reads
+from fujilib.devices import operations, panel, reads
 from fujilib.devices.capability import (
     OPTION_CAPABILITIES,
     PROBED_CAPABILITIES,
@@ -44,6 +45,7 @@ from fujilib.devices.capability import (
 )
 from fujilib.devices.encode import prepare_value
 from fujilib.devices.operations import CalibrationRun, CalibrationWait
+from fujilib.devices.panel import ManualCalibrationKind, ManualCalibrationTracker, PanelObservation
 from fujilib.devices.settings import ApplyReport, SettingsDocument, diff_settings
 from fujilib.devices.writes import outcome_error
 from fujilib.errors import (
@@ -78,6 +80,7 @@ if TYPE_CHECKING:
         Reading,
     )
     from fujilib.devices.operations import CalibrationPlan, CalibrationStatus, CommandResult
+    from fujilib.devices.panel import ManualCalibrationEvent, ManualCalibrationPlan
     from fujilib.devices.reads import ClockReading
     from fujilib.devices.session import Session
     from fujilib.devices.settings import SettingsDiff
@@ -998,6 +1001,114 @@ class Analyzer:
         except FujiTimeoutError as exc:
             raise exc.with_context(saw_running=saw_running, polls=polls) from exc.__cause__
 
+    # --- The front panel -----------------------------------------------------------------
+
+    async def plan_manual_calibration(
+        self,
+        channel: ChannelId | str,
+        kind: ManualCalibrationKind | str,
+        *,
+        timeout: float | None = None,
+    ) -> ManualCalibrationPlan:
+        """What a manual zero or span of ``channel`` at the front panel would calibrate.
+
+        Read-only. A zero of a channel set to "at once" zeroes every channel
+        so set, and a channel set to "both" is calibrated on both its ranges;
+        the plan lists every channel and range with its calibration gas
+        (design §6.5). Two transactions, plus the range tables if needed.
+
+        Raises:
+            FujiValidationError: ``channel`` is not 1-5, or ``kind`` is not
+                ``"zero"`` or ``"span"``; nothing was sent.
+            FujiDecodeError: a range setting does not read as a range.
+        """
+        cid = _measured(channel)
+        what = _manual_kind(kind)
+        session = self._session
+
+        async def body(client: ProtocolClient, deadline: Deadline) -> ManualCalibrationPlan:
+            ranges = await session.ensure_ranges(client, deadline)
+            settings = await reads.read_registers(
+                client, panel.MANUAL_PLAN_SETTINGS, ranges=ranges, deadline=deadline
+            )
+            return panel.plan_manual_calibration(
+                settings,
+                what,
+                cid,
+                ranges=ranges,
+                established=[c.channel for c in session.channels],
+            )
+
+        return await session.run("plan_manual_calibration", body, timeout=timeout)
+
+    async def wait_for_manual_calibration(
+        self, *, timeout: float, interval: float = 0.5, adc: bool = False
+    ) -> ManualCalibrationEvent:
+        """Wait for a manual zero or span made at the front panel to end, and describe it.
+
+        Polls every ``interval`` seconds (two transactions, and the A/D block
+        with ``adc``) until a pass through the calibration steps ends, one
+        already under way included. The event gives the channels, how it
+        ended and why, the readings before and after, the calibration gases
+        and, with ``adc``, the raw A/D values when it ran (design §6.5). The
+        port is free between polls, so a recording goes on meanwhile.
+
+        A calibration runs for a second or two, so a long ``interval`` can
+        miss it; the undocumented result register usually settles the outcome
+        then, and otherwise the event says ``ambiguous``.
+
+        Raises:
+            FujiValidationError: ``timeout`` or ``interval`` is not a positive
+                number of seconds; nothing was sent.
+            FujiCapabilityError: ``adc`` is set and the analyzer is known to
+                have no A/D block; nothing was sent.
+            FujiTimeoutError: no pass ended within ``timeout``; its context says
+                whether one was under way and how many polls were made.
+            FujiError: a read failed.
+        """
+        _check_seconds("timeout", timeout)
+        _check_seconds("interval", interval)
+        requires = Capability.ADC_VALUES if adc else Capability.NONE
+        self._session.gate("wait_for_manual_calibration", requires=requires)
+        tracker = ManualCalibrationTracker()
+        deadline = Deadline.after(timeout, operation="wait_for_manual_calibration")
+        polls = 0
+        event: ManualCalibrationEvent | None = None
+        try:
+            with deadline.enforce():
+                while event is None:
+                    started = anyio.current_time()
+                    frame = await self.poll()
+                    values = await self.read_adc() if adc else None
+                    polls += 1
+                    observation = PanelObservation.from_frame(frame, adc=values)
+                    event = tracker.feed(observation) if observation is not None else None
+                    if event is None:
+                        await anyio.sleep(max(0.0, interval - (anyio.current_time() - started)))
+        except FujiTimeoutError as exc:
+            raise exc.with_context(polls=polls, in_progress=tracker.active) from exc.__cause__
+        return await self._with_gases(event)
+
+    async def _with_gases(self, event: ManualCalibrationEvent) -> ManualCalibrationEvent:
+        """``event`` with the calibration gas of each channel's range, read now."""
+        names = {
+            c: f"calibration_gas.ch{c.number}.range{r}.{event.kind.value}"
+            for c, r in event.ranges.items()
+            if r in {1, 2}
+        }
+        if not names:
+            return event
+        try:
+            values = await self.read_parameters(names.values())
+        except FujiError as exc:
+            note = f"the calibration gases could not be read: {exc}"
+            return replace(event, evidence=(*event.evidence, note))
+        gases = {
+            c: value if isinstance(value := values[name].value, float) else None
+            for c, name in names.items()
+        }
+        return replace(event, gases=MappingProxyType(gases))
+
     async def _plan(
         self, operation: str, run: CalibrationRun, timeout: float | None
     ) -> CalibrationPlan:
@@ -1148,6 +1259,13 @@ def _new_errors(
 ) -> Mapping[ChannelId, frozenset[ErrorCode]]:
     new = {c: codes - before.get(c, frozenset()) for c, codes in after.items()}
     return MappingProxyType({c: codes for c, codes in new.items() if codes})
+
+
+def _manual_kind(kind: object) -> ManualCalibrationKind:
+    if isinstance(kind, str) and kind in set(ManualCalibrationKind):
+        return ManualCalibrationKind(kind)
+    msg = f"kind must be 'zero' or 'span', got {kind!r}"
+    raise FujiValidationError(msg)
 
 
 def _measured(channel: ChannelId | str) -> ChannelId:

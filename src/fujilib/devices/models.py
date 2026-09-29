@@ -42,6 +42,8 @@ if TYPE_CHECKING:
         DisplayScreen,
         ErrorCode,
         HoldMode,
+        KeyCode,
+        ManualCalibrationResult,
         ManualCalibrationStep,
         PeriodUnit,
         ScheduleCycleUnit,
@@ -174,12 +176,18 @@ class ChannelStatus:
 
 @dataclass(frozen=True, slots=True)
 class DisplayState:
-    """What the front panel shows (input 30181-30183, 30189)."""
+    """What the front panel shows (input 30181-30183, 30189; 30186 and 30190 observed)."""
 
     screen: DisplayScreen | int
     calibration_step: ManualCalibrationStep | int
+    """The manual-calibration step (30182) on the measurement screen; on a menu, the raw
+    page number the word shows there (protocol findings §15)."""
     top_channel: ChannelId | None
     cursor_channel: ChannelId | None
+    calibration_result: ManualCalibrationResult | int | None = None
+    """The last manual calibration (30186, observed; protocol findings §14.2)."""
+    key: KeyCode | int | None = None
+    """The key being pressed at the panel (30190, observed); ``KeyCode(0)`` for none."""
 
 
 @dataclass(frozen=True, slots=True)

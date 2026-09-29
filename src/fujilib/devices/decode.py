@@ -70,6 +70,8 @@ from fujilib.registry.enums import (
     ErrorCode,
     ErrorScope,
     HoldMode,
+    KeyCode,
+    ManualCalibrationResult,
     ManualCalibrationStep,
     PeriodUnit,
     RangeIndex,
@@ -155,6 +157,26 @@ def _range_number(bank: Bank, name: str) -> int:
     """A range register (0 = range 1) as a 1-based range number."""
     rng = _enum(bank, name, RangeIndex)
     return rng.number if isinstance(rng, RangeIndex) else rng + 1
+
+
+#: Every key-code bit set: the largest word the key register can mean as keys.
+_KEY_MASK: Final = 0xFF
+
+
+def _key(raw: int) -> KeyCode | int:
+    """The key register as a :class:`KeyCode`, or the raw word when it is not one."""
+    return KeyCode(raw) if 0 <= raw <= _KEY_MASK else raw
+
+
+def _calibration_step(bank: Bank, screen: DisplayScreen | int) -> ManualCalibrationStep | int:
+    """30182 as a step on the measurement screen; on a menu, the raw page number.
+
+    The manual defines the steps for the measurement screen only, and in the
+    menus the word numbers pages, 4-10 among them (protocol findings §15).
+    """
+    if screen == DisplayScreen.MEASUREMENT:
+        return _enum(bank, "display.calibration_step", ManualCalibrationStep)
+    return _word(bank, "display.calibration_step")
 
 
 def _channel_minus_one(raw: int) -> ChannelId | None:
@@ -311,6 +333,7 @@ def decode_analyzer_status(bank: Bank) -> AnalyzerStatus:
     """
     errors = frozenset(ErrorCode(e) for e in (1, 2, 3, 10) if _flag(bank, f"error.e{e}.active"))
     alarms = tuple(_enum(bank, f"alarm{n}.state", AlarmState) for n in range(1, 7))
+    screen = _enum(bank, "display.screen", DisplayScreen)
     return AnalyzerStatus(
         instrument_error=_flag(bank, "status.instrument_error"),
         calibration_error=_flag(bank, "status.calibration_error"),
@@ -320,10 +343,12 @@ def decode_analyzer_status(bank: Bank) -> AnalyzerStatus:
         peak_alarm=_flag(bank, "peak_alarm.active"),
         auto_calibration_running=_flag(bank, "status.auto_calibration_running"),
         display=DisplayState(
-            screen=_enum(bank, "display.screen", DisplayScreen),
-            calibration_step=_enum(bank, "display.calibration_step", ManualCalibrationStep),
+            screen=screen,
+            calibration_step=_calibration_step(bank, screen),
             top_channel=_channel_minus_one(_word(bank, "display.top_channel")),
             cursor_channel=_channel_minus_one(_word(bank, "display.cursor_channel")),
+            calibration_result=_enum(bank, "display.calibration_result", ManualCalibrationResult),
+            key=_key(_word(bank, "display.key")),
         ),
     )
 
