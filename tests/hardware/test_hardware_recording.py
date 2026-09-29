@@ -1,7 +1,7 @@
 """Recording, sinks and the recording commands against a connected ZP analyzer (design §7.6).
 
 Read-only: every request is a read. Gated as every hardware test is
-(``conftest.py``). Each recording is a few seconds; the 24-hour recording and
+(``conftest.py``). Each recording is a few seconds; the 12-hour recording and
 the unplug test are procedures, not tests (``docs/hardware-test-day.md``).
 """
 

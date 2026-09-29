@@ -70,10 +70,10 @@ under asyncio and trio.
 Every assertion holds for any ZP analyzer; values particular to the bench unit
 are recorded in the findings instead.
 
-## The 24-hour recording
+## The 12-hour recording
 
-The hardware exit of Phase 5 (design §12). It is read-only, and it holds the port
-for a day.
+The hardware exit of Phase 5 (design §12, §13.1 #58). It is read-only, and it holds
+the port for 12 hours; overnight suits it.
 
 1. Pre-flight as above, plus: the host does not sleep, USB selective suspend is
    off for the adapter, and no restart for updates is due.
@@ -81,7 +81,7 @@ for a day.
    Terminal), go to the repository, and start it on one line:
 
    ```
-   uv run --with psutil python scripts/soak_monitor.py --log probe_out/soak.rss.jsonl -- fuji-capture COM8 --gas CH1=co2 --gas CH2=co --gas CH3=o2 --rate 1 --duration 86400 --out probe_out/soak.parquet --reconnect
+   uv run --with psutil python scripts/soak_monitor.py --log probe_out/soak.rss.jsonl -- fuji-capture COM8 --gas CH1=co2 --gas CH2=co --gas CH3=o2 --rate 1 --duration 43200 --out probe_out/soak.parquet --reconnect
    ```
 
    A progress line every 10 s shows the polls, failures and late ticks so far;

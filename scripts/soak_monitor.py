@@ -1,4 +1,4 @@
-"""Run a long recording and log its memory use, for a 24-hour recording on the bench.
+"""Run a long recording and log its memory use, for the 12-hour recording on the bench.
 
 It starts the command after ``--`` (normally ``fuji-capture``), then every
 ``--every`` seconds writes one JSON line: the elapsed time, and the command's
@@ -18,7 +18,7 @@ Needs ``psutil``, which fujilib does not depend on::
 
     uv run --with psutil python scripts/soak_monitor.py --log soak_rss.jsonl -- \
         fuji-capture COM8 --gas CH1=co2 --gas CH2=co --gas CH3=o2 \
-        --rate 1 --duration 86400 --out soak.parquet --reconnect
+        --rate 1 --duration 43200 --out soak.parquet --reconnect
 
 Check the result with ``scripts/check_soak.py`` (design §12). The log is
 started afresh on every run.

@@ -15,12 +15,12 @@ description: Architecture, design decisions, and phased implementation plan for 
 > and the *unified device-library API* that `capa` consumes all match the siblings. The
 > internals are shaped to this device.
 >
-> Status: **proposal, revised 2026-09-28.** Phase 0 (repository bootstrap), Phase 1
+> Status: **proposal, revised 2026-09-29.** Phase 0 (repository bootstrap), Phase 1
 > (registry, codecs, models and the sample shape), Phase 3 (transport, Modbus client,
 > simulated analyzer and read procedures), Phase 4 (session, facade, discovery, sync
 > and the read-only commands) and the software of Phase 5 (recorder, sinks and the
-> recording commands) are done. Phase 5's 24-hour bench recording is under way; 0.1.0
-> follows it.
+> recording commands) are done, and its unplug test passed. Phase 5's 12-hour bench
+> recording is outstanding; 0.1.0 follows it.
 >
 > - **Where statements come from.** Statements about the device come from the three
 >   manuals in `docs/manuals/` (§14) and are marked **[manual]**. The bench analyzer was
@@ -2188,7 +2188,7 @@ Differences from the plan above (decisions §13.1 #32–#44):
   `timeout=` is the family's; a test that the write policy imports nothing of the
   register map now loads the package without its `__init__`, which imports the facade.
 
-### Phase 5 — Streaming, sinks, CLI (software **done 2026-09-28**; unplug test passed 2026-09-29; the 24-hour recording outstanding)
+### Phase 5 — Streaming, sinks, CLI (software **done 2026-09-28**; unplug test passed 2026-09-29; the 12-hour recording outstanding)
 
 - ~~Port `streaming/` (the `sartoriuslib`-shaped recorder), `sinks/` (memory, CSV,
   Parquet) and their sync wrappers~~.
@@ -2201,7 +2201,8 @@ Differences from the plan above (decisions §13.1 #32–#44):
 3.13): lint, both type checkers and the unit tests at 100 % coverage, on asyncio and
 trio. An independent review preceded the commits.
 
-*Hardware exit:* a 24-hour recording at 1 Hz on the bench that checks:
+*Hardware exit:* a 12-hour recording at 1 Hz on the bench (24 hours in the plan; 12 by
+the owner's decision, #58) that checks:
 
 - expected tick and row counts;
 - status and provenance retention;
@@ -2220,7 +2221,7 @@ ignored Ctrl-C and was closed, which killed it; 37,000 rows were recovered from 
 Parquet file (findings §12.1). The unplug test passed on 2026-09-29 (findings §12.2):
 with `--reconnect`, two pulls became two outages of error rows on an unbroken 1 Hz
 schedule, each ended by reopening the analyzer on `COM8`; without it, the first pull
-ended the capture with its files complete. *The 24-hour recording is outstanding.*
+ended the capture with its files complete. *The 12-hour recording is outstanding.*
 
 Differences from the plan above (decisions §13.1 #45–#56):
 
@@ -2252,8 +2253,8 @@ Differences from the plan above (decisions §13.1 #45–#56):
   its fitted trend; `scripts/recover_parquet.py` recovers a killed Parquet file.
 
 **Release 0.1.0** — read-only monitoring, metadata and acquisition. Before it (#55):
-the 24-hour recording and ~~the unplug test~~ (passed 2026-09-29), the owner's review
-of `docs/registers.md` (Phase 1's exit), and a decision on the capa spike (#44).
+the 12-hour recording (#58) and ~~the unplug test~~ (passed 2026-09-29), the owner's
+review of `docs/registers.md` (Phase 1's exit), and a decision on the capa spike (#44).
 
 ### Phase 6 — Settings and operation commands (5–7 days, stateful hardware)
 
@@ -2361,8 +2362,9 @@ complete read-and-record slice.
 | 53 | Testing the schedule | **Adopted 2026-09-28** on the owner's "proceed"; not separately confirmed: the recorder runs on an injectable clock; tests use a manual one |
 | 54 | `fuji-diag timing` | **Adopted 2026-09-28** on the owner's "proceed"; not separately confirmed: built, as the pairs probe on fujilib's own client |
 | 55 | What 0.1.0 waits for | **Adopted 2026-09-28** on the owner's "proceed"; not separately confirmed: the 24-hour recording and the unplug test, the owner's review of `docs/registers.md`, and a decision on #44 |
-| 56 | The 24-hour recording | **Adopted 2026-09-28**: the owner left the analyzer connected and allowed any hardware test; read-only, 1 Hz, `fuji-capture` to Parquet with `--reconnect`, under `scripts/soak_monitor.py` |
+| 56 | The 24-hour recording | **Adopted 2026-09-28**: the owner left the analyzer connected and allowed any hardware test; read-only, 1 Hz, `fuji-capture` to Parquet with `--reconnect`, under `scripts/soak_monitor.py`. 12 hours rather than 24 since 2026-09-29 (#58) |
 | 57 | What a recording keeps when it cannot be stopped with Ctrl-C, or is killed | **Adopted 2026-09-29 at the owner's request**, after the first 24-hour attempt (findings §12.1): Ctrl-Break stops the recording commands as Ctrl-C does; `fuji-capture` rewrites its `.meta.json` every minute with the counters so far, each write replacing the file whole; its progress line is written from a worker thread; the soak tools gain `recover_parquet.py`, Ctrl-C for the command under `soak_monitor.py`, private memory in its log, and a memory check by fitted trend. Parquet stays the soak's format |
+| 58 | The length of the hardware exit's long recording | **Decided 2026-09-29 by the owner:** 12 hours at 1 Hz, run overnight, instead of 24; a day is not expected to show anything 12 hours would not. The first attempt's 10 h 17 min without a failure or a gap (findings §12.1) supports it |
 
 ### 13.2 Hardware verification
 
@@ -2386,7 +2388,7 @@ Answered by the read-only probes of 2026-09-28. Details and data are in
 | 20 | The scan's 43 malformed replies | all re-read as exception 02 (3 of 3 each); link artifacts |
 | 28 | fujilib's client, read procedures and quiet window on the analyzer | Done 2026-09-28 (findings §10). Every read procedure works; 300 polls at 7.78 Hz with no failure; with no quiet window a read after a cancelled one was lost in 23 of 30 trials, with the window never; stale data was never accepted |
 | 30 | The facade, discovery, the blocking facade and the commands on the analyzer | Done 2026-09-28 (findings §11). 45 of 45 hardware tests under asyncio and trio; open and identify in 0.3 s; an empty station times out and releases the port |
-| 31 | Recording, the sinks and the recording commands on the analyzer | Done 2026-09-28 (findings §12). 52 of 52 hardware tests under asyncio and trio; a 60-second capture at 1 Hz passed every soak check. The first 24-hour attempt was killed after 10 h 17 min without a failed poll (findings §12.1) and is to be run again; the unplug test passed 2026-09-29 (findings §12.2) |
+| 31 | Recording, the sinks and the recording commands on the analyzer | Done 2026-09-28 (findings §12). 52 of 52 hardware tests under asyncio and trio; a 60-second capture at 1 Hz passed every soak check. The first 24-hour attempt was killed after 10 h 17 min without a failed poll (findings §12.1); a 12-hour run replaces it (#58); the unplug test passed 2026-09-29 (findings §12.2) |
 
 Still open:
 
