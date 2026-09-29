@@ -436,6 +436,7 @@ def test_capture_ends_with_a_connection_failure(
     document = json.loads(capture.metadata_path(out).read_text(encoding="utf-8"))
     assert document["state"] == "failed"
     assert document["error"] == "FujiConnectionError: unplugged"
+    assert (document["summary"]["disconnects"], document["summary"]["reconnects"]) == (1, 0)
     with out.open(encoding="utf-8", newline="") as file:
         rows = list(csv.DictReader(file, quoting=csv.QUOTE_NOTNULL))
     assert rows[-1]["error_type"] == "fujilib.errors.FujiConnectionError"

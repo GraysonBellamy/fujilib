@@ -126,7 +126,7 @@ it stops. It counts polls, not rows.
 | `samples_late` | ticks skipped because a poll overran |
 | `samples_dropped` | batches the overflow policy discarded, and batches still unread when the recording stopped |
 | `error_samples` | samples of failed polls |
-| `disconnects`, `reconnects` | outages, and outages ended by reopening |
+| `disconnects`, `reconnects` | connection failures (each outage ridden out, and the one that ends a recording), and outages ended by reopening |
 | `max_drift_ms` | the latest a poll started after its slot |
 | `target_total_samples` | the ticks a `duration` asked for |
 

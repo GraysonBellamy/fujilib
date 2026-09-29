@@ -129,7 +129,8 @@ class AcquisitionSummary:
     error_samples: int = 0
     """Samples of failed polls (``frame=None``), counted as they are polled."""
     disconnects: int = 0
-    """Connection failures that started an outage."""
+    """Connection failures: each outage a ``ReconnectPolicy`` rides out, and the one
+    that ends a recording without one."""
     reconnects: int = 0
     """Outages that ended with the analyzer reopened."""
 
@@ -483,6 +484,7 @@ class _Producer:
             return True
         policy = self.reconnect
         if policy is None:
+            self.summary.disconnects += 1
             self.error = batch[lost[0]].error
             _LOG.error("%s: the connection failed; the recording ends", lost[0])
             return False

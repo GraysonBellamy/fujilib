@@ -376,6 +376,7 @@ async def test_a_disconnect_ends_the_recording_after_its_batch() -> None:
     assert len(batches) == 3  # the stream ended after the failed tick was delivered
     assert batches[-1]["zpa"].error is lost
     assert summaries[0].finished_at is not None
+    assert (summaries[0].disconnects, summaries[0].reconnects) == (1, 0)
     assert source.polls == 3
 
 
