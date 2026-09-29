@@ -1450,8 +1450,9 @@ async def record(
     and a row group per write would make a day at 1 Hz 86,400 groups whose metadata
     `pyarrow` holds in memory until the file closes. zstd by default, key-value
     metadata with `fujilib.version` and the caller's. A Parquet file is readable only once closed; closing runs on
-    cancellation and Ctrl-C, but a killed process leaves an unreadable file, so CSV is
-    the safer format unattended.
+    cancellation and Ctrl-C, but a killed process leaves a file without its footer, so
+    CSV is the safer format unattended. `scripts/recover_parquet.py` recovers the
+    complete row groups of such a file (#57).
 - **`pipe(recording, sink, batch_size=64, flush_interval=1.0)`** writes batches in
   groups, at the latest `flush_interval` after the first of a group arrived, even while
   the stream is idle. When it stops, by the stream ending, an error or cancellation, it
@@ -1487,7 +1488,9 @@ path.
 - **Exit codes** are 0 on success, 1 for a library error, 2 for bad arguments, and 2 when
   `fuji-discover` finds nothing (as `servomex-discover` and `sarto-discover` do). Ctrl-C
   stops `fuji-stream` and `fuji-capture` cleanly, with 0: an open-ended recording is
-  meant to end that way (#52).
+  meant to end that way (#52). On Windows, Ctrl-Break does the same through the event
+  loop's Ctrl-C handler. A window opened by a process that ignores Ctrl-C passes that
+  on to everything started in it, and Ctrl-Break cannot be ignored that way (#57).
 - **`--fixture`** for `fuji-read` and `fuji-configure` is a register bank (the JSON
   `fuji-decode --dump` reads), or `bench` for the bundled bench bank, answered by the
   simulated analyzer through `open_device`. A live read takes a dozen transactions, which
@@ -1501,9 +1504,12 @@ path.
   `pipe()` to the file `--out` names; the format follows the extension. Beside it,
   `<out>.meta.json` (format `fujilib-capture/1`) holds the identity, ranges and metadata
   (response times, calibration gases, hold mode, clock), the arguments and package
-  versions. It is written when the recording starts and again when it ends, with how it
-  ended (`finished`, `stopped` or `failed` with the error) and the recording's and the
-  session's counters. A Parquet file carries the starting document in its metadata.
+  versions. It is written when the recording starts, every minute while it runs with
+  the counters so far, and when it ends, with how it ended (`finished`, `stopped` or
+  `failed` with the error) and the recording's and the session's counters; each write
+  replaces the file whole and stamps `updated_at`. The progress line is written from a
+  worker thread, so a console that stops taking output holds up the line and not the
+  recording (#57). A Parquet file carries the starting document in its metadata.
   Existing files are not replaced without `--force`, and a missing `pyarrow` is reported
   before the port is opened (#52).
 - **`fuji-diag timing`** is `scripts/probe_link.py --mode pairs` on fujilib's own port and
@@ -2181,7 +2187,7 @@ Differences from the plan above (decisions §13.1 #32–#44):
   `timeout=` is the family's; a test that the write policy imports nothing of the
   register map now loads the package without its `__init__`, which imports the facade.
 
-### Phase 5 — Streaming, sinks, CLI (software **done 2026-09-28**; soak under way)
+### Phase 5 — Streaming, sinks, CLI (software **done 2026-09-28**; the 24-hour recording and the unplug test outstanding)
 
 - ~~Port `streaming/` (the `sartoriuslib`-shaped recorder), `sinks/` (memory, CSV,
   Parquet) and their sync wrappers~~.
@@ -2207,8 +2213,11 @@ A controlled disconnect/reconnect is tested separately. `scripts/soak_monitor.py
 the recording and logs its memory; `scripts/check_soak.py` checks every item above
 (`docs/hardware-test-day.md`). A 60-second rehearsal on the bench passed every check.
 The read-only hardware tests, now including recording, the sinks and the three new
-commands, pass 52 of 52 under asyncio and trio (findings §12). *The 24-hour recording
-and the unplug test are outstanding.*
+commands, pass 52 of 52 under asyncio and trio (findings §12). The first 24-hour
+attempt (2026-09-29) polled for 10 h 17 min without a failure or a gap, but its window
+ignored Ctrl-C and was closed, which killed it; 37,000 rows were recovered from its
+Parquet file (findings §12.1). *The 24-hour recording and the unplug test are
+outstanding.*
 
 Differences from the plan above (decisions §13.1 #45–#56):
 
@@ -2233,6 +2242,11 @@ Differences from the plan above (decisions §13.1 #45–#56):
   probe on fujilib's own client (#54).
 - **Along the way:** `fujilib._groups.unwrap` (shared with the portal), the blocking
   `PollSourceAdapter`, and `SyncAnalyzer.reopen()`.
+- **After the first 24-hour attempt** (#57): Ctrl-Break stops the recording commands
+  as Ctrl-C does; `fuji-capture` rewrites its `.meta.json` every minute and writes its
+  progress line from a worker thread; `scripts/soak_monitor.py` turns Ctrl-C back on
+  for the command and logs private memory; `scripts/check_soak.py` judges memory by
+  its fitted trend; `scripts/recover_parquet.py` recovers a killed Parquet file.
 
 **Release 0.1.0** — read-only monitoring, metadata and acquisition. Before it (#55):
 the 24-hour recording and the unplug test, the owner's review of `docs/registers.md`
@@ -2345,6 +2359,7 @@ complete read-and-record slice.
 | 54 | `fuji-diag timing` | **Adopted 2026-09-28** on the owner's "proceed"; not separately confirmed: built, as the pairs probe on fujilib's own client |
 | 55 | What 0.1.0 waits for | **Adopted 2026-09-28** on the owner's "proceed"; not separately confirmed: the 24-hour recording and the unplug test, the owner's review of `docs/registers.md`, and a decision on #44 |
 | 56 | The 24-hour recording | **Adopted 2026-09-28**: the owner left the analyzer connected and allowed any hardware test; read-only, 1 Hz, `fuji-capture` to Parquet with `--reconnect`, under `scripts/soak_monitor.py` |
+| 57 | What a recording keeps when it cannot be stopped with Ctrl-C, or is killed | **Adopted 2026-09-29 at the owner's request**, after the first 24-hour attempt (findings §12.1): Ctrl-Break stops the recording commands as Ctrl-C does; `fuji-capture` rewrites its `.meta.json` every minute with the counters so far, each write replacing the file whole; its progress line is written from a worker thread; the soak tools gain `recover_parquet.py`, Ctrl-C for the command under `soak_monitor.py`, private memory in its log, and a memory check by fitted trend. Parquet stays the soak's format |
 
 ### 13.2 Hardware verification
 
@@ -2368,7 +2383,7 @@ Answered by the read-only probes of 2026-09-28. Details and data are in
 | 20 | The scan's 43 malformed replies | all re-read as exception 02 (3 of 3 each); link artifacts |
 | 28 | fujilib's client, read procedures and quiet window on the analyzer | Done 2026-09-28 (findings §10). Every read procedure works; 300 polls at 7.78 Hz with no failure; with no quiet window a read after a cancelled one was lost in 23 of 30 trials, with the window never; stale data was never accepted |
 | 30 | The facade, discovery, the blocking facade and the commands on the analyzer | Done 2026-09-28 (findings §11). 45 of 45 hardware tests under asyncio and trio; open and identify in 0.3 s; an empty station times out and releases the port |
-| 31 | Recording, the sinks and the recording commands on the analyzer | Done 2026-09-28 (findings §12). 52 of 52 hardware tests under asyncio and trio; a 60-second capture at 1 Hz passed every soak check. The 24-hour recording is under way; the unplug test needs the owner at the bench |
+| 31 | Recording, the sinks and the recording commands on the analyzer | Done 2026-09-28 (findings §12). 52 of 52 hardware tests under asyncio and trio; a 60-second capture at 1 Hz passed every soak check. The first 24-hour attempt was killed after 10 h 17 min without a failed poll (findings §12.1) and is to be run again; the unplug test needs the owner at the bench |
 
 Still open:
 

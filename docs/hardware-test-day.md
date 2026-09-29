@@ -77,26 +77,41 @@ for a day.
 
 1. Pre-flight as above, plus: the host does not sleep, USB selective suspend is
    off for the adapter, and no restart for updates is due.
-2. Start it from Git Bash, in the repository:
+2. Open a console window yourself (Command Prompt, PowerShell or Windows
+   Terminal), go to the repository, and start it on one line:
 
-   ```bash
-   uv run --with psutil python scripts/soak_monitor.py --log probe_out/soak.rss.jsonl -- \
-       fuji-capture COM8 --gas CH1=co2 --gas CH2=co --gas CH3=o2 \
-       --rate 1 --duration 86400 --out probe_out/soak.parquet --reconnect
+   ```
+   uv run --with psutil python scripts/soak_monitor.py --log probe_out/soak.rss.jsonl -- fuji-capture COM8 --gas CH1=co2 --gas CH2=co --gas CH3=o2 --rate 1 --duration 86400 --out probe_out/soak.parquet --reconnect
    ```
 
    A progress line every 10 s shows the polls, failures and late ticks so far;
-   the memory log gets a line every 10 minutes.
+   the memory log gets a line every 10 minutes, and `probe_out/soak.parquet.meta.json`
+   gets the counters so far every minute. Selecting text in the window pauses
+   the progress line until the selection ends, but not the recording.
 3. Leave it alone. A front-panel change is recorded, not an error.
-4. When it ends (or after Ctrl-C, which stops it cleanly), check it:
+4. To stop it early, press Ctrl-C; if Ctrl-C does nothing, press Ctrl-Break.
+   Either stops it cleanly: wait for its summary before closing the window.
+   **Never close the window while it records**: that kills it, and a killed
+   Parquet file has no footer and cannot be read.
+5. When it ends, check it:
 
-   ```bash
+   ```
    uv run python scripts/check_soak.py probe_out/soak.parquet --rss probe_out/soak.rss.jsonl
    ```
 
    It checks tick and row counts, timing, error accounting, status and
    provenance in every row, a clean shutdown, readable output and bounded
-   memory, and writes `probe_out/soak.parquet.check.json`.
+   memory (the trend of private memory after the first hour), and writes
+   `probe_out/soak.parquet.check.json`.
+6. If it was killed anyway, recover the complete row groups (1,000 rows each)
+   into `probe_out/soak.recovered.parquet`, with a copy of the `.meta.json`
+   beside it, and check that file instead. It fails the shutdown check, and
+   the counts it cannot judge without final counters are marked SKIP:
+
+   ```
+   uv run python scripts/recover_parquet.py probe_out/soak.parquet
+   uv run python scripts/check_soak.py probe_out/soak.recovered.parquet --rss probe_out/soak.rss.jsonl
+   ```
 
 ## The unplug test
 

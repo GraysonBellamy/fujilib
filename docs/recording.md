@@ -141,7 +141,7 @@ The traffic counters (requests, retries, failures by kind) are on
 |---|---|
 | `InMemorySink` | keeps every sample; for tests and short recordings |
 | `CsvSink` | flushed after every write, so a process that dies loses only what was not written yet: what `pipe()` held (at most `flush_interval` seconds or `batch_size` samples) and what waited in the recording's buffer. Text is quoted and numbers are not, so an empty field is `None` and `""` is empty text; read it back with `csv.QUOTE_NOTNULL` |
-| `ParquetSink` | the `parquet` extra (`pip install 'fujilib[parquet]'`); zstd; rows gathered into row groups of 1,000 (`row_group_size`); the file's metadata carries `fujilib.version` and whatever you pass. Readable only once closed, which cancellation and Ctrl-C still do; a killed process leaves an unreadable file |
+| `ParquetSink` | the `parquet` extra (`pip install 'fujilib[parquet]'`); zstd; rows gathered into row groups of 1,000 (`row_group_size`); the file's metadata carries `fujilib.version` and whatever you pass. Readable only once closed, which cancellation and Ctrl-C still do; a killed process leaves a file without its footer, whose complete row groups the repository's `scripts/recover_parquet.py` recovers |
 
 Each fixes its columns from `row_columns(channels)` before the first row:
 pass `channels=` to fix them at `open()`, or they are taken from the first

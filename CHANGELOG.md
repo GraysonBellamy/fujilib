@@ -59,14 +59,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `fuji-stream` prints each poll as text, CSV or JSON lines; `fuji-capture`
   records to CSV or Parquet with a `fujilib-capture/1` metadata document beside
   the data (identity, metadata, arguments, versions, and how the recording ended
-  with its counters); `fuji-diag timing` measures the gap the analyzer needs
-  between requests. Ctrl-C stops a recording command cleanly, with exit code 0.
+  with its counters, rewritten every minute while it records so a killed capture
+  still says how far it got); `fuji-diag timing` measures the gap the analyzer
+  needs between requests. Ctrl-C stops a recording command cleanly, with exit
+  code 0, and so does Ctrl-Break on Windows, which works also where Ctrl-C is
+  ignored. `fuji-capture`'s progress line cannot hold up the recording.
 - Guides for recording, the commands and measurement quality (including the
   statement that Modbus O2 is not validated for oxygen-consumption calorimetry),
   API pages for `fujilib.streaming` and `fujilib.sinks`, and
   `examples/record_to_parquet.py`.
-- `scripts/soak_monitor.py` and `scripts/check_soak.py` for long recordings on
-  the bench.
+- `scripts/soak_monitor.py`, `scripts/check_soak.py` and
+  `scripts/recover_parquet.py` for long recordings on the bench: run one and log
+  its memory, check it (memory by its fitted trend), and recover the complete row
+  groups of a Parquet capture that was killed.
 - `open_device()`: opens a serial port (or takes an open transport), attaches to a
   station and identifies the analyzer; everything it opened is closed again if that
   fails or is cancelled, and a caller's transport is never closed by it.

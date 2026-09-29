@@ -20,7 +20,10 @@ also a function, `main(argv) -> int`, in `fujilib.cli`.
 **Exit codes.** 0 on success, 1 for a library error (printed as `error: ...`),
 2 for bad arguments. `fuji-discover` also exits 2 when it finds nothing.
 `fuji-stream` and `fuji-capture` exit 0 when stopped with Ctrl-C, after
-writing and closing what they recorded.
+writing and closing what they recorded. On Windows, Ctrl-Break stops them (and
+`fuji-diag timing`) the same way, and it works in a window whose processes
+ignore Ctrl-C, as they do in a window opened by a process that ignores it.
+Closing the window instead kills the command.
 
 **Which analyzer.** The commands that talk to one analyzer take a serial port
 (`COM8`, `/dev/ttyUSB0`) and `--address` (the station, 1 by default), or
@@ -80,15 +83,18 @@ on standard error (`--quiet` stops it). Two files are written:
   ranges and metadata (response times, calibration gases, hold mode, clock),
   the arguments, the package versions, and, when the recording ends, how it
   ended (`finished`, `stopped` or `failed`, with the error) and its counters.
-  A Parquet file also carries the starting version in its metadata, as
-  `fujilib.capture`.
+  While it records, it is rewritten every minute with the counters so far
+  (`state` stays `recording`), so a capture that is killed still says how far
+  it got; `updated_at` says when it was last written. A Parquet file also
+  carries the starting version in its metadata, as `fujilib.capture`.
 
 Existing files are not replaced without `--force`; a missing directory for
 `--out` is created. A connection failure ends
 the capture with exit code 1 unless `--reconnect` asks for the port to be
 reopened; either way the files are complete up to that point. For an
 unattended recording, CSV is the safer format: a Parquet file is readable only
-once it is closed.
+once it is closed. The repository's `scripts/recover_parquet.py` recovers the
+complete row groups (1,000 rows each) of a Parquet capture that was killed.
 
 Common recording options (`fuji-stream` and `fuji-capture`):
 

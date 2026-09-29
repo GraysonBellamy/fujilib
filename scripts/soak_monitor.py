@@ -1,11 +1,18 @@
 """Run a long recording and log its memory use, for a 24-hour recording on the bench.
 
 It starts the command after ``--`` (normally ``fuji-capture``), then every
-``--every`` seconds writes one JSON line: the elapsed time, and the resident
-memory, CPU time and handle count of the command's whole process tree (a
-console-script launcher runs Python as its child). When the command ends it
-writes its exit code and exits with it. Ctrl-C reaches the command too, which
-stops cleanly; this script then waits for it to finish.
+``--every`` seconds writes one JSON line: the elapsed time, and the command's
+whole process tree (a console-script launcher runs Python as its child):
+resident memory, private memory, CPU time and handle count. Private memory is
+what a leak grows; on Windows the resident figure is the working set, which
+the system trims and refills. When the command ends it writes its exit code
+and exits with it.
+
+Ctrl-C and Ctrl-Break reach the command, which stops cleanly; this script
+waits for it to finish. On Windows a window opened by a process that ignores
+Ctrl-C (``start`` from a non-interactive shell, for one) passes that on to
+everything started in it, so this script turns Ctrl-C back on before it
+starts the command.
 
 Needs ``psutil``, which fujilib does not depend on::
 
@@ -22,6 +29,7 @@ from __future__ import annotations
 import argparse
 import json
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -31,9 +39,28 @@ from pathlib import Path
 import psutil
 
 
+def take_console_events() -> None:
+    """Let Ctrl-C and Ctrl-Break reach the command, and outlive them here."""
+    if sys.platform == "win32":
+        import ctypes  # noqa: PLC0415 - Windows only
+
+        # Clears the ignore-Ctrl-C flag, which the command inherits when started.
+        ctypes.windll.kernel32.SetConsoleCtrlHandler(None, False)
+    for name in ("SIGINT", "SIGBREAK"):
+        if hasattr(signal, name):
+            # A handler, not SIG_IGN: a POSIX child would inherit an ignored signal.
+            signal.signal(getattr(signal, name), lambda signum, frame: None)
+
+
+def private_bytes(proc: psutil.Process, info: object) -> int:
+    """Memory the process alone holds: private bytes on Windows, else the unique set size."""
+    private = getattr(info, "private", None)
+    return int(private) if private is not None else int(proc.memory_full_info().uss)
+
+
 def tree_usage(root: psutil.Process) -> dict[str, float | int]:
     """Memory, CPU time and handles of ``root`` and its children."""
-    rss = cpu = handles = 0.0
+    rss = private = cpu = handles = 0.0
     try:
         processes = [root, *root.children(recursive=True)]
     except (psutil.NoSuchProcess, psutil.AccessDenied):
@@ -41,7 +68,9 @@ def tree_usage(root: psutil.Process) -> dict[str, float | int]:
     for proc in processes:
         try:
             with proc.oneshot():
-                rss += proc.memory_info().rss
+                info = proc.memory_info()
+                rss += info.rss
+                private += private_bytes(proc, info)
                 times = proc.cpu_times()
                 cpu += times.user + times.system
                 if hasattr(proc, "num_handles"):
@@ -50,7 +79,12 @@ def tree_usage(root: psutil.Process) -> dict[str, float | int]:
                     handles += proc.num_fds()
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             continue
-    return {"rss_mb": round(rss / 2**20, 3), "cpu_s": round(cpu, 3), "handles": int(handles)}
+    return {
+        "rss_mb": round(rss / 2**20, 3),
+        "private_mb": round(private / 2**20, 3),
+        "cpu_s": round(cpu, 3),
+        "handles": int(handles),
+    }
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -78,6 +112,7 @@ def main(argv: list[str] | None = None) -> int:
         with log.open("a", encoding="utf-8") as file:
             file.write(json.dumps(record) + "\n")
 
+    take_console_events()
     child = subprocess.Popen([executable, *command[1:]])  # noqa: S603 - the operator's own command
     root = psutil.Process(child.pid)
     write({"event": "start", "pid": child.pid, "command": command})
@@ -87,8 +122,6 @@ def main(argv: list[str] | None = None) -> int:
             code = child.wait(timeout=args.every)
         except subprocess.TimeoutExpired:
             write({"event": "sample", **tree_usage(root)})
-        except KeyboardInterrupt:
-            continue  # the command got Ctrl-C too; wait for it to finish
     write({"event": "exit", "code": code})
     return code
 

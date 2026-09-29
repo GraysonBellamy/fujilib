@@ -551,5 +551,53 @@ with the library defaults. `anymodbus` 0.3.0, `anyserial` 0.2.0, `anyio` 4.15.1,
   actually had. Raw file `probe_out/diag_timing_20260929.json` (git-ignored).
 - **The 24-hour recording** (design §12) started at 02:06 UTC on 2026-09-29:
   `fuji-capture` at 1 Hz to Parquet with `--reconnect`, under `scripts/soak_monitor.py`
-  (`probe_out/soak_20260929.*`, git-ignored). Its results belong here once
-  `scripts/check_soak.py` has checked it.
+  (`probe_out/soak_20260929.*`, git-ignored). Its results are in §12.1.
+
+### 12.1 The first 24-hour attempt (2026-09-29): stopped by a kill after 10 h 17 min
+
+**How it ended.** The recording's window was opened by a non-interactive process
+with `cmd /c start`, and every process in a window opened that way inherits that
+process's "ignore Ctrl-C" flag. Ctrl-C in the window therefore did nothing, and at
+about 12:30 UTC the window was closed, which killed the recording. A test window
+opened the same way reproduced it with the simulated analyzer: Ctrl-C was ignored,
+and Ctrl-Break killed every process in the chain, leaving a 4-byte Parquet file. A
+Parquet file is readable only once its footer is written, so this one was not, and
+its `.meta.json` still said `recording`, with no counters.
+
+**What was recovered.** The 37 row groups written before the kill were intact.
+`scripts/recover_parquet.py` rebuilt the footer: 37,000 rows, 02:06:24 to 12:23:03
+UTC, ending exactly at the last byte written. The rows after 12:23:03, which were
+waiting for their row group, and the final counters are lost.
+
+**The recovered rows** (`scripts/check_soak.py`; tick counts and error accounting
+cannot be judged without counters):
+
+| Check | Result |
+|---|---|
+| Readable output | 54 columns, 37,000 rows |
+| Failed polls | none; no disconnect |
+| Gaps | none: 37,000 polls in 36,999 s, every interval 0.92–1.08 s (median 1.0026 s) |
+| Start of a poll after its slot | 0–16 ms (the 15.6 ms Windows timer), not accumulating; 16 polls over 20 ms, 4 over 50 ms, worst 87 ms |
+| Round trip of the concentration block | median 48.5 ms, 99.9th percentile 53 ms, worst 0.19 s |
+| Status and provenance | every row CO2 / CO / O2, `asserted`, state `ok`, valid, no hold, alarm or analyzer error |
+| Process tree | 0.5 % of one core; 310–312 handles throughout |
+| Resident memory | a 25 MB sawtooth, one tooth per row group written; the fitted trend after the first hour is +0.92 MB/h (+8.6 MB over 9.3 h), within the 20 MB bound |
+| Shutdown | failed: killed |
+
+The readings barely moved (CO2 −0.12 to −0.10 vol%, CO −0.010 to −0.004 vol%,
+O2 20.22–20.28 vol%), as expected of an idle analyzer in the calibration state of
+design §13.3. The wall clock gained 0.2 s on the monotonic clock over the run.
+
+**Whether the memory trend is a leak is open.** The monitor logged only resident
+memory, which on Windows is the working set that the system trims and refills.
+It now logs private memory too, and `check_soak.py` judges that by the fitted
+trend over the whole run. The rerun decides it.
+
+**What changed because of it** (design §12, §13.1 #57): `soak_monitor.py` turns
+Ctrl-C back on for the command it starts; the recording commands stop cleanly on
+Ctrl-Break too; `fuji-capture` rewrites its `.meta.json` every minute with the
+counters so far, and writes its progress line from a worker thread, so a console
+that stops taking output cannot hold up the recording; `recover_parquet.py` joins
+the soak tools. The same test window then stopped cleanly on Ctrl-C (in 0.1 s) and
+on Ctrl-Break, with the Parquet file readable and the exit logged. Ctrl-Break still
+ends `uv run` itself at once (exit code `0xC000013A`), but not the recording under it.
