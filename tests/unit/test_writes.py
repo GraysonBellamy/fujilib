@@ -218,7 +218,9 @@ async def test_a_current_range_that_cannot_be_read_fails_the_write() -> None:
     mock = bench()
     async with analyzer_on(mock) as (anz, _):
         mock.inject(FaultKind.DROP, times=None, when=when(*CH3_CURRENT))
-        with pytest.raises(FujiVerificationError, match="CH3's current range could not be read") as info:
+        with pytest.raises(
+            FujiVerificationError, match="CH3's current range could not be read"
+        ) as info:
             await anz.set_range(CH3, 2, confirm=True)
     assert isinstance(info.value.__cause__, FujiTimeoutError)
     assert info.value.context.extra["current_range_raw"] is None
