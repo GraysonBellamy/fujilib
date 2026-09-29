@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `Sample` carries `channels`, the channels its row has columns for, and
+  `sample_to_row(sample)` uses them by default. The recorder sets them on every
+  sample from the channels established when the recording starts, so a failed
+  poll's row has the same keys as any other.
+- `PollSourceAdapter` also describes its analyzer (`layout()`: station, protocol,
+  established channels, whether it can be reopened) and can reopen it
+  (`reconnect()`).
 - `read_metadata()` reads the current ranges itself (one more transaction), so the
   settings snapshot no longer depends on an earlier poll.
 - Require `anyserial>=0.2.0`, which gives every spelling of a port one canonical name,
@@ -23,6 +30,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The recorder: `record()` polls one or more analyzers at a fixed rate into a
+  bounded stream of per-tick batches, yielding a `Recording` with a live
+  `AcquisitionSummary`. Ticks follow an absolute schedule; slots a slow poll
+  overran are skipped and counted late, never caught up in a burst. A failed poll
+  is an error sample, so gaps are recorded. A full buffer waits (`BLOCK`) or drops
+  whole batches (`DROP_NEWEST`, `DROP_OLDEST`). A connection failure ends the
+  recording after its batch is delivered, and leaving the block raises it; with a
+  `ReconnectPolicy` the recording rides it out, reopening the analyzer on a
+  back-off schedule. The summary is finished however the recording stops.
+- `Analyzer.reopen()`: opens a port that `open_device` opened by name again after
+  a connection failure, identifies the analyzer, and requires it to be the same
+  one (serial number and type code). What the session learned is kept, and its
+  traffic counters and recovered-error count run on across it. Reopens are taken
+  one at a time, `close()` waits for one in progress, and a closed analyzer
+  cannot be reopened.
+- Sinks: `InMemorySink`, `CsvSink` and `ParquetSink` (the new `parquet` extra),
+  on a common `BaseSink`, and `pipe()`. Columns are fixed before the first row
+  from `row_columns()` (`SchemaLock`), never inferred from values, and a sample
+  with a channel the columns lack is refused. File I/O runs in worker threads. CSV
+  quotes text, so an empty field is `None` and `""` is empty text. Parquet gathers
+  rows into row groups of 1,000, so a long recording keeps its memory flat. `pipe()` writes
+  in groups, flushes on a timer while the stream is idle, and writes what it holds
+  when stopped or cancelled.
+- Blocking recording: `fujilib.sync.record()`, `pipe()`, `PollSourceAdapter`,
+  `SyncRecording`, `SyncAnalyzer.reopen()` and the `SyncInMemorySink`,
+  `SyncCsvSink` and `SyncParquetSink` sinks.
+- `fuji-stream` prints each poll as text, CSV or JSON lines; `fuji-capture`
+  records to CSV or Parquet with a `fujilib-capture/1` metadata document beside
+  the data (identity, metadata, arguments, versions, and how the recording ended
+  with its counters); `fuji-diag timing` measures the gap the analyzer needs
+  between requests. Ctrl-C stops a recording command cleanly, with exit code 0.
+- Guides for recording, the commands and measurement quality (including the
+  statement that Modbus O2 is not validated for oxygen-consumption calorimetry),
+  API pages for `fujilib.streaming` and `fujilib.sinks`, and
+  `examples/record_to_parquet.py`.
+- `scripts/soak_monitor.py` and `scripts/check_soak.py` for long recordings on
+  the bench.
 - `open_device()`: opens a serial port (or takes an open transport), attaches to a
   station and identifies the analyzer; everything it opened is closed again if that
   fails or is cancelled, and a caller's transport is never closed by it.

@@ -41,3 +41,18 @@ from fujilib.sync import find_devices
 for result in find_devices(ports=["COM8"], addresses=range(1, 32)):
     print(result.port, result.address, result.ok, result.model)
 ```
+
+## Recording
+
+```python
+from fujilib.sync import Fuji, PollSourceAdapter, SyncCsvSink, pipe, record
+
+with (
+    Fuji.open("COM8", channel_map={"CH1": "co2", "CH2": "co", "CH3": "o2"}) as anz,
+    record(PollSourceAdapter("zpa", anz), rate_hz=1.0, duration=600) as rec,
+    SyncCsvSink("run.csv", portal=anz.portal) as sink,
+):
+    pipe(rec, sink)
+```
+
+`for batch in rec:` iterates the polls instead. See [Recording](recording.md).

@@ -13,13 +13,15 @@ Auto-generated from source docstrings via
   discovery and profiles; data models, pure decoders, read procedures, capability
   flags and snapshots.
 - [`fujilib.sync`](sync.md) — the blocking facade: `Fuji.open`, `SyncAnalyzer`,
-  discovery and `SyncPortal`.
+  discovery, recording and sinks, and `SyncPortal`.
 - [`fujilib.protocol`](protocol.md) — the register-word codec, the read planner, the
   Modbus port and client, and the error map.
 - [`fujilib.transport`](transport.md) — the transport contract, `SerialSettings`, the
   serial transport and the scripted fake.
-- [Samples and rows](samples.md) — `Sample`, `DeviceResult`, `PollSourceAdapter`,
-  `sample_to_row()` and `to_pint()`.
+- [`fujilib.streaming`](streaming.md) — `Sample`, `DeviceResult`, poll sources,
+  the recorder (`record()`, `Recording`, `AcquisitionSummary`) and `to_pint()`.
+- [`fujilib.sinks`](sinks.md) — `sample_to_row()`, `row_columns()`, the memory,
+  CSV and Parquet sinks, and `pipe()`.
 - [`fujilib.testing`](testing.md) — arrow-format frame fixtures, the simulated analyzer
   and the bench bank.
 - [`fujilib.errors`](errors.md) — typed exception hierarchy and `ErrorContext`.

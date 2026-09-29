@@ -135,3 +135,18 @@ fuji-discover COM8 --addresses 1-31                      # find stations on a po
 fuji-configure dump COM8 --out settings.json             # every setting, by name
 fuji-read --fixture bench --all                          # the simulated analyzer
 ```
+
+## Recording
+
+`record()` polls at a fixed rate; `pipe()` writes the polls to a sink. See
+[Recording](recording.md).
+
+```python
+from fujilib import CsvSink, PollSourceAdapter, pipe, record
+
+async with (
+    CsvSink("run.csv") as sink,
+    record(PollSourceAdapter("zpa", anz), rate_hz=1.0, duration=600) as rec,
+):
+    await pipe(rec, sink)
+```

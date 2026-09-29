@@ -58,16 +58,67 @@ under asyncio and trio.
 
 ## The read-only session
 
-`tests/hardware/` holds three files:
+`tests/hardware/` holds four files:
 
 | File | Covers |
 |---|---|
 | `test_hardware_client.py` | the transport, the Modbus client and the read procedures: identity, poll timing after the inter-frame gap, status, ranges, metadata, settings, logs, clock and A/D, 50 sustained polls, and a cancelled read that must not disturb the next |
 | `test_hardware_reads.py` | the `Analyzer` facade: open and identify, an asserted label, a poll of exactly two transactions, polls without detail, status, metadata, ranges, settings and parameters, the logs (the calibration log refused before any I/O on firmware 1.02), clock, A/D and reprobing, 50 sustained polls, a deadline, an empty station that times out and releases the port, and closing and opening again |
 | `test_hardware_sync.py` | the blocking facade, discovery on the analyzer's port, and `fuji-read`, `fuji-discover` and `fuji-configure dump` |
+| `test_hardware_recording.py` | a 5 Hz recording (schedule, fixed row columns), `pipe()` to CSV and Parquet, `fuji-stream`, `fuji-capture`, and a short `fuji-diag timing` run |
 
 Every assertion holds for any ZP analyzer; values particular to the bench unit
 are recorded in the findings instead.
+
+## The 24-hour recording
+
+The hardware exit of Phase 5 (design §12). It is read-only, and it holds the port
+for a day.
+
+1. Pre-flight as above, plus: the host does not sleep, USB selective suspend is
+   off for the adapter, and no restart for updates is due.
+2. Start it from Git Bash, in the repository:
+
+   ```bash
+   uv run --with psutil python scripts/soak_monitor.py --log probe_out/soak.rss.jsonl -- \
+       fuji-capture COM8 --gas CH1=co2 --gas CH2=co --gas CH3=o2 \
+       --rate 1 --duration 86400 --out probe_out/soak.parquet --reconnect
+   ```
+
+   A progress line every 10 s shows the polls, failures and late ticks so far;
+   the memory log gets a line every 10 minutes.
+3. Leave it alone. A front-panel change is recorded, not an error.
+4. When it ends (or after Ctrl-C, which stops it cleanly), check it:
+
+   ```bash
+   uv run python scripts/check_soak.py probe_out/soak.parquet --rss probe_out/soak.rss.jsonl
+   ```
+
+   It checks tick and row counts, timing, error accounting, status and
+   provenance in every row, a clean shutdown, readable output and bounded
+   memory, and writes `probe_out/soak.parquet.check.json`.
+
+## The unplug test
+
+A controlled disconnect and reconnect (design §12). Someone must be at the
+bench to pull the adapter's USB plug. Read-only.
+
+1. Start a 10-minute capture with reconnection:
+
+   ```bash
+   fuji-capture COM8 --gas CH1=co2 --gas CH2=co --gas CH3=o2 \
+       --rate 1 --duration 600 --out probe_out/unplug.csv --reconnect
+   ```
+
+2. After about two minutes, pull the adapter's USB plug; put it back after
+   about 30 s. Repeat once. The progress line counts the failed polls meanwhile.
+3. Expected: the capture finishes with exit code 0; the rows of each outage are
+   error rows (`FujiConnectionError`, then refusals until the port is back);
+   `probe_out/unplug.csv.meta.json` reports 2 disconnects and 2 reconnects.
+   Check that the port came back as `COM8`.
+4. Run it again without `--reconnect`: at the first pull it ends with exit
+   code 1, and the CSV and its `.meta.json` (state `failed`) are complete up to
+   the failure.
 
 ## Deliverables
 

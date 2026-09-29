@@ -14,10 +14,11 @@ the unified device-library API; its internals are shaped to this analyzer.
 
 **Pre-alpha, unreleased.** The read-only API works against the development
 analyzer: `open_device()`, identification, polls with validity, metadata,
-settings, logs, discovery, a blocking facade and the `fuji-read`,
-`fuji-discover`, `fuji-configure dump` and `fuji-decode` commands. Streaming and
-recording come next. See [`docs/design.md`](docs/design.md) for the architecture
-and the phased plan, and [`CHANGELOG.md`](CHANGELOG.md) for what has landed.
+settings, logs, discovery, recording at a fixed rate to memory, CSV or Parquet,
+a blocking facade, and the `fuji-read`, `fuji-discover`, `fuji-configure dump`,
+`fuji-decode`, `fuji-stream`, `fuji-capture` and `fuji-diag` commands. See
+[`docs/design.md`](docs/design.md) for the architecture and the phased plan, and
+[`CHANGELOG.md`](CHANGELOG.md) for what has landed.
 
 ```python
 import anyio
@@ -35,6 +36,12 @@ async def main() -> None:
 
 
 anyio.run(main)
+```
+
+Record to a file from the command line (Parquet needs `fujilib[parquet]`):
+
+```bash
+fuji-capture COM8 --gas CH1=co2 --gas CH2=co --gas CH3=o2 --out run.parquet
 ```
 
 Planned releases:

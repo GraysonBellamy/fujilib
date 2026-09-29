@@ -17,8 +17,10 @@ description: Architecture, design decisions, and phased implementation plan for 
 >
 > Status: **proposal, revised 2026-09-28.** Phase 0 (repository bootstrap), Phase 1
 > (registry, codecs, models and the sample shape), Phase 3 (transport, Modbus client,
-> simulated analyzer and read procedures) and Phase 4 (session, facade, discovery, sync
-> and the read-only commands) are done. Streaming and recording come next.
+> simulated analyzer and read procedures), Phase 4 (session, facade, discovery, sync
+> and the read-only commands) and the software of Phase 5 (recorder, sinks and the
+> recording commands) are done. Phase 5's 24-hour bench recording is under way; 0.1.0
+> follows it.
 >
 > - **Where statements come from.** Statements about the device come from the three
 >   manuals in `docs/manuals/` (§14) and are marked **[manual]**. The bench analyzer was
@@ -560,8 +562,10 @@ devices/       profile.py    DeviceProfile (ZP_PROFILE): registry + regions + li
                snapshot.py   DeviceSnapshot, FujiDeviceSnapshot
    │
    ▼
-streaming/ sinks/ sync/ cli/              ported from the siblings (§7); sync/ and
-                                           streaming/poll_source.py since Phase 4
+streaming/  sample.py poll_source.py recorder.py      samples, poll sources, record()
+sinks/      base.py (rows, SchemaLock, pipe) memory.py csv.py parquet.py
+sync/       analyzer.py discovery.py recording.py sinks.py portal.py
+cli/        decode read discover configure stream capture diag
 manager.py                                 after 0.1.0 (§7.4)
 testing/    arrow.py (fixtures)  mock.py (MockAnalyzer, MockLine)  pair.py (wiring, bank)
 errors.py  config.py  units.py  version.py  _logging.py  _lock.py  _deadline.py  py.typed
@@ -1265,7 +1269,7 @@ async with await open_device(
 | Logs | `read_error_log()`, `read_calibration_log(ch=None)` | 4 |
 | Parameters (read) | `read_parameter(name)`, `read_parameters(names)`, `read_settings()`, each with `alarm_targets=` (§5.2) | 4 |
 | Streaming | `PollSourceAdapter(name, device)`, `DeviceResult` | 4 |
-| Recording | `record()` over a `PollSource` | 5 |
+| Recording | `record()` over a `PollSource`; `reopen()` after a connection failure | 5 |
 | Parameters (write) | `write_parameter(name, value, *, confirm=False)`; settings helpers such as `set_range`, `configure_alarm`, `set_hold`, `set_response_time` | 6 |
 | Operations | `start_auto_calibration`, `start_auto_zero_calibration`, `start_blowback`, `return_to_measurement`, `calibration_status()`, `wait_for_calibration(timeout=...)` | 6 |
 
@@ -1341,13 +1345,16 @@ raises for a probe failure; it returns an `ok=False` row.
 ### 7.6 Streaming, recording and sinks
 
 The recorder follows the **`sartoriuslib` / `alicatlib`** contract, with one wide sample
-per poll (§13.1 #13):
+per poll (§13.1 #13). A survey of the four sibling recorders found defects they share;
+fujilib's recorder is built to avoid them (§13.1 #45–#56).
 
 ```python
-class PollSource(Protocol):
+class PollSource(Protocol):  # runtime-checkable
     async def poll(
         self, names: Sequence[str] | None = None
     ) -> Mapping[str, DeviceResult[Frame]]: ...
+    def layout(self, names: Sequence[str] | None = None) -> Mapping[str, SourceLayout]: ...
+    async def reconnect(self, name: str) -> None: ...
 
 
 @asynccontextmanager
@@ -1359,6 +1366,7 @@ async def record(
     names: Sequence[str] | None = None,
     overflow: OverflowPolicy = OverflowPolicy.BLOCK,
     buffer_size: int = 64,
+    reconnect: ReconnectPolicy | None = None,
 ) -> AsyncGenerator[Recording[Mapping[str, Sample]]]: ...
 ```
 
@@ -1366,13 +1374,50 @@ async def record(
   status (instrument error, alarms, auto calibration) travels once with all channels,
   and capa's adapter can follow its `wide_row` path (`capa/devices/alicat.py`) with no
   per-tick workaround. `watlowlib`'s long samples need one in capa (`tick_first`).
-- **A failed poll** produces one `Sample` with `frame=None` and `error` set, so gaps are
-  recorded rather than dropped. It does not produce twelve invented readings.
-- **`sample_to_row(sample, channels)`** flattens a sample to columns fixed after
-  `identify()`:
+- **Rows keep their columns.** The recorder reads each analyzer's `SourceLayout`
+  (station, protocol, established channels, whether it can be reopened) once, when it
+  starts, and every sample it makes carries those channels (`Sample.channels`).
+  `sample_to_row(sample)` uses them by default. capa calls it without a channel list and
+  its own sink raises on a column added after the first flush, so a failed poll's row
+  must have the same keys as any other (#45). A channel established later is left out
+  of the recording's rows (#34), and an analyzer with no established channel is refused
+  before the first poll.
+- **A failed poll** produces one `Sample` with `frame=None` and `error` set, timed
+  around the poll (including any wait for the port), so gaps are recorded rather than
+  dropped. It does not produce twelve invented readings. Every name is in every batch.
+- **Schedule.** Tick *k* is due `k / rate_hz` after the first. A poll that overruns
+  whole slots skips them and counts them late, never catching up in a burst; slots past
+  the end of a finite run are not counted. `max_drift_ms` is how late a poll *started*
+  (the siblings include the poll's own round trip). The schedule runs on an injectable
+  clock, so tests assert exact counts (#53).
+- **Overflow.** `BLOCK` (the consumer sets the pace; ticks missed meanwhile are late),
+  `DROP_NEWEST` and `DROP_OLDEST`, all implemented. A batch is dropped whole and counted
+  in `samples_dropped`, not as late (#49).
+- **The summary counts polls.** `AcquisitionSummary` has the siblings' `started_at`,
+  `finished_at`, `samples_emitted`, `samples_late` and `max_drift_ms`, plus
+  `target_total_samples`, `samples_dropped`, `error_samples`, `disconnects` and
+  `reconnects`. There are no latency percentiles: every row has `latency_s`, and
+  percentiles would grow with a 24-hour run (#48). `finished_at` is set however the
+  recording stops, and batches still unread then count as dropped, so
+  `samples_emitted` is exactly what the consumer received. For a run that ends normally,
+  `samples_emitted + samples_dropped + samples_late == target_total_samples`.
+- **Disconnects** end the recording: the tick's error sample is delivered, the stream
+  ends, and leaving the `async with` block raises the `FujiConnectionError`. A
+  `ReconnectPolicy` rides the outage out instead: every tick is an error sample, and
+  the source's `reconnect()` (for `PollSourceAdapter`, `Analyzer.reopen()`) is tried on
+  a back-off schedule (0.5, 1, 2, 5, 10, then 30 s). A reopen opens the port by name
+  again and identifies the analyzer, which must have the same serial number and type
+  code. Connection, timeout and framing failures of an attempt are retried; any other
+  failure, such as another analyzer or an analyzer that was closed, ends the
+  recording. A transport the caller supplied
+  cannot be reopened, so the policy is refused for it before the first poll (#47).
+- **One exception, not a group.** An exception group of one from the recorder's task
+  group is raised as its member.
+- **`sample_to_row(sample, channels=None)`** flattens a sample to columns fixed by its
+  channels:
   - the header: `device`, `address`, `protocol`, `t_mono_ns`, `t_utc`,
     `t_midpoint_mono_ns`, `requested_at`, `received_at`, `latency_s`;
-  - per established channel: `chN_value`, `chN_raw`, `chN_decimals`, `chN_unit`,
+  - per channel: `chN_value`, `chN_raw`, `chN_decimals`, `chN_unit`,
     `chN_gas`, `chN_label_source`, `chN_state`, `chN_valid`, `chN_hold`,
     `chN_calibrating`, `chN_errors`;
   - analyzer-level: `instrument_error`, `calibration_error`, `analyzer_errors`,
@@ -1385,22 +1430,42 @@ async def record(
   the raw number when undocumented). An error row has the same keys, with `None` in every
   reading and analyzer column. `chN_state` is one token of the closed `ReadingState`
   vocabulary (§8), which capa stores as `ChannelSample.status`.
-
-  The schema is fixed before the first row, including when the first row is an error:
-  `row_columns(channels)` gives every column's type, so a sink never infers types from
-  an error row. One column table backs `Reading.as_dict()`, `Frame.as_long_rows()` and
-  `sample_to_row()`. An established channel never disappears, so `SchemaLock` holds.
 - **Long rows are a helper, not the recorder's shape.** `Frame.as_long_rows()` produces
   one row per channel with the analyzer status repeated, for SQL unions with long-format
   siblings.
-- **Batches and summary.** One tick is one batch, overflow drops whole batches, and the
-  `AcquisitionSummary` counts polls, not rows.
-- **Disconnects** end the recording with an error unless the caller supplies a reconnect
-  policy. This is decided explicitly, not inherited from a copied recorder.
-- **Sinks** for 0.1.0 are memory, CSV and Parquet. SQLite, JSONL and Postgres follow when
-  someone needs them. All take `SchemaLock`.
-
-Modbus is request/response only, so `StreamMode` has one member, `POLL`.
+- **Sinks** for 0.1.0 are memory, CSV and Parquet (#18); SQLite, JSONL and Postgres
+  follow when someone needs them. They share `BaseSink` (open once, write, close once;
+  closing completes under cancellation).
+  - **Columns are fixed before the first row** by a `SchemaLock`, from
+    `row_columns(channels)`: at `open()` when the sink is given its channels, otherwise
+    from the first batch's samples. Types never come from values, so an error-first
+    recording still types `ch3_value` as a float. A sample with a channel the columns
+    lack raises `FujiSinkSchemaError` rather than being written without it (#50).
+  - **File I/O runs in a worker thread**, shielded, so a write that has started is
+    finished and a cancelled writer never leaves half a batch.
+  - **CSV** quotes text and not numbers, so `None` (an empty field) and empty text
+    (`""`, e.g. `chN_errors` with no errors) stay apart. It is flushed after every write.
+  - **Parquet** needs the `parquet` extra (`pyarrow`), imported when the sink opens.
+    Rows are gathered into row groups of 1,000: `pipe()` writes about once a second,
+    and a row group per write would make a day at 1 Hz 86,400 groups whose metadata
+    `pyarrow` holds in memory until the file closes. zstd by default, key-value
+    metadata with `fujilib.version` and the caller's. A Parquet file is readable only once closed; closing runs on
+    cancellation and Ctrl-C, but a killed process leaves an unreadable file, so CSV is
+    the safer format unattended.
+- **`pipe(recording, sink, batch_size=64, flush_interval=1.0)`** writes batches in
+  groups, at the latest `flush_interval` after the first of a group arrived, even while
+  the stream is idle. When it stops, by the stream ending, an error or cancellation, it
+  takes the batches already waiting and writes what it holds (for up to 30 s,
+  shielded) unless the sink itself failed, so a file has a row for every batch the
+  summary counts, after Ctrl-C too. It returns its own counts; the recording's are in
+  `recording.summary` (#51).
+- **Blocking code** has the same recorder: `fujilib.sync.record()` yields a
+  `SyncRecording` iterated with a plain `for`, `pipe()` runs on the recording's portal,
+  a blocking `PollSourceAdapter` brings its analyzer's portal, and the `Sync*Sink`
+  classes wrap the async sinks.
+- **No batch lock.** One analyzer's poll is one session operation, which already holds
+  the port's lock across both blocks (§4.2). A manager polling several stations on one
+  port would hold it per port group (§7.4).
 
 ### 7.7 CLI
 
@@ -1411,7 +1476,8 @@ Plain `argparse`, each `main(argv=None) -> int`, each drivable with `--fixture`.
 | `fuji-decode` | decode a hex frame or a register dump offline | 1 |
 | `fuji-read` | one-shot identity, poll, status, metadata, ranges, logs, clock, A/D, snapshot (`--include`, `--all`) | 4 |
 | `fuji-discover` | scan named ports (or `--all-ports`) and station numbers | 4 |
-| `fuji-stream`, `fuji-capture` | live stream; record to a sink | 5 |
+| `fuji-stream` | print each poll at a fixed rate: text, CSV or JSON lines | 5 |
+| `fuji-capture` | record to CSV or Parquet, with a `fujilib-capture/1` metadata document beside it | 5 |
 | `fuji-diag timing` | read-only link timing, busy-wait gaps measured from the reply | 5 |
 | `fuji-configure` | `dump` (0.1.0) / `diff` / `apply` (0.2.0, `--confirm`, settings names only) | 5 / 6 |
 
@@ -1419,7 +1485,9 @@ The CLI uses the same session and write policy as the facade; it has no private 
 path.
 
 - **Exit codes** are 0 on success, 1 for a library error, 2 for bad arguments, and 2 when
-  `fuji-discover` finds nothing (as `servomex-discover` and `sarto-discover` do).
+  `fuji-discover` finds nothing (as `servomex-discover` and `sarto-discover` do). Ctrl-C
+  stops `fuji-stream` and `fuji-capture` cleanly, with 0: an open-ended recording is
+  meant to end that way (#52).
 - **`--fixture`** for `fuji-read` and `fuji-configure` is a register bank (the JSON
   `fuji-decode --dump` reads), or `bench` for the bundled bench bank, answered by the
   simulated analyzer through `open_device`. A live read takes a dozen transactions, which
@@ -1429,6 +1497,18 @@ path.
   analyzer's identity, then every holding register by name (never by address) with its
   decoded value, raw value, unit, access, safety tier and evidence. `diff` and `apply`
   (Phase 6) will read it.
+- **`fuji-capture`** identifies the analyzer, reads its metadata, and records with
+  `pipe()` to the file `--out` names; the format follows the extension. Beside it,
+  `<out>.meta.json` (format `fujilib-capture/1`) holds the identity, ranges and metadata
+  (response times, calibration gases, hold mode, clock), the arguments and package
+  versions. It is written when the recording starts and again when it ends, with how it
+  ended (`finished`, `stopped` or `failed` with the error) and the recording's and the
+  session's counters. A Parquet file carries the starting document in its metadata.
+  Existing files are not replaced without `--force`, and a missing `pyarrow` is reported
+  before the port is opened (#52).
+- **`fuji-diag timing`** is `scripts/probe_link.py --mode pairs` on fujilib's own port and
+  client: no library idle, no retries, busy-waited gaps, a random order (`--seed`), every
+  trial kept (`fujilib-diag-timing/1`), and only FC04 reads (#54).
 
 ### 7.8 Unified device-library API conformance
 
@@ -1450,7 +1530,7 @@ the contract in places; fujilib follows the contract.
 | I, M | `Recording` with `stream`, `summary`, `rate_hz`; mutable `AcquisitionSummary` | §7.6 |
 | J | `Session.recoverable_error_count`: failed read attempts that a later attempt of the same read recovered (the client's `recoverable_error_count`) | §4.5; `Analyzer.session` |
 | K | `to_pint()` covering every `Unit` member, exported at top level and from `fujilib.units`; `vol%` and `ppm` differ by 10⁴, and `to_pint` never converts values. The strings are ones capa's unit registry parses: `vol%` → `percent`, `ppm`, `mg/m**3`, `g/m**3`, and `None` for an unknown unit | §8 |
-| 6 | top-level exports: `open_device`, `find_devices`, `sample_to_row`, `PollSourceAdapter`, `Recording`, `DeviceResult`, `DiscoveryResult`, `DiscoverySummary`, `DeviceSnapshot`, `FujiDeviceSnapshot`, `to_pint` | `tests/unit/test_unified_api.py`; all but `Recording` (Phase 5) |
+| 6 | top-level exports: `open_device`, `find_devices`, `sample_to_row`, `PollSourceAdapter`, `Recording`, `DeviceResult`, `DiscoveryResult`, `DiscoverySummary`, `DeviceSnapshot`, `FujiDeviceSnapshot`, `to_pint` | `tests/unit/test_unified_api.py` |
 
 `requested_at` and `latency_s` are populated on every polled sample (`servomexlib`
 declares them but never sets them). `t_midpoint_mono_ns` is `None`: a configured
@@ -1756,7 +1836,9 @@ coherent block capture (findings §4.3).
 | Uncertain outcomes | lost write acknowledgement, cancellation after transmission, failed cleanup, a setting changed between write and verify |
 | Validity | hold or instrument error arriving between the two poll blocks; block-2 failure; derived-channel validity; `detail=False` gives `valid=None` |
 | Labels and presence | a populated channel reading an all-zero triple stays present; contradictory type codes; asserted map wins |
-| Recording | error-first recording keeps a fixed schema; overflow drops whole batches; poll-rate counts polls; cancellation while a sink blocks |
+| Recording | on a manual clock, exact tick, late, drift and drop counts for every overflow policy; error-first recording keeps a fixed schema; every name in every batch; a disconnect ends the recording after its batch, and a reconnect policy rides it out (over a simulated cable pulled and put back); a channel established later stays out of the rows; cancellation and early exit |
+| Sinks | CSV and Parquet read back exactly what was written (hypothesis); `pipe()` flushes on time while idle and writes what it holds when cancelled; a failed sink is not retried |
+| Commands | `fuji-stream`, `fuji-capture` and `fuji-diag` on the simulator, including a real SIGINT mid-recording (the files are closed and readable, exit 0) |
 | Faults | `FaultPlan` CRC corruption and dropped responses: reads retry and are counted, writes do not retry |
 | Multi-drop | several stations behind the dispatcher; one absent station does not stall others unboundedly |
 | Unified API | `test_unified_api.py`, import symmetry, sync parity |
@@ -1811,9 +1893,8 @@ package), and its `SECURITY.md` has Servomex-specific wording.
 
 - **Dependencies.** Core: `anyio>=4.14`, `anyserial>=0.2.0,<0.3` (0.2.0 carries §4.7
   items 13 and 14), `anymodbus>=0.3,<0.4` (0.3.0 carries §4.7 items 2–12 and needs
-  `anyio` 4.14). Extras:
-  `docs` now, `parquet` with the Parquet sink (others as sinks are added).
-  Python ≥ 3.13.
+  `anyio` 4.14). Extras: `docs`, and `parquet` (`pyarrow>=22`) for the Parquet sink;
+  others as sinks are added. The type checkers use `pyarrow-stubs`. Python ≥ 3.13.
 - **Release process.** Update `CHANGELOG.md`, make an annotated tag `vX.Y.Z`, publish a
   GitHub Release. `release.yml` then publishes to PyPI by trusted publishing with
   attestations, from the `pypi` environment, which accepts only `v*` tags. It first runs
@@ -1857,7 +1938,8 @@ channel map (#14) was adopted with Phase 4. The remaining items marked *(awaitin
 §13.1 are each needed before the work that uses them:
 
 - the 0.1.0 acceptance criteria for O2 (#15), before the O2 comparison;
-- whether to run the capa adapter spike before 0.1.0 (#44).
+- whether to run the capa adapter spike before 0.1.0 (#44). It matters more since
+  `Sample` gained `channels` (#45).
 
 ### Phase 0 — Repository bootstrap (**done 2026-09-28**)
 
@@ -2099,14 +2181,19 @@ Differences from the plan above (decisions §13.1 #32–#44):
   `timeout=` is the family's; a test that the write policy imports nothing of the
   register map now loads the package without its `__init__`, which imports the facade.
 
-### Phase 5 — Streaming, sinks, CLI (5–6 days software; soak separate)
+### Phase 5 — Streaming, sinks, CLI (software **done 2026-09-28**; soak under way)
 
-- Port `streaming/` (the `sartoriuslib`-shaped recorder), `sinks/` (memory, CSV,
-  Parquet) and their sync wrappers.
-- `fuji-stream`, `fuji-capture`, `fuji-diag timing`.
-- Guides (including the O2 scope statement of §2.11), API reference stubs, one example.
+- ~~Port `streaming/` (the `sartoriuslib`-shaped recorder), `sinks/` (memory, CSV,
+  Parquet) and their sync wrappers~~.
+- ~~`fuji-stream`, `fuji-capture`, `fuji-diag timing`~~.
+- ~~Guides (including the O2 scope statement of §2.11), API reference stubs, one
+  example~~: `docs/recording.md`, `docs/cli.md`, `docs/measurement-quality.md`,
+  `docs/api/streaming.md`, `docs/api/sinks.md`, `examples/record_to_parquet.py`.
 
-*Software exit:* all of the above green without hardware.
+*Software exit:* all of the above green without hardware. Met locally (Windows, Python
+3.13): lint, both type checkers and the unit tests at 100 % coverage, on asyncio and
+trio. An independent review preceded the commits.
+
 *Hardware exit:* a 24-hour recording at 1 Hz on the bench that checks:
 
 - expected tick and row counts;
@@ -2116,9 +2203,40 @@ Differences from the plan above (decisions §13.1 #32–#44):
 - clean shutdown;
 - readable output.
 
-A controlled disconnect/reconnect is tested separately.
+A controlled disconnect/reconnect is tested separately. `scripts/soak_monitor.py` runs
+the recording and logs its memory; `scripts/check_soak.py` checks every item above
+(`docs/hardware-test-day.md`). A 60-second rehearsal on the bench passed every check.
+The read-only hardware tests, now including recording, the sinks and the three new
+commands, pass 52 of 52 under asyncio and trio (findings §12). *The 24-hour recording
+and the unplug test are outstanding.*
 
-**Release 0.1.0** — read-only monitoring, metadata and acquisition.
+Differences from the plan above (decisions §13.1 #45–#56):
+
+- **`Sample` carries `channels`** (#45), and a poll source describes its analyzers with
+  `layout()` (#46), so every row of a recording has the same keys.
+- **A connection failure ends a recording** unless a `ReconnectPolicy` is given, which
+  reopens the analyzer with the new `Analyzer.reopen()` (#47). The session keeps what it
+  learned and its traffic counters, and requires the same analyzer. Reopens are taken
+  one at a time, `close()` waits for one in progress, a closed analyzer cannot be
+  reopened, and the run loop moves a call that waited on the old port's lock to the new
+  port.
+- **The summary gains** `samples_dropped`, `error_samples`, `disconnects`, `reconnects`
+  and `target_total_samples`; drift is the lateness of a poll's start; no percentiles
+  (#48).
+- **All three overflow policies** exist (#49).
+- **Sinks lock their columns from `row_columns()`** and refuse an unknown channel; CSV
+  quotes text so `None` and `""` differ (#50).
+- **`pipe()` flushes on a timer** and finishes its last write under cancellation (#51).
+- **The commands** stop cleanly on Ctrl-C with exit 0; `fuji-capture` writes a
+  `.meta.json` beside the data and never replaces files without `--force` (#52).
+- **The recorder's clock is injectable** for tests (#53); `fuji-diag timing` is the pairs
+  probe on fujilib's own client (#54).
+- **Along the way:** `fujilib._groups.unwrap` (shared with the portal), the blocking
+  `PollSourceAdapter`, and `SyncAnalyzer.reopen()`.
+
+**Release 0.1.0** — read-only monitoring, metadata and acquisition. Before it (#55):
+the 24-hour recording and the unplug test, the owner's review of `docs/registers.md`
+(Phase 1's exit), and a decision on the capa spike (#44).
 
 ### Phase 6 — Settings and operation commands (5–7 days, stateful hardware)
 
@@ -2215,6 +2333,18 @@ complete read-and-record slice.
 | 42 | Build the confirm gate before any operation above `READ_ONLY` exists | **Adopted 2026-09-28** on the owner's "proceed"; not separately confirmed: no; it comes with the first write (Phase 6) |
 | 43 | The O2 comparison in Phase 4 | **Adopted 2026-09-28** on the owner's "proceed"; not separately confirmed: off the Phase 4 path; it needs the analog output wired (§13.4 Q3) and acceptance limits (#15) |
 | 44 | The capa adapter spike before 0.1.0 | *(awaiting)* A first draft of the capa adapter on a capa branch, against fujilib as a local path dependency, so the sample shape can still change in fujilib. It can instead be written after release, as the other adapters were; `tests/unit/test_contract_capa.py` already builds capa's record shapes from fujilib's rows |
+| 45 | How a failed poll's row keeps the recording's columns | **Adopted 2026-09-28** on the owner's "proceed"; not separately confirmed: `Sample.channels`, set by the recorder on every sample; `sample_to_row(sample)` uses them. capa calls `sample_to_row(sample)` without channels and raises on schema drift |
+| 46 | How the recorder learns each analyzer's station, protocol and channels | **Adopted 2026-09-28** on the owner's "proceed"; not separately confirmed: `PollSource.layout()`, read once at the start; an analyzer with no established channel is refused |
+| 47 | What a disconnect does to a recording | **Adopted 2026-09-28** on the owner's "proceed"; not separately confirmed: it ends it after the tick's batch is delivered, raising at the block's exit; an opt-in `ReconnectPolicy` reopens the analyzer (`Analyzer.reopen()`, same serial number and type code required) on a back-off schedule |
+| 48 | The summary's fields | **Adopted 2026-09-28** on the owner's "proceed"; not separately confirmed: the siblings' five plus `target_total_samples`, `samples_dropped`, `error_samples`, `disconnects`, `reconnects`; drift is the lateness of a poll's start; no latency percentiles |
+| 49 | Overflow policies | **Adopted 2026-09-28** on the owner's "proceed"; not separately confirmed: `BLOCK`, `DROP_NEWEST` and `DROP_OLDEST`, dropping whole batches, counted apart from late ticks |
+| 50 | How sinks fix their columns | **Adopted 2026-09-28** on the owner's "proceed"; not separately confirmed: from `row_columns()` (never from values), locked at `open()` or by the first batch; an unknown channel raises `FujiSinkSchemaError`; file I/O in worker threads; CSV quotes text |
+| 51 | `pipe()` | **Adopted 2026-09-28** on the owner's "proceed"; not separately confirmed: groups of `batch_size`, a timer flush while idle, the last write finished under cancellation, counts in polls; the commands report the recorder's summary |
+| 52 | The recording commands | **Adopted 2026-09-28** on the owner's "proceed"; not separately confirmed: run until `--duration` or Ctrl-C, which exits 0; `fuji-capture` writes `<out>.meta.json`, refuses to replace files without `--force`, and checks for `pyarrow` before opening the port |
+| 53 | Testing the schedule | **Adopted 2026-09-28** on the owner's "proceed"; not separately confirmed: the recorder runs on an injectable clock; tests use a manual one |
+| 54 | `fuji-diag timing` | **Adopted 2026-09-28** on the owner's "proceed"; not separately confirmed: built, as the pairs probe on fujilib's own client |
+| 55 | What 0.1.0 waits for | **Adopted 2026-09-28** on the owner's "proceed"; not separately confirmed: the 24-hour recording and the unplug test, the owner's review of `docs/registers.md`, and a decision on #44 |
+| 56 | The 24-hour recording | **Adopted 2026-09-28**: the owner left the analyzer connected and allowed any hardware test; read-only, 1 Hz, `fuji-capture` to Parquet with `--reconnect`, under `scripts/soak_monitor.py` |
 
 ### 13.2 Hardware verification
 
@@ -2238,6 +2368,7 @@ Answered by the read-only probes of 2026-09-28. Details and data are in
 | 20 | The scan's 43 malformed replies | all re-read as exception 02 (3 of 3 each); link artifacts |
 | 28 | fujilib's client, read procedures and quiet window on the analyzer | Done 2026-09-28 (findings §10). Every read procedure works; 300 polls at 7.78 Hz with no failure; with no quiet window a read after a cancelled one was lost in 23 of 30 trials, with the window never; stale data was never accepted |
 | 30 | The facade, discovery, the blocking facade and the commands on the analyzer | Done 2026-09-28 (findings §11). 45 of 45 hardware tests under asyncio and trio; open and identify in 0.3 s; an empty station times out and releases the port |
+| 31 | Recording, the sinks and the recording commands on the analyzer | Done 2026-09-28 (findings §12). 52 of 52 hardware tests under asyncio and trio; a 60-second capture at 1 Hz passed every soak check. The 24-hour recording is under way; the unplug test needs the owner at the bench |
 
 Still open:
 

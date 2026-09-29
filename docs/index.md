@@ -13,9 +13,10 @@ models that share its MODBUS map. It is built on
 !!! warning "Pre-alpha"
     Nothing has been released yet. The read-only API works: `open_device()`,
     identification, polls with validity, metadata, settings, logs, discovery,
-    a blocking facade and the `fuji-*` commands. Streaming, recording and
-    writes are still to come; the [design](design.md) lays out the plan. Start
-    with the [async quickstart](quickstart-async.md).
+    [recording](recording.md) to memory, CSV or Parquet, a blocking facade and
+    the [`fuji-*` commands](cli.md). Writes are still to come; the
+    [design](design.md) lays out the plan. Start with the
+    [async quickstart](quickstart-async.md).
 
 The authoritative architectural document is the [Design](design.md). What the
 development analyzer actually does on the wire is recorded in
@@ -33,4 +34,4 @@ development analyzer actually does on the wire is recorded in
 !!! note "Oxygen"
     Over Modbus, O2 arrives with the display's resolution: 0.01 vol% per step on
     the development unit. Modbus O2 is **not validated for oxygen-consumption
-    calorimetry** (design §2.11).
+    calorimetry**; see [Measurement quality](measurement-quality.md).

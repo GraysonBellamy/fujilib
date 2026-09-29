@@ -523,3 +523,33 @@ commands, read-only, on `COM8`, station 1, with the library defaults. `anymodbus
   one retry, and returned the right words. Run on its own 14 more times (140 trials,
   asyncio and trio) it never recurred. One retry in about 150 trials is read as the
   background loss of §6.3; stale data was never accepted.
+
+## 12. Recording on the bench (2026-09-28, night)
+
+The recorder, the sinks and the recording commands, read-only, on `COM8`, station 1,
+with the library defaults. `anymodbus` 0.3.0, `anyserial` 0.2.0, `anyio` 4.15.1,
+`pyarrow` 25.0.1, Python 3.13, Windows 11.
+
+- **The hardware tests.** With `test_hardware_recording.py` added (a 5 Hz recording,
+  `pipe()` to CSV and Parquet, `fuji-stream`, `fuji-capture` and `fuji-diag timing`),
+  52 of 52 pass, under asyncio and trio.
+- **A 60-second capture at 1 Hz** (`fuji-capture ... --reconnect` under
+  `scripts/soak_monitor.py`): 60 polls, none late, dropped or failed, 131 requests with
+  no retries. The two failed attempts are the exception replies of identification's
+  probes of the capabilities firmware 1.02 lacks. Intervals between samples had a median
+  of 1.003 s and a maximum of 1.015 s, and the worst start of a poll was 16 ms late: the
+  Windows timer. Every row carried CH1-3 with the asserted gases, `label_source`
+  "asserted" and state "ok". `scripts/check_soak.py` passed every check. The capture's
+  process tree used 62-63 MB.
+- **The analyzer's clock** read 21:05:12 when the host's local time was 21:11:40: still
+  about 6.5 minutes behind.
+- **`fuji-diag timing`**, 800 trials (50 per pairing and gap, seed 20260928), took 40 s
+  and agrees with §6.3. The one failure was a timeout at a 0 ms gap (exception, then
+  exception); every gap of 1 ms or more succeeded. A second read's round trip was
+  2.6-19.9 ms (median 13.4). In 15 trials the busy-wait overran its gap by more than
+  5 ms, up to 29 ms, when the thread was descheduled; each trial records the gap it
+  actually had. Raw file `probe_out/diag_timing_20260929.json` (git-ignored).
+- **The 24-hour recording** (design §12) started at 02:06 UTC on 2026-09-29:
+  `fuji-capture` at 1 Hz to Parquet with `--reconnect`, under `scripts/soak_monitor.py`
+  (`probe_out/soak_20260929.*`, git-ignored). Its results belong here once
+  `scripts/check_soak.py` has checked it.
