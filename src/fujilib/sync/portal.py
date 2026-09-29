@@ -13,28 +13,21 @@ catch the :class:`~fujilib.errors.FujiError` subclass itself.
 from __future__ import annotations
 
 from functools import partial
-from typing import TYPE_CHECKING, Self, cast
+from typing import TYPE_CHECKING, Self
 
 from anyio.from_thread import start_blocking_portal
 
+from fujilib._groups import unwrap
+
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
+    from concurrent.futures import Future
     from contextlib import AbstractAsyncContextManager, AbstractContextManager
     from types import TracebackType
 
     from anyio.from_thread import BlockingPortal
 
 __all__ = ["SyncPortal"]
-
-
-def _unwrap(exc: BaseException) -> BaseException:
-    """``exc`` without exception-group wrappers of a single exception."""
-    while isinstance(exc, BaseExceptionGroup):
-        group = cast("BaseExceptionGroup[BaseException]", exc)
-        if len(group.exceptions) != 1:
-            return group
-        exc = group.exceptions[0]
-    return exc
 
 
 class SyncPortal:
@@ -100,11 +93,28 @@ class SyncPortal:
         try:
             return portal.call(partial(func, *args, **kwargs))
         except BaseExceptionGroup as group:
-            unwrapped = _unwrap(group)
+            unwrapped = unwrap(group)
             if unwrapped is group:
                 raise
-            # Hide the group, but keep the cause the error carries (errors.py).
-            raise unwrapped from unwrapped.__cause__
+        # Raised outside the handler: the group is hidden, and the error keeps
+        # its own cause and context (errors.py).
+        raise unwrapped
+
+    def start_task_soon[T](self, func: Callable[[], Awaitable[T]]) -> Future[T]:
+        """Start ``func()`` on the portal's loop; its future cancels the task when cancelled.
+
+        Raises:
+            RuntimeError: the portal is not running.
+        """
+        return self._running().start_task_soon(func)
+
+    def run_in_loop[T](self, func: Callable[[], T]) -> T:
+        """Run the plain function ``func`` in the loop's thread and return its result.
+
+        Raises:
+            RuntimeError: the portal is not running.
+        """
+        return self._running().call(func)
 
     def wrap_async_context_manager[T](
         self, acm: AbstractAsyncContextManager[T]

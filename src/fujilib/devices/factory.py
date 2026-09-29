@@ -5,11 +5,15 @@ Modbus bus to it, attaches a session to the station, and by default
 identifies the analyzer. If anything fails or is cancelled on the way, what
 this call opened is closed again; a transport the caller passed in is never
 closed by it.
+
+A port opened by name can be opened again the same way after a connection
+failure (``Analyzer.reopen()``); a transport the caller passed in cannot.
 """
 
 from __future__ import annotations
 
 from dataclasses import replace
+from functools import partial
 from typing import TYPE_CHECKING
 
 import anyio
@@ -30,6 +34,7 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
 
     from fujilib.devices.profile import DeviceProfile
+    from fujilib.devices.session import Reopener
     from fujilib.registry.channels import ChannelId, Gas
     from fujilib.transport.base import SerialSettings
 
@@ -81,10 +86,12 @@ async def open_device(
     _check_protocol(profile, protocol)
     _check_address(address)
     asserted = coerce_channel_map(channel_map) if channel_map is not None else None
+    reopener: Reopener | None = None
     if isinstance(port, str):
         settings = _serial_settings(profile, port, serial_settings)
         transport: Transport = await SerialTransport.open(settings)
         owns_transport = True
+        reopener = partial(_open_port, settings, timeout)
     else:
         if not _is_transport(port):
             msg = f"port must be a port name or an open Transport, got {type(port).__name__}"
@@ -100,7 +107,9 @@ async def open_device(
     modbus: ModbusPort | None = None
     try:
         modbus = ModbusPort(transport, request_timeout=timeout, owns_transport=owns_transport)
-        session = Session(modbus, address=address, profile=profile, channel_map=asserted)
+        session = Session(
+            modbus, address=address, profile=profile, channel_map=asserted, reopener=reopener
+        )
         analyzer = Analyzer(session)
         if identify:
             await analyzer.identify()
@@ -112,6 +121,17 @@ async def open_device(
                 await transport.aclose()
         raise
     return analyzer
+
+
+async def _open_port(settings: SerialSettings, timeout: float) -> ModbusPort:
+    """Open the port of ``settings`` and bind a Modbus port to it, as ``open_device`` does."""
+    transport = await SerialTransport.open(settings)
+    try:
+        return ModbusPort(transport, request_timeout=timeout, owns_transport=True)
+    except BaseException:
+        with anyio.CancelScope(shield=True):
+            await transport.aclose()
+        raise
 
 
 def _check_protocol(profile: DeviceProfile, protocol: ProtocolKind | str | None) -> None:

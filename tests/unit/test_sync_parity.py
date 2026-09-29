@@ -88,6 +88,41 @@ def test_find_devices() -> None:
     assert_parity(find_devices, sync_find_devices, extra=frozenset({"portal"}))
 
 
+def test_record_and_pipe() -> None:
+    from fujilib import pipe as async_pipe
+    from fujilib import record as async_record
+    from fujilib.sync import pipe, record
+
+    assert_parity(async_record, record, extra=frozenset({"portal"}))
+    assert_parity(async_pipe, pipe)
+
+
+@pytest.mark.parametrize(
+    ("async_sink", "sync_sink"),
+    [
+        ("InMemorySink", "SyncInMemorySink"),
+        ("CsvSink", "SyncCsvSink"),
+        ("ParquetSink", "SyncParquetSink"),
+    ],
+)
+def test_sinks(async_sink: str, sync_sink: str) -> None:
+    import fujilib
+    import fujilib.sync
+
+    assert_parity(
+        getattr(fujilib, async_sink), getattr(fujilib.sync, sync_sink), extra=frozenset({"portal"})
+    )
+
+
+def test_poll_source_adapter() -> None:
+    from fujilib import PollSourceAdapter
+    from fujilib.sync import PollSourceAdapter as SyncPollSourceAdapter
+
+    assert_parity(PollSourceAdapter, SyncPollSourceAdapter)
+    for name in ("poll", "layout", "reconnect"):
+        assert_parity(getattr(PollSourceAdapter, name), getattr(SyncPollSourceAdapter, name))
+
+
 def test_the_method_list_is_complete() -> None:
     # A guard on the guard: the coroutine scan finds the whole public surface.
     assert {"poll", "identify", "read_metadata", "snapshot", "close"} <= set(_coroutines(Analyzer))

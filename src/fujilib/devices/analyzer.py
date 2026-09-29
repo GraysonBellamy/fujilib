@@ -80,6 +80,22 @@ class Analyzer:
         """
         await self._session.close()
 
+    async def reopen(self, *, timeout: float | None = None) -> DeviceInfo:
+        """Open the port again and identify the analyzer, after a connection failure.
+
+        A connection failure breaks the session (every later call is refused);
+        this is the way back without losing what the session learned. Only a
+        port that ``open_device`` opened by name can be reopened. The station
+        must answer as the same analyzer: the same serial number and type code.
+
+        Raises:
+            FujiConfigurationError: the port came from the caller; or another
+                analyzer answers on the station.
+            FujiConnectionError: the analyzer is closed, or the port cannot be opened.
+            FujiError: identification failed; the analyzer stays unusable.
+        """
+        return await self._session.reopen(timeout=timeout)
+
     async def __aenter__(self) -> Self:
         return self
 

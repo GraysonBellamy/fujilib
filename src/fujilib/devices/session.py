@@ -27,6 +27,11 @@ The session keeps what it has learned about the station (design §6.7):
 
 The front panel stays live, so none of this stays authoritative for long:
 an operator can change a range or a setting at any time (design §1).
+
+A session whose port was opened by name can be reopened after a connection
+failure (:meth:`Session.reopen`): the port is opened again under the same
+settings, the analyzer is identified again and must be the same one, and
+what the session had learned is kept.
 """
 
 from __future__ import annotations
@@ -36,6 +41,8 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Final
+
+import anyio
 
 from fujilib._deadline import Deadline
 from fujilib._lock import maybe_acquire
@@ -48,6 +55,7 @@ from fujilib.devices.snapshot import FujiDeviceSnapshot
 from fujilib.errors import (
     ErrorContext,
     FujiCapabilityError,
+    FujiConfigurationError,
     FujiConnectionError,
     FujiDecodeError,
     FujiError,
@@ -64,15 +72,18 @@ if TYPE_CHECKING:
     from fujilib.devices.profile import DeviceProfile
     from fujilib.devices.reads import Identity, PollRead
     from fujilib.protocol.base import ProtocolClient
-    from fujilib.protocol.modbus.client import ClientCounters
+    from fujilib.protocol.modbus.client import ClientCounters, ModbusClient
     from fujilib.protocol.modbus.port import ModbusPort
     from fujilib.registry.channels import ChannelId, Gas
     from fujilib.registry.typecode import TypeCode
     from fujilib.transport.base import SerialSettings
 
-__all__ = ["Session", "SessionState", "describe_identity"]
+__all__ = ["Reopener", "Session", "SessionState", "describe_identity"]
 
 _LOG = get_logger("session")
+
+type Reopener = Callable[[], Awaitable[ModbusPort]]
+"""Opens the session's port again, as it was first opened."""
 
 #: Capabilities that come with a firmware version rather than an option (design §6.6).
 _FIRMWARE_CAPABILITIES: Final = frozenset({Capability.TYPE_CODE_EXT, Capability.CALIBRATION_LOG})
@@ -157,14 +168,20 @@ class Session:
         address: int,
         profile: DeviceProfile,
         channel_map: Mapping[ChannelId, Gas] | None = None,
+        reopener: Reopener | None = None,
     ) -> None:
         """Bind to station ``address`` on ``port``, which the session then owns.
+
+        ``reopener`` opens the port again for :meth:`reopen`; without one the
+        session cannot be reopened.
 
         Raises:
             FujiValidationError: ``address`` is not a station number, 1-31.
         """
         self._client = port.client(address)
         self._port = port
+        self._reopener = reopener
+        self._reopening = anyio.Lock()
         self._profile = profile
         self._asserted: Mapping[ChannelId, Gas] = MappingProxyType(dict(channel_map or {}))
         self._state = SessionState.OPEN
@@ -218,13 +235,25 @@ class Session:
         return self._port.transport.settings
 
     @property
+    def reopenable(self) -> bool:
+        """Whether :meth:`reopen` can open the port again: it was opened by name."""
+        return self._reopener is not None
+
+    @property
     def counters(self) -> ClientCounters:
-        """The station's traffic counters: requests, retries and failures by kind."""
+        """The station's traffic counters: requests, retries and failures by kind.
+
+        Live, and counted over the whole session: after :meth:`reopen` the same
+        object goes on counting.
+        """
         return self._client.counters
 
     @property
     def recoverable_error_count(self) -> int:
-        """Failed read attempts that a retry of the same read recovered (unified API §J)."""
+        """Failed read attempts that a retry of the same read recovered (unified API §J).
+
+        Counted over the whole session, across :meth:`reopen`.
+        """
         return self._client.recoverable_error_count
 
     @property
@@ -321,13 +350,18 @@ class Session:
         refused: FujiConnectionError | None = None
         try:
             with deadline.enforce():
-                async with maybe_acquire(self._port.lock):
-                    # The session may have been closed or broken while this call
-                    # waited for the lock. A refusal is not a failure of the
-                    # analyzer, so it is raised below, not kept as the last error.
-                    refused = self._state_error(operation)
-                    if refused is None:
-                        return await body(self._client, deadline)
+                while True:
+                    port = self._port
+                    async with maybe_acquire(port.lock):
+                        if port is not self._port:
+                            continue  # reopened while this call waited: take the new port's lock
+                        # The session may have been closed or broken while this call
+                        # waited for the lock. A refusal is not a failure of the
+                        # analyzer, so it is raised below, not kept as the last error.
+                        refused = self._state_error(operation)
+                        if refused is None:
+                            return await body(self._client, deadline)
+                        break
         except FujiError as exc:
             located = self._located(exc, operation)
             self._note_failure(located)
@@ -523,6 +557,96 @@ class Session:
 
     # --- Lifecycle -----------------------------------------------------------------------
 
+    async def reopen(self, *, timeout: float | None = None) -> DeviceInfo:
+        """Open the port again and identify the analyzer, usually after a connection failure.
+
+        The old port is closed first (after the operation in progress), then
+        opened again with the settings it was first opened with. The station
+        must identify as the analyzer that was open: the same serial number and
+        type code. The asserted channel map, the established channels and the
+        traffic counters are kept. Calls made meanwhile are refused. Reopens
+        are taken one at a time, and a call that finds the analyzer reopened
+        by another while it waited returns at once. :meth:`close` waits for a
+        reopen in progress, so no port is left open once it returns.
+
+        Raises:
+            FujiConfigurationError: the analyzer was closed; its port came from
+                the caller, so it cannot be reopened; or another analyzer answers
+                on the station. None of these changes by trying again.
+            FujiConnectionError: the port cannot be opened.
+            FujiValidationError: ``timeout`` is negative or not finite.
+            FujiError: identification failed. The session stays broken.
+        """
+        operation = "reopen"
+        reopener = self._reopener
+        if reopener is None:
+            msg = (
+                f"the analyzer on {self.port} was opened on a transport the caller supplied, "
+                "so fujilib cannot open it again"
+            )
+            raise FujiConfigurationError(msg, context=self._context(operation))
+        deadline = Deadline.after(timeout, operation=operation)
+        found = self._port
+        try:
+            with deadline.enforce():
+                async with self._reopening:
+                    self._check_not_closed(operation)
+                    if self._port is not found and self._state is SessionState.OPEN:
+                        return self._require_info()  # another call reopened it meanwhile
+                    self._state = SessionState.BROKEN
+                    await self._port.aclose()
+                    port = await reopener()
+                    try:
+                        self._check_not_closed(operation)
+                        client, identity = await self._identify_on(port, deadline)
+                        self._check_not_closed(operation)
+                    except BaseException:
+                        with anyio.CancelScope(shield=True):
+                            await port.aclose()
+                        raise
+                    # The session's counters go on, with the new port's traffic so far.
+                    client.counters = _added(self._client.counters, client.counters)
+                    self._port, self._client = port, client
+                    self._state = SessionState.OPEN
+        except FujiError as exc:
+            located = self._located(exc, operation)
+            self._last_error = located.context
+            if located is exc:
+                raise
+            raise located from exc.__cause__
+        _LOG.info("%s station %d: reopened", self.port, self.address)
+        return self.learn_identity(identity)
+
+    def _check_not_closed(self, operation: str) -> None:
+        if self._state is SessionState.CLOSED:
+            msg = "the analyzer was closed; open it again with open_device"
+            raise FujiConfigurationError(msg, context=self._context(operation))
+
+    def _require_info(self) -> DeviceInfo:
+        info = self._info
+        assert info is not None  # noqa: S101 - a reopen that succeeded identified it
+        return info
+
+    async def _identify_on(
+        self, port: ModbusPort, deadline: Deadline
+    ) -> tuple[ModbusClient, Identity]:
+        """Identify the station on a newly opened ``port``, checking it is the same analyzer."""
+        client = port.client(self.address)
+        async with maybe_acquire(port.lock):
+            identity = await self._profile.identify(client, probe=True, deadline=deadline)
+        info = self._info
+        if info is not None and (
+            identity.serial_number != info.serial_number
+            or identity.type_code.raw != info.type_code.raw
+        ):
+            msg = (
+                f"{port.label} station {self.address} now answers as "
+                f"{identity.type_code.raw!r} serial {identity.serial_number!r}, not the "
+                f"analyzer that was open ({info.type_code.raw!r} serial {info.serial_number!r})"
+            )
+            raise FujiConfigurationError(msg, context=self._context("reopen"))
+        return client, identity
+
     async def close(self) -> None:
         """Close the session and its port. Idempotent.
 
@@ -531,8 +655,21 @@ class Session:
         caller supplied is left open.
         """
         self._state = SessionState.CLOSED
-        # Every call waits: the port closes once, after the operation in progress.
-        await self._port.aclose()
+        # Every call waits: the port closes once, after the operation (or the
+        # reopen) in progress.
+        with anyio.CancelScope(shield=True):
+            async with self._reopening:
+                await self._port.aclose()
 
     def __repr__(self) -> str:
         return f"<Session {self.port} station {self.address} {self._state.value}>"
+
+
+def _added(kept: ClientCounters, more: ClientCounters) -> ClientCounters:
+    """``kept``, the object callers hold, with ``more`` added to it."""
+    kept.requests += more.requests
+    kept.retries += more.retries
+    kept.recovered += more.recovered
+    for kind, count in more.failures.items():
+        kept.failures[kind] = kept.failures.get(kind, 0) + count
+    return kept

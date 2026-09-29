@@ -12,9 +12,14 @@ from contextlib import asynccontextmanager
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Final
 
+import anyio
+from anyserial import SerialConfig
+from anyserial.testing import serial_port_pair
+
 from fujilib.devices.analyzer import Analyzer
 from fujilib.devices.profile import ZP_PROFILE
 from fujilib.devices.session import Session
+from fujilib.errors import FujiConnectionError
 from fujilib.protocol.modbus.codec import encode_chars
 from fujilib.protocol.modbus.port import ModbusPort
 from fujilib.registry.channels import ChannelId, Gas
@@ -28,9 +33,14 @@ from fujilib.testing import (
     mock_transport,
     zp_readable_regions,
 )
+from fujilib.transport.base import FUJI_BAUDRATE, SerialSettings
+from fujilib.transport.serial import SerialTransport
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Callable, Mapping
+
+    from anyio.abc import TaskGroup
+    from anyserial import SerialPort
 
 FC03, FC04 = 0x03, 0x04
 #: The bench rig's asserted channel map (design §13.1 #14).
@@ -110,3 +120,93 @@ async def analyzer_on(
             yield analyzer, line
         finally:
             await analyzer.close()
+
+
+class Cable:
+    """A simulated cable between a port and a line of analyzers, which a test can pull out.
+
+    Each :meth:`plug` is a new serial pair and line, as a port opened again
+    after a real adapter was replugged. While unplugged, opening fails as a
+    missing port does.
+    """
+
+    def __init__(self, tg: TaskGroup, analyzers: tuple[MockAnalyzer, ...], timing: Any) -> None:
+        self._tg = tg
+        self._analyzers = analyzers
+        self._timing = {**FAST, **timing}
+        self._device: SerialPort | None = None
+        self._scope: anyio.CancelScope | None = None
+        self.connected = True
+        self.plugs = 0
+
+    async def plug(self) -> ModbusPort:
+        """Open the port: a new pair and line (the session's reopener)."""
+        return ModbusPort(await self.open_transport(), owns_transport=True, **self._timing)
+
+    async def open_transport(self) -> SerialTransport:
+        """A transport on a new pair and line; the previous line stops."""
+        if not self.connected:
+            msg = "the adapter is unplugged"
+            raise FujiConnectionError(msg)
+        await self._stop_line()
+        self.plugs += 1
+        config = SerialConfig(baudrate=FUJI_BAUDRATE)
+        host, device = serial_port_pair(
+            config_a=config, config_b=config, path_a="mock://cable", path_b="mock://cable/line"
+        )
+        line = MockLine(*self._analyzers)
+        scope = anyio.CancelScope()
+
+        async def serve() -> None:
+            with scope:
+                await line.serve(device)
+
+        _ = self._tg.start_soon(serve)
+        self._device, self._scope = device, scope
+        return SerialTransport(host, SerialSettings(port="mock://cable"))
+
+    async def unplug(self) -> None:
+        """Pull the cable: the line stops and the port fails on its next request."""
+        self.connected = False
+        await self._stop_line()
+
+    async def _stop_line(self) -> None:
+        if self._scope is not None:
+            self._scope.cancel()
+        if self._device is not None:
+            await self._device.aclose()
+        self._scope = self._device = None
+
+    def replug(self) -> None:
+        """Put the cable back: the next :meth:`plug` succeeds."""
+        self.connected = True
+
+
+@asynccontextmanager
+async def replugging(
+    *analyzers: MockAnalyzer,
+    channel_map: Mapping[ChannelId, Gas] | None = ASSERTED,
+    identify: bool = True,
+    **timing: Any,
+) -> AsyncGenerator[tuple[Analyzer, Cable]]:
+    """An :class:`Analyzer` whose session can be reopened over a :class:`Cable`.
+
+    Identified unless asked not to; the request logs are cleared afterwards.
+    """
+    async with anyio.create_task_group() as tg:
+        cable = Cable(tg, analyzers, timing)
+        port = await cable.plug()
+        session = Session(
+            port, address=1, profile=ZP_PROFILE, channel_map=channel_map, reopener=cable.plug
+        )
+        analyzer = Analyzer(session)
+        try:
+            if identify:
+                _ = await analyzer.identify()
+            for station in analyzers:
+                station.clear()
+            yield analyzer, cable
+        finally:
+            await analyzer.close()
+            await cable.unplug()
+            tg.cancel_scope.cancel()

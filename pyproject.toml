@@ -47,12 +47,18 @@ docs = [
     "zensical>=0.0.45",
     "mkdocstrings-python>=2.0.4",
 ]
+parquet = [
+    "pyarrow>=22",
+]
 
 [project.scripts]
+fuji-capture = "fujilib.cli.capture:main"
 fuji-configure = "fujilib.cli.configure:main"
 fuji-decode = "fujilib.cli.decode:main"
+fuji-diag = "fujilib.cli.diag:main"
 fuji-discover = "fujilib.cli.discover:main"
 fuji-read = "fujilib.cli.read:main"
+fuji-stream = "fujilib.cli.stream:main"
 
 [project.urls]
 Homepage = "https://github.com/GraysonBellamy/fujilib"
@@ -111,6 +117,7 @@ lint = [
 ]
 type = [
     "mypy>=1.20",
+    "pyarrow-stubs>=20.0.0.20260819",
     "pyright>=1.1.410",
 ]
 test = [

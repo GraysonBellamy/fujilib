@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING, Any
 
 from fujilib.devices.models import (
     AnalyzerStatus,
@@ -19,6 +20,9 @@ from fujilib.registry.channels import ChannelId, ChannelRole, Gas, LabelSource
 from fujilib.registry.enums import AlarmState, DisplayScreen, ErrorCode, ManualCalibrationStep
 from fujilib.registry.units import Unit
 from fujilib.testing import BENCH_BANK_PATH
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 #: A fixed wall-clock origin for synthetic timings.
 T0 = datetime(2026, 9, 28, 16, 0, 0, tzinfo=UTC)
@@ -140,3 +144,25 @@ def bench_banks() -> tuple[dict[int, int], dict[int, int]]:
         {int(a, 16): w for a, w in data["holding"].items()},
         {int(a, 16): w for a, w in data["input"].items()},
     )
+
+
+def read_parquet(path: Path) -> list[dict[str, object]]:
+    """A Parquet file's rows (``pyarrow``'s stubs leave ``read_table`` partly untyped)."""
+    import pyarrow.parquet as pq
+
+    table: Any = pq.read_table(path)  # pyright: ignore[reportUnknownMemberType]
+    rows: list[dict[str, object]] = table.to_pylist()
+    return rows
+
+
+def parquet_table(path: Path) -> Any:
+    """A Parquet file as a ``pyarrow`` table, untyped."""
+    import pyarrow.parquet as pq
+
+    return pq.read_table(path)  # pyright: ignore[reportUnknownMemberType]
+
+
+def parquet_metadata(path: Path) -> dict[str, str]:
+    """A Parquet file's key-value metadata, decoded."""
+    raw: Any = parquet_table(path).schema.metadata or {}
+    return {bytes(k).decode(): bytes(v).decode() for k, v in raw.items()}

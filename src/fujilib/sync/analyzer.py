@@ -65,6 +65,10 @@ class SyncAnalyzer:
         """Blocking :meth:`Analyzer.close`."""
         self._portal.call(self._anz.close)
 
+    def reopen(self, *, timeout: float | None = None) -> DeviceInfo:
+        """Blocking :meth:`Analyzer.reopen`."""
+        return self._portal.call(self._anz.reopen, timeout=timeout)
+
     def __enter__(self) -> Self:
         return self
 

@@ -18,6 +18,11 @@ is in ``Frame.status_timing``.
 
 A failed poll is still a sample: ``frame`` is ``None``, ``error`` is set, and
 the timing of the attempt is kept, so gaps are recorded rather than dropped.
+
+:attr:`Sample.channels` names the channels a row of the sample has columns
+for. A recorder sets it to the channels established when the recording
+started, on every sample it makes, successful or not, so
+``sample_to_row(sample)`` gives every row of a recording the same keys.
 """
 
 from __future__ import annotations
@@ -27,12 +32,13 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Iterable, Mapping
     from datetime import datetime
 
     from fujilib.devices.models import Frame, TransferTiming
     from fujilib.errors import FujiError
     from fujilib.protocol.base import ProtocolKind
+    from fujilib.registry.channels import ChannelId
 
 __all__ = ["Sample"]
 
@@ -60,6 +66,8 @@ class Sample:
         t_midpoint_mono_ns: Integration-window midpoint; always ``None``.
         metadata: Free-form annotations. Not written to rows.
         error: The error of a failed poll, or ``None``.
+        channels: The channels a row of this sample has columns for, in
+            order. A recorder fixes them when it starts (design §13.1 #34).
     """
 
     device: str
@@ -74,6 +82,7 @@ class Sample:
     t_midpoint_mono_ns: int | None = None
     metadata: Mapping[str, str] = field(default_factory=_empty_metadata)
     error: FujiError | None = None
+    channels: tuple[ChannelId, ...] = ()
 
     @classmethod
     def from_frame(
@@ -83,8 +92,12 @@ class Sample:
         device: str,
         address: int,
         metadata: Mapping[str, str] | None = None,
+        channels: Iterable[ChannelId] | None = None,
     ) -> Sample:
-        """Build the sample of a successful poll, timed by its concentration block."""
+        """Build the sample of a successful poll, timed by its concentration block.
+
+        ``channels`` defaults to the frame's own.
+        """
         timing = frame.readings_timing
         return cls(
             device=device,
@@ -97,6 +110,7 @@ class Sample:
             received_at=timing.received_at,
             latency_s=timing.latency_s,
             metadata=MappingProxyType(dict(metadata or {})),
+            channels=frame.channels if channels is None else tuple(channels),
         )
 
     @classmethod
@@ -109,8 +123,13 @@ class Sample:
         protocol: ProtocolKind,
         timing: TransferTiming,
         metadata: Mapping[str, str] | None = None,
+        channels: Iterable[ChannelId] = (),
     ) -> Sample:
-        """Build the sample of a failed poll, timed by the failed attempt."""
+        """Build the sample of a failed poll, timed by the failed attempt.
+
+        Pass the recording's ``channels`` so the sample's row has the same
+        columns as a successful one.
+        """
         return cls(
             device=device,
             address=address,
@@ -123,4 +142,5 @@ class Sample:
             latency_s=timing.latency_s,
             metadata=MappingProxyType(dict(metadata or {})),
             error=error,
+            channels=tuple(channels),
         )

@@ -74,14 +74,22 @@ from fujilib.errors import (
 from fujilib.protocol.base import ProtocolKind
 from fujilib.registry.channels import ChannelId, ChannelRole, Gas, LabelSource
 from fujilib.registry.units import Unit
-from fujilib.sinks.base import sample_to_row
-from fujilib.streaming.poll_source import DeviceResult, PollSourceAdapter
+from fujilib.sinks import CsvSink, InMemorySink, ParquetSink, SampleSink, pipe, sample_to_row
+from fujilib.streaming.poll_source import DeviceResult, PollSource, PollSourceAdapter, SourceLayout
+from fujilib.streaming.recorder import (
+    AcquisitionSummary,
+    OverflowPolicy,
+    ReconnectPolicy,
+    Recording,
+    record,
+)
 from fujilib.streaming.sample import Sample
 from fujilib.transport.base import SerialSettings
 from fujilib.units import to_pint
 from fujilib.version import __version__
 
 __all__ = [
+    "AcquisitionSummary",
     "AdcValues",
     "Analyzer",
     "AnalyzerMetadata",
@@ -94,6 +102,7 @@ __all__ = [
     "ChannelRole",
     "ChannelStatus",
     "ClockReading",
+    "CsvSink",
     "DeviceHealth",
     "DeviceInfo",
     "DeviceProfile",
@@ -131,24 +140,34 @@ __all__ = [
     "FujiVerificationError",
     "FujiWriteOutcomeUnknownError",
     "Gas",
+    "InMemorySink",
     "LabelSource",
+    "OverflowPolicy",
+    "ParquetSink",
     "PartialTimestamp",
+    "PollSource",
     "PollSourceAdapter",
     "ProtocolKind",
     "RangeInfo",
     "Reading",
     "ReadingState",
+    "ReconnectPolicy",
+    "Recording",
     "RegisterValue",
     "SafetyTier",
     "Sample",
+    "SampleSink",
     "SerialSettings",
     "Session",
     "SessionState",
+    "SourceLayout",
     "TransferTiming",
     "Unit",
     "__version__",
     "find_devices",
     "open_device",
+    "pipe",
+    "record",
     "sample_to_row",
     "summarize_discovery",
     "to_pint",

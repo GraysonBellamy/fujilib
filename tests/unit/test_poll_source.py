@@ -4,7 +4,15 @@ from __future__ import annotations
 
 import pytest
 
-from fujilib import DeviceResult, FujiModbusTimeoutError, PollSourceAdapter
+from fujilib import (
+    DeviceResult,
+    FujiModbusTimeoutError,
+    FujiValidationError,
+    PollSource,
+    PollSourceAdapter,
+    ProtocolKind,
+)
+from fujilib.registry.channels import ChannelId
 from fujilib.testing import FaultKind
 from tests.facade import POLL, analyzer_on, bench
 
@@ -48,3 +56,21 @@ async def test_another_name_polls_nothing() -> None:
         results = await PollSourceAdapter("zpa", anz).poll(["other", "zpa2"])
     assert dict(results) == {}
     assert mock.transactions() == []
+
+
+async def test_the_layout_describes_the_analyzer() -> None:
+    async with analyzer_on(bench()) as (anz, _line):
+        source = PollSourceAdapter("zpa", anz)
+        assert isinstance(source, PollSource)
+        layout = source.layout()["zpa"]
+        assert (layout.address, layout.protocol) == (1, ProtocolKind.MODBUS_RTU)
+        assert layout.channels == (ChannelId.CH1, ChannelId.CH2, ChannelId.CH3)
+        assert not layout.reopenable
+        assert dict(source.layout(["other"])) == {}
+        assert "zpa" in repr(source)
+
+
+async def test_reconnect_names_this_source() -> None:
+    async with analyzer_on(bench()) as (anz, _line):
+        with pytest.raises(FujiValidationError, match="not 'other'"):
+            await PollSourceAdapter("zpa", anz).reconnect("other")
