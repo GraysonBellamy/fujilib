@@ -10,7 +10,8 @@ fujilib's own client, `probe_client.py`, §10). Through §12 only Modbus *read* 
 codes were sent; no register was written and no command was issued. §13 records the
 first writes and commands, made in a session the owner authorized and attended. §14
 records a calibration the owner made at the front panel, watched read-only, and §15 a
-read-only session on what the registers still left unexplained.
+read-only session on what the registers still left unexplained. §16 is fujilib's own
+watch of a panel calibration, and §17 what the factory-mode screens showed.
 
 This document records what was **observed**. The manual is INZ-TN5A1190a-E unless noted.
 Addresses are relative (on-the-wire) hexadecimal. Raw results are in `probe_out/`
@@ -947,7 +948,7 @@ screen (TN5A1190a p.46), numbered the pages of the menus:
 | 0 measurement, 1 menu, 2 range change, 3 calibration setting | 0 |
 | 7 parameter setting | 0; 1 for one read as the maintenance password was confirmed |
 | 8 maintenance | 0 on the item list; 1 sensor input; 2 error log; 22 and 23 calibration log; 5 while the factory password was entered |
-| 9 factory | 0 on the item list; 26 A/D data; 38 coefficients; 50 other parameters; also 1, 2, 4, 8, 11, 12, 13, 18, 34, 35, 40, 44, 56, 57, 60, 61, 63, 65 and 78 |
+| 9 factory | 0 on the item list; 26 A/D data; 38 coefficients; 50 other parameters; also 1, 2, 4, 8, 11, 12, 13, 18, 34, 35, 40, 44, 56, 57, 60, 61, 63, 65 and 78 (more of them identified in §17.1) |
 
 - **Several page numbers are calibration step values.** Examples are 5 ("zero: wait")
   during the password entry, and 4 and 8 in factory mode. Only the screen register tells
@@ -976,7 +977,7 @@ All 1,039 holding words were the same at the end as at the start. The blocks are
 therefore not a copy that is refreshed at power-on.
 
 **The calibration coefficients are not in them.** The factory "Coefficient" screen showed
-Ch1's zero and span coefficients:
+Ch1's zero and span coefficients (every channel's are in §17.2):
 
 | Range | Zero | Span |
 |---|---|---|
@@ -1102,7 +1103,8 @@ Maintenance mode has a calibration log on this firmware, although Modbus has non
 - 0472h–0478h, and why each count at 046Ah–0471h appears twice.
 - Most of the two factory blocks, word by word.
 - Where the zero and span coefficients are kept. Not in the Modbus map, as far as any
-  encoding tried shows.
+  encoding tried shows. (What they are, and how O2's span follows from the A/D counts,
+  is in §17.)
 
 ## 16. fujilib watching a calibration at the panel (2026-09-29)
 
@@ -1133,3 +1135,83 @@ of §15.2. The events are `probe_out/watch_manual_20260929T182828Z.jsonl`
   deviations only when the calibration ran.
 
 Phase 7A's hardware exit is met.
+
+## 17. The factory-mode screens (2026-09-29)
+
+At 18:41–18:44 UTC the owner opened seven factory-mode items in a set order and noted
+what each showed, changing nothing. `scripts/probe_unknowns.py watch` read the panel
+state throughout (496 reads) and took full snapshots before and after. No holding word
+changed. The raw files are in `probe_out/unknowns_20260929T184115Z/`, and the owner's
+record is `probe_out/factory_screens_20260929.md` (both git-ignored).
+
+### 17.1 Which page number each item shows
+
+In factory mode, 30182 (§15.2) gave each item its own number:
+
+| Item | 30182 |
+|---|---|
+| 3. Ch Data | 4 |
+| 4. Option | 65 |
+| 5. Pressure | 60 |
+| 6. Linearization | 8 |
+| 7. Temperature | 11 |
+| 11. A/D Data | 26 |
+| 12. Others | 50 |
+| 13. Interference | 34 |
+| 14. Coefficient | 38 |
+
+Coefficient showed 38 here as in §15, and every item was opened in the order asked, so
+the list above is taken as right. The other numbers seen in §15 (1, 2, 12, 13, 18, 35,
+40, 44, 56, 57, 61, 63 and 78) belong to items and sub-pages not identified.
+"10. Memory Access" did not open: ENT on it left the list shown.
+
+### 17.2 What the items showed
+
+- **4. Option:** alarm 0, autocal off, zero check off. These are the three user menus
+  this unit lacks (§13.7): alarms, auto calibration and auto zero. The menus are off
+  here, and the unit has no DIO board to drive valves or alarm contacts (DIO No. 0,
+  §15.3).
+- **5. Pressure:** a list of two tables, "pressure table" and "compensation table", with
+  no live value. The type code orders no pressure compensation (digit 23 `Y`), and the
+  pressure A/D input (No. 14, 7653–7657) reads like the inputs with nothing connected
+  (7642–7658; the ground input reads 7641–7644), so no sensor is taken to be fitted.
+- **13. Interference:** a list of three entries, Interference-1 to -3, not opened. It
+  does not settle whether 00A4h–00ABh, four long words of 1,000,000, are the interference
+  coefficients (§4.2).
+- **14. Coefficient**, every channel and range. Ch1's was read at 18:09, before the O2
+  calibrations of §16; the rest at 18:42, after them:
+
+| Channel | Range | Zero | Span |
+|---|---|---|---|
+| Ch1 CO2 | 1 | 1.529192 | 0.661410 |
+| Ch1 CO2 | 2 | 1.773113 | 0.305870 |
+| Ch2 CO | 1 | 1.449359 | 0.390960 |
+| Ch2 CO | 2 | 1.000000 | 1.000000 |
+| Ch3 O2 | 1 | −099366 | 06.17320 |
+| Ch3 O2 | 2 | +000000 | 10.00000 |
+
+  The O2 values are shown as printed, with no decimal point in the zero.
+
+### 17.3 The coefficients
+
+- **CO2 and CO are within the service manual's limits** (TN5A1191b p.33): zero 0.5–5 and
+  span 0.1–10 for an infrared component.
+- **CO's range 2 reads 1.000000 for both**, which looks like a range never calibrated.
+  CO has one range. CO2's range 2 has values of its own although CO2 also has one range.
+- **O2's range 2 (0–25 vol%) looks never calibrated**: zero 0, span 10.00000. Its
+  readings would then be wrong until it is zeroed and spanned. Range 1 is the one in use
+  (§3).
+- **The O2 span coefficient is 800 × span gas / (span count − zero count)**, in the A/D
+  counts of No. 4 (§14.4):
+  - §16's zero read 634 counts on 0.00 vol% and its span 3349 counts on 20.95 vol%. That
+    gives 800 × 20.95 / (3349 − 634) = 6.1731, against the 6.17320 shown.
+  - The reading follows as (count − zero count) × span / 800. At 18:41, 3339 counts
+    gives (3339 − 634) × 6.1732 / 800 = 20.87 vol%, the O2 reading at that moment.
+  - The factor 800 comes from the fit, not from a manual.
+  - So the counts fujilib records with each calibration (design §13.1 #75) reproduce the
+    analyzer's own O2 span coefficient.
+- **The O2 zero coefficient, −99366, is outside the manual's −2,000 to 12,000** for O2,
+  yet the zero raised no error. The manual's O2 figures evidently do not apply to this
+  cell. It also expects 18,000–22,000 counts on zero gas, where this cell reads about
+  634. How −99366 relates to the zero count is not known. One value cannot say; the
+  coefficient read again after another O2 zero, with that zero's count, would.

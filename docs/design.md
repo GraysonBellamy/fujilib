@@ -410,7 +410,9 @@ copy does not.
   a smoothed copy. 0472h–0478h read 1 now and then, for no known reason.
 - **The two FC03 factory blocks:** these hold no zero or span coefficients. The
   coefficients the factory screen shows appear in no readable word, so a calibration
-  can be recorded only as it happens (§6.5).
+  can be recorded only as it happens (§6.5). For O2, the counts recorded then are
+  enough: the span coefficient is 800 × span gas / (span count − zero count) in A/D
+  No. 4's counts (findings §17.3).
   - 0C2D–0C34 are the factory menu's "other parameters". On the bench unit **range
     limit is off**, so readings are not held at 110 %FS, and zero limit is off, which
     hides negative values on the display only.
@@ -2901,6 +2903,8 @@ Still open:
 | Calibration state | doubtful: O2 20.29 vol%, CO2 −0.11 vol% at capture; error log full of calibration errors 5, 6, 7. O2 zeroed and spanned at the panel on 2026-09-29 (findings §14, §15.6) | bench |
 | Factory "other parameters" | zero limit off, **range limit off** (readings not held at 110 %FS), 4 analog outputs, English, cylinder zero gas, Modbus, varied range on, no DIO | owner, factory screen; 0C2Dh–0C34h (findings §15.3) |
 | Panel calibration log | present on 1.02 in maintenance mode, but not over Modbus | owner, 2026-09-29 (findings §15.6) |
+| Factory options | alarm 0, auto calibration off, zero check off: hence no alarm, auto-calibration or auto-zero menu | owner, factory screen (findings §17.2) |
+| O2 range 2 (0–25 vol%) | looks never calibrated (zero coefficient 0, span 10.00000); range 1 is in use. Not to be selected before it is zeroed and spanned | owner, factory screen (findings §17.3) |
 
 The predictions made from the nameplate held: the channel layout, ranges that differ
 from the nameplate, and firmware older than 2.24. What "ZPA3" denotes is still unknown;
