@@ -14,8 +14,10 @@ models that share its MODBUS map. It is built on
     Nothing has been released yet. The read-only API works: `open_device()`,
     identification, polls with validity, metadata, settings, logs, discovery,
     [recording](recording.md) to memory, CSV or Parquet, a blocking facade and
-    the [`fuji-*` commands](cli.md). Writes are still to come; the
-    [design](design.md) lays out the plan. Start with the
+    the [`fuji-*` commands](cli.md). A reviewed subset of settings writes,
+    settings documents and return to measurement work on the development
+    analyzer too; auto calibration and auto zero have run only on the
+    simulated analyzer. See [Safety](safety.md). Start with the
     [async quickstart](quickstart-async.md).
 
 The authoritative architectural document is the [Design](design.md). What the

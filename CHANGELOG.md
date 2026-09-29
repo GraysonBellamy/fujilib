@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Only a reviewed subset of the register map is writable: the calibration gases
+  and calibration scope, the response times, output hold, hold mode and the hold
+  values, and each channel's range and range method (`manual` or `auto`). The
+  alarm, schedule, key-lock, averaging, O2-correction, peak-alarm, blowback,
+  measurement-point and reference-gas settings are read-only. A writable
+  register's limits are those of a write, the narrower of the two manuals'
+  (a response time is 1-60 s); calibration gases are limited to 0-100 % (zero)
+  and 1-105 % (span) of their range's full scale. `RegisterSpec` gains
+  `write_values` and `write_percent_fs`. The reviewed settings are also written
+  out in `write_policy.REVIEWED_SETTINGS`, apart from the registry, so no registry
+  may mark anything else writable and a setting write refuses anything else.
+- The register map's notes follow the instruction manual: "at once" widens only a
+  manual zero at the panel, not auto calibration or auto zero; the auto-calibration
+  channels and ranges also govern auto zero; output hold also holds the Modbus
+  concentrations; alarm limits are 0-100 %FS; several settings must be switched
+  off, or another set first, before they change.
+- Options no longer gate reads of their registers.
+
 - `Sample` carries `channels`, the channels its row has columns for, and
   `sample_to_row(sample)` uses them by default. The recorder sets them on every
   sample from the channels established when the recording starts, so a failed
@@ -29,6 +47,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   installed wheel.
 
 ### Added
+
+- Setting writes: `Analyzer.write_parameter(name, value, *, unit=None, confirm=False)`
+  and `set_response_time`, `set_output_hold`, `set_hold_mode`, `set_hold_value`,
+  `set_range`, `set_range_method` and `set_calibration_gas`. Everything above
+  `READ_ONLY` needs `confirm=True`. A write is refused before anything is sent for
+  an unknown or read-only name or a value that does not fit, and after reading the
+  status while a calibration runs or the front panel is in a menu
+  (`FujiAnalyzerStateError`). It is sent once with FC06, never retried, and read
+  back within its own deadline even when the operation's has run out: a
+  `WriteResult` that is verified, or `FujiVerificationError` (mismatch) or
+  `FujiWriteOutcomeUnknownError` (unknown). A calibration gas needs the unit of its
+  range, read just before the write. A port that fails during a write, or in the
+  read after a write or a command, breaks the session. The read-back's deadline
+  follows the port's timing. A range write (`set_range`, or `range.chN.selected`
+  by name or in a document) returns once the channel measures on the new range,
+  which the analyzer switches to some tens of milliseconds after the setting reads
+  back, and raises `FujiVerificationError` if it never does.
+- Settings documents: `Analyzer.diff_settings()` and `apply_settings()` compare a
+  `fujilib-settings/1` document with the analyzer and write what differs, in
+  dependency order, each read back; nothing is written if anything in the document
+  is refused, and the first failed write stops the rest (`ApplyReport`).
+  `apply_settings(max_tier=...)` refuses writes above a tier, judged on its own
+  comparison.
+- Operation commands: `start_auto_calibration()`, `start_auto_zero_calibration()`,
+  `start_blowback()` and `return_to_measurement()`, each sent once and followed by
+  a status read (`CommandResult`: started, ambiguous, done or sent);
+  `plan_auto_calibration()` and `plan_auto_zero_calibration()` say what a
+  calibration will touch and for how long; `calibration_status()` and
+  `wait_for_calibration(timeout=...)`. Auto calibration and auto zero need the
+  option, listed by the type code or asserted with `open_device(options=...)`, and
+  are refused while the analyzer reports an instrument error and before
+  `identify()`; blowback is refused on the ZPA, which has none. A command's result
+  carries the status read before it (`before`), which `wait_for_calibration(since=...)`
+  takes as the baseline for new errors; the wait's result is `failed` when any
+  calibration error is active at the end.
+- `open_device(options=..., write_warn_per_minute=10)` and the same on
+  `Fuji.open`; a session logs a warning when settings are written faster than that.
+- `TypeCode.options` and `MODEL_OPTIONS`: the options the type code lists, and
+  those each model's manual describes.
+- `fuji-configure diff` and `fuji-configure apply` (`--confirm`, and
+  `--i-understand-this-is-destructive` for a DANGEROUS write; `--dry-run`,
+  `--any-analyzer`); apply ends with a `status:` line and exits 1 unless it is `ok`.
+- The simulated analyzer runs auto calibration and auto zero calibration on a
+  scaled clock, shows the measurement screen on return to measurement, switches a
+  channel's current range when its selected range is written under the manual
+  method (after `MockAnalyzerConfig.range_lag_s`), and can acknowledge a write
+  without storing it (`FaultKind.IGNORE`).
+- The blocking facade has every new method.
+- `docs/safety.md`; the stateful hardware tests and `scripts/probe_write.py` for
+  the owner-attended bench session. On the bench unit, key lock does not block
+  Modbus writes, a written setting survives a power cycle without a save step, and
+  a value outside a setting's range is stored as written, not refused or clamped
+  (`docs/protocol-findings.md` §13).
 
 - The recorder: `record()` polls one or more analyzers at a fixed rate into a
   bounded stream of per-tick batches, yielding a `Recording` with a live

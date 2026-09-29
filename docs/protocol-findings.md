@@ -1,13 +1,14 @@
 ---
-description: What the bench Fuji ZPA analyzer actually does on the wire, measured read-only on 2026-09-28, and where it differs from the MODBUS manual.
+description: What the bench Fuji ZPA analyzer actually does on the wire, measured read-only from 2026-09-28 and with writes on 2026-09-29, and where it differs from the MODBUS manual.
 ---
 
 # Protocol findings — bench ZPA, 2026-09-28
 
 Measured on the bench analyzer with the read-only probes in `scripts/`
 (`probe_connect.py`, `probe_map.py`, `probe_scan.py`, `probe_link.py`, and, for
-fujilib's own client, `probe_client.py`, §10). Only Modbus *read* function codes were
-sent; no register was written and no command was issued.
+fujilib's own client, `probe_client.py`, §10). Through §12 only Modbus *read* function
+codes were sent; no register was written and no command was issued. §13 records the
+first writes and commands, made in a session the owner authorized and attended.
 
 This document records what was **observed**. The manual is INZ-TN5A1190a-E unless noted.
 Addresses are relative (on-the-wire) hexadecimal. Raw results are in `probe_out/`
@@ -340,9 +341,10 @@ package versions and the SHA-256 of the probe scripts:
 ## 9. Not tested
 
 - Any other analyzer or firmware version.
-- Any write: settings, commands, key simulation.
-- Whether key lock affects Modbus writes.
-- Persistence of settings across a power cycle.
+- Any write: settings, commands, key simulation. (Setting writes and return to
+  measurement later; see §13. Key simulation, calibration and blowback are never sent.)
+- Whether key lock affects Modbus writes. (Later; see §13.3.)
+- Persistence of settings across a power cycle. (Later; see §13.5.)
 - Addresses 2000h–FFFFh at full resolution (sampled only).
 - Multi-drop with more than one station.
 - A comparison of the Modbus O2 value against the analog output.
@@ -641,3 +643,138 @@ rides out. It now counts the failure that ends a recording too (design §13.1 #4
 Both runs' `.meta.json` record fujilib as `0.1.0.dev33+g7a99f2771.d20260929`: the
 editable install's version was built before the day's commits. The code was that of
 `47e9dfa`.
+
+## 13. Writes on the bench (2026-09-29)
+
+The stateful session of `docs/hardware-test-day.md`, authorized by the owner, who was
+at the front panel, 15:40–16:03 UTC. It ran on `COM8`, station 1, with the library
+defaults. `anymodbus` 0.3.0, `anyserial` 0.2.0, `anyio` 4.15.1, Python 3.13.13,
+Windows 11. The code was `c4bf0e7` with the settings-and-commands work uncommitted
+on top; the editable install reports `0.1.0.dev40+gc4bf0e720`.
+
+Nothing started a calibration, a blowback or a key simulation. The session made
+37 setting writes and 3 return-to-measurement commands, and restored every setting
+it changed. The 162 settings saved first (`fuji-configure dump`,
+`probe_out/settings_before_20260929.json`) all matched at the end:
+`fuji-configure diff` gave `write: none`, `refused: none`, `unchanged: 162`. The raw
+files named below are in `probe_out/` (git-ignored).
+
+### 13.1 The hardware tests
+
+- **Read-only.** 52 of 52 pass, in 91 s. The 23 skips are the uvloop variants, which
+  cannot run on Windows.
+- **Stateful** (`-m hardware_stateful`, asyncio): 9 of 10 pass, in 14.5 s
+  (`stateful_tests_20260929.log`):
+  - FC06 and FC10 wrote `hold.ch4.value` the same way;
+  - the hold value, response time and span gas of channels and components the unit
+    lacks (Ch5, NDIR 4) were written, verified and restored;
+  - the O2 response time went 15 → 16 → 15 s, and output hold and hold mode were
+    switched and restored;
+  - a settings document and its baseline applied `ok`, and the diff after them was
+    empty;
+  - the refusals sent no request;
+  - return to measurement came back `done`.
+
+  No test's fixture found a setting left changed. The range test failed (§13.2).
+
+### 13.2 The current range follows a range write a little later
+
+`test_selecting_the_other_range` wrote range 2 to Ch3 (40108). The write read back
+as written, so the result was verified. But the Ch3 current range (30040), read next,
+still said range 1, and the assertion failed. The test's `finally` put range 1 back,
+and the settings then matched the saved ones.
+
+With the owner's approval, two follow-up probes repeated the change, with the owner
+watching the panel. Each wrote through `set_range` and restored range 1:
+
+- **A timing check** (`probe_range_timing_20260929T154510Z.json`). The owner saw
+  the O2 range switch to 0–25 vol% and back. The first read after each
+  `set_range` returned showed the new range. Each call took 0.28–0.30 s: the
+  status, range and setting reads, the write and its read-back.
+- **Three round trips with back-to-back reads** (`probe_range_lag_20260929T154606Z.json`).
+  After the first switch to range 2, two reads still showed range 1, and the third
+  showed range 2, 70 ms after the call returned. In the other five legs, the first
+  read (about 30 ms after) already showed the new range.
+
+So the analyzer applies a range change, but its current-range register can lag the
+verified setting by some tens of milliseconds. A single read straight after the write
+can see the old range. Both lags were on the first switch to range 2 of a run, but
+nine legs are too few to say whether that matters.
+
+**What changed because of it** (design §13.1 #70): a range write now returns only once
+the channel's current range shows the range written, read within the read-back
+budget, and raises `FujiVerificationError` if it never does. The simulator switches
+the current range after a configurable lag.
+
+### 13.3 Key lock does not stop Modbus writes (design §13.2 #12)
+
+The owner switched key lock on at the panel, and 40074 read 1. Then
+`scripts/probe_write.py key-lock` (`probe_write_key-lock_20260929T155103Z.json`):
+
+- `write_parameter("hold.ch5.value", 37)` was acknowledged and verified: 37 read back.
+- Return to measurement was acknowledged, with outcome `done`. The panel was already
+  on the measurement screen, so this shows the command is not refused under key lock,
+  but not that it would close a menu.
+- The register was restored to 0.
+
+Key lock guards the panel against the operator, not the settings against a program:
+fujilib's writes go through while it is on.
+
+### 13.4 A menu at the panel
+
+The owner switched key lock off (40074 read 0) and opened a menu. The status showed
+the parameter-setting screen (7).
+
+- **`fuji-configure apply`** of a one-setting document (`hold.ch5.value` 37) was
+  refused before anything was sent (`menu_apply_20260929.log`). It exited 1 with
+  `status: failed`, `written: none` and the error "apply_settings refused, nothing
+  was written: the front panel shows the parameter setting screen". `hold.ch5.value`
+  stayed 0.
+- **`return_to_measurement(confirm=True)`**, with the menu still open, was
+  acknowledged in 13 ms. The status after it showed the measurement screen
+  (`done`), and the owner saw the menu close
+  (`probe_menu_return_20260929T155307Z.json`).
+
+### 13.5 Settings survive a power cycle (design §13.2 #14)
+
+`persist-write` wrote 37 to `hold.ch5.value` (it was 0), verified, at 15:53:25 UTC.
+The owner switched the analyzer off, waited 10 s, switched it on and waited for the
+measurement screen. `persist-check` at 15:55:27 read 37: **kept**. It then restored 0.
+There was no save step, so a setting written over Modbus goes to non-volatile memory.
+No manual gives that memory's write endurance
+(`probe_write_persist-write_20260929T155325Z.json`,
+`probe_write_persist-check_20260929T155527Z.json`).
+
+### 13.6 Values out of range are stored (design §13.2 #32)
+
+`out-of-range` wrote to `response_time.ndir4` (15 s) through the client, past the
+library's 1–60 s limit (`probe_write_out-of-range_20260929T155844Z.json`):
+
+| Written | Reply | Read back |
+|---|---|---|
+| 61 | acknowledged, no exception | 61 |
+| 0 | acknowledged, no exception | 0 |
+
+Each was restored to 15. The analyzer neither refuses nor clamps: it stores the value.
+fujilib's own limits are the only guard, and the simulator, which stores a write as
+sent, already behaves this way. Only this one register was tried, on a component the
+unit does not have.
+
+### 13.7 The schedule start time is not on this unit's panel (design §13.2 #26)
+
+The owner could not find the auto-calibration settings. The user-mode menu lists only
+Switch Ranges, Calibration Parameters and Parameter Setting. The ZPA manual's menu
+tree (p.21) marks alarm setting and auto and auto zero calibration as optional, and
+the peak-alarm menu is missing too. This agrees with the type code, which lists none
+of these options (§2). The panel therefore cannot show the start time, and the
+encoding stays unconfirmed. The three schedules still read day 0, hour `0x000C` and
+minute 0.
+
+### 13.8 The stateful tests again, with range writes followed (2026-09-29)
+
+The owner authorized a rerun once a range write waited for the channel (§13.2), and
+it ran at 16:52 UTC with the same code otherwise. A fresh dump
+(`settings_before_20260929b.json`) came first. **10 of 10 stateful tests pass**,
+in 14.8 s (`stateful_tests_20260929b.log`). The range test took 1.28 s, against
+0.88 s before. The diff against the settings saved at the start of the session
+showed nothing to write, with 162 unchanged.

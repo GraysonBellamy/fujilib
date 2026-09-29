@@ -6,8 +6,9 @@ description: The procedure for running fujilib's tests against a real Fuji ZP-se
 
 > The written procedure for the hardware tests (design §10). Each tier needs the
 > owner's authorization before it is ever run; this page covers the read-only
-> tier, the only one that exists so far. Results go to
-> [protocol-findings.md](protocol-findings.md).
+> tier and the stateful one, which writes settings and restores them. There
+> are no destructive tests: the bench analyzer cannot auto-calibrate. Results
+> go to [protocol-findings.md](protocol-findings.md).
 
 ## Bench facts
 
@@ -24,7 +25,7 @@ COM port numbers can change when adapters are replugged. When in doubt, find
 the port by unplugging and replugging the analyzer's adapter while listing the
 ports. That sends nothing to the other instruments on the rig.
 
-## Scope
+## Scope of the read-only session
 
 | Allowed | Not allowed |
 |---|---|
@@ -134,6 +135,86 @@ bench to pull the adapter's USB plug. Read-only.
 4. Run it again without `--reconnect`: at the first pull it ends with exit
    code 1, and the CSV and its `.meta.json` (state `failed`) are complete up to
    the failure, with 1 disconnect and 0 reconnects.
+
+## The stateful session
+
+It writes settings, reads each back and restores it, and needs its own
+authorization and the owner at the front panel. Nothing in it starts a
+calibration: the bench analyzer's type code lists no auto-calibration option,
+and the analyzer has no calibration valves of its own, so auto calibration
+would calibrate on whatever gas is at the inlet ([Safety](safety.md)).
+
+| Allowed | Not allowed |
+|---|---|
+| Writes of the reviewed settings, each restored | Auto calibration, auto zero calibration (never on this analyzer) |
+| Return to measurement | Blowback (not a ZPA feature) |
+| `scripts/probe_write.py`, step by step | Key simulation (never, design §6.5) |
+| | Any register outside the reviewed subset |
+
+1. **Pre-flight** as for the read-only session, and save the settings first:
+
+   ```bash
+   fuji-configure dump COM8 --out probe_out/settings_before.json
+   ```
+
+2. **The stateful tests.** The first ones write only registers of channels and
+   NDIR components the bench analyzer does not have (Ch4, Ch5, NDIR 4), with
+   both FC06 and FC10; then the O2 response time, output hold, hold mode and
+   Ch3's range, each restored; then a settings document and its baseline. A
+   fixture reads every writable setting before each test and checks after it
+   that the analyzer has them all back.
+
+   ```bash
+   FUJILIB_ENABLE_STATEFUL_TESTS=1 FUJILIB_HARDWARE_PORT=COM8 \
+       uv run pytest -m hardware_stateful tests/hardware -v
+   ```
+
+3. **Key lock** (design §13.2 #12). Switch key lock on at the front panel,
+   then run the step. It writes one register of Ch5 and sends return to
+   measurement, records whether each was applied, ignored or refused, and
+   restores the register. Switch key lock off at the panel afterwards.
+
+   ```bash
+   uv run python scripts/probe_write.py --port COM8 key-lock --confirm
+   ```
+
+4. **A menu at the panel.** Open any menu at the front panel, then try a write
+   (`fuji-configure apply` of a one-setting document): it must be refused with
+   nothing written. Then `return_to_measurement(confirm=True)` must bring the
+   panel back to the measurement screen.
+5. **Power cycle** (design §13.2 #14). Write a marker, switch the analyzer off
+   and on, wait for the measurement screen, and check it; the second step
+   restores the register.
+
+   ```bash
+   uv run python scripts/probe_write.py --port COM8 persist-write --confirm
+   # switch the analyzer off, then on
+   uv run python scripts/probe_write.py --port COM8 persist-check --confirm
+   ```
+
+6. **Values out of range**, if authorized on the day. It writes 61, then 0,
+   to the response time of NDIR component 4 through the client, past the
+   library's own limit, records whether the analyzer refuses, clamps or stores
+   each, and restores it.
+
+   ```bash
+   uv run python scripts/probe_write.py --port COM8 out-of-range --confirm
+   ```
+
+7. **The start time of the schedules** (design §13.2 #26): read the
+   auto-calibration start time the front panel shows. No Modbus is needed.
+8. **Close**: compare with the saved settings; nothing may be written.
+
+   ```bash
+   fuji-configure diff COM8 --file probe_out/settings_before.json
+   ```
+
+   Every setting must be unchanged. If one is not, apply the file with
+   `fuji-configure apply ... --confirm` (and the destructive flag for a
+   calibration gas).
+
+Stop at the first unexpected result and record it: a write that reads back
+otherwise, an unknown outcome, or a setting left changed.
 
 ## Deliverables
 

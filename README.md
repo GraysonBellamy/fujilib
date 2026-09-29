@@ -15,8 +15,12 @@ the unified device-library API; its internals are shaped to this analyzer.
 **Pre-alpha, unreleased.** The read-only API works against the development
 analyzer: `open_device()`, identification, polls with validity, metadata,
 settings, logs, discovery, recording at a fixed rate to memory, CSV or Parquet,
-a blocking facade, and the `fuji-read`, `fuji-discover`, `fuji-configure dump`,
-`fuji-decode`, `fuji-stream`, `fuji-capture` and `fuji-diag` commands. See
+a blocking facade, and the `fuji-read`, `fuji-discover`, `fuji-configure`,
+`fuji-decode`, `fuji-stream`, `fuji-capture` and `fuji-diag` commands. A
+reviewed subset of settings writes, settings documents and return to
+measurement work on the development analyzer too; auto calibration and auto
+zero have run only on the simulated analyzer, since the development analyzer
+has no calibration valves. See
 [`docs/design.md`](docs/design.md) for the architecture and the phased plan, and
 [`CHANGELOG.md`](CHANGELOG.md) for what has landed.
 
@@ -44,14 +48,14 @@ Record to a file from the command line (Parquet needs `fujilib[parquet]`):
 fuji-capture COM8 --gas CH1=co2 --gas CH2=co --gas CH3=o2 --out run.parquet
 ```
 
-Planned releases:
+The first release, **0.1.0**, covers:
 
-- **0.1.0**: read-only monitoring, metadata and acquisition. `poll()` returns
-  every channel with its hold, calibration and error state in two Modbus
-  transactions, and the library streams and records to memory, CSV or Parquet.
-- **0.2.0**: a reviewed subset of settings writes and the documented operation
-  commands (auto calibration, auto zero, blowback, return to measurement),
-  behind `confirm=True`, pre-I/O validation and read-back verification.
+- monitoring, metadata and acquisition. `poll()` returns every channel with
+  its hold, calibration and error state in two Modbus transactions, and the
+  library streams and records to memory, CSV or Parquet;
+- a reviewed subset of settings writes and the documented operation commands
+  (auto calibration, auto zero, blowback, return to measurement), behind
+  `confirm=True`, pre-I/O validation and read-back verification.
 
 ## Design points
 

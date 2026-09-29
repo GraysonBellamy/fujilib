@@ -19,7 +19,9 @@ description: Architecture, design decisions, and phased implementation plan for 
 > (registry, codecs, models and the sample shape), Phase 3 (transport, Modbus client,
 > simulated analyzer and read procedures), Phase 4 (session, facade, discovery, sync
 > and the read-only commands) and the software of Phase 5 (recorder, sinks and the
-> recording commands) are done, and its unplug test passed. Phase 5's 12-hour bench
+> recording commands) are done, and its unplug test passed. Phase 6 (settings writes,
+> settings documents and the operation commands) is done on the simulator and on the
+> bench analyzer, and goes into 0.1.0 too (§13.1 #59). Phase 5's 12-hour bench
 > recording is outstanding; 0.1.0 follows it.
 >
 > - **Where statements come from.** Statements about the device come from the three
@@ -68,7 +70,7 @@ registry*, joined by one session choke point, with an explicit write policy.
   (channel and analyzer) and the gas-label source travel with each reading into every
   row, and unknown validity stays unknown.
 - A named-parameter read API over a registry that is the single source of truth for the
-  register map. Writes arrive in 0.2.0, restricted to a reviewed subset.
+  register map, and writes restricted to a reviewed subset of it (§5.4).
 - Conformance to the unified device-library API, exercised against a `capa` adapter spike
   *before* 0.1.0 freezes the sample shape (§7.8, §12).
 - No hardware needed to develop or test: a byte-accurate simulated analyzer drives the
@@ -251,7 +253,7 @@ budget is per port: 31 stations cannot each be polled at 1 Hz.
 | Concentration | signed −9999…9999, no decimal point; divide by 10^dp, dp ∈ {0,1,2,3} |
 | Unit code | 0 vol%, 1 ppm, 2 mg/m³, 3 g/m³ |
 | Settings in concentration units | 0…9999, scaled by the dp of their **(channel, range)** from 31087–31096 |
-| Time of day | hour and minute are **BCD** (`23h` = 23); day of week 0–6 = Sun–Sat |
+| Time of day | hour and minute are **BCD** (`23h` = 23) says the manual; the bench unit contradicts it for the schedule start times (§2.6); day of week 0–6 = Sun–Sat |
 | Type / board code | one character per register |
 | Log "empty" marker | −1 (FFFFh) |
 
@@ -311,7 +313,8 @@ the whole block is **read-only** in fujilib.
   auto-zero and blowback start hour and minute are BCD. All three start hours read
   `000Ch` on the bench unit, which is not BCD, while the clock at 03E8h is BCD. The hour
   is probably binary (12:00). These six registers are *contested*: kept raw and never
-  written until the start time the panel shows settles it (§13.2 #26).
+  written until the start time a panel shows settles it (§13.2 #26). The bench
+  unit's panel cannot: without the option it has no auto-calibration menu.
 - **[bench] The alarm target channel's encoding is undocumented.** The manual gives 0–6
   with no meaning. The bench unit reads 0–4 for alarms 1–5 (channel − 1?) and 12 for
   alarm 6, outside the documented range. The registers are contested, so alarm limits
@@ -321,10 +324,21 @@ the whole block is **read-only** in fujilib.
   each of the four moving-average "orders" (40085–40092) averages is not stated.
 - **The two cycle-unit registers differ.** The schedules use 0 = hours, 1 = days; the
   moving-average and measurement-point periods use 0 = hours, 1 = minutes.
-- **The manuals disagree on five limits** (peak-alarm concentration, O2 reference,
-  response time, moving-average period, the schedule cycles). The registry takes the
-  MODBUS manual's limits and records each conflict; each is resolved before any write
-  (Phase 6).
+- **The manuals disagree on seven limits** (peak-alarm concentration, O2 reference,
+  response time, moving-average period, the schedule cycles, and, found with the
+  write path, the alarm limits, which the ZPA manual gives as 0–100 %FS with high
+  above low by more than the hysteresis, and the calibration gases, whose span it
+  gives as 1–105 %FS). The MODBUS manual itself defers setting ranges to the
+  instruction manual (TN5A1190a p.28). So a read-only register keeps the MODBUS
+  manual's limits, and a writable one takes the narrower of the two: a response time
+  is written as 1–60 s, not 0–60 s. Each conflict is recorded in the register's
+  notes.
+- **The ZPA has no calibration valves of its own** (TN5A1191b p.10). Auto calibration
+  and auto zero calibration drive external zero and span gas valves through the
+  contacts of the DIO option (type-code digit 22; ZPA manual p.29). The bench unit's
+  digit 22 is `A`, the fault contact only. Without the option and the gases
+  plumbed, a calibration would most likely be computed from whatever gas is at the
+  inlet (an inference: no manual says the command is refused).
 - **Decoding is total.** An undocumented enum value is kept as a plain integer, and a
   concentration whose decimal point does not decode becomes a reading with no value and
   state `unknown`, rather than failing a whole read.
@@ -333,9 +347,15 @@ The manual labels the alarm registers "Ch1…Ch5", but the instruction manual de
 *alarms* 1–6, each with a **target channel** (40121–40126). fujilib models them as
 alarms, not channels.
 
-The "manual zero mode" (40026–40030) and "calibration range" (40031–40035) settings
-widen a calibration beyond the channel and range it was started on. Any operation that
-calibrates must report every channel and range it will affect (§6.2).
+The "calibration range" setting (40031–40035) widens a calibration, manual or
+automatic, to both ranges of its channel (ZPA manual p.45). The "manual zero mode"
+(40026–40030) widens only a manual zero started at the panel: auto calibration and
+auto zero calibration zero every enabled channel together whatever it says (ZPA
+manual p.47). Which channels an automatic calibration touches is the list enabled
+for auto calibration (40021–40025), on each channel's auto-calibration range
+(40116–40120); the same list and ranges drive auto zero calibration (ZPA manual
+p.59). Any operation that calibrates reports every channel and range it will affect
+(§6.2).
 
 Input registers (FC04).
 
@@ -383,8 +403,15 @@ The "board" code (0462–0469) is the **serial number**.
 
 There is **no register to stop** a running auto calibration, and no register that starts
 a manual zero or span calibration; both exist only as key sequences on the panel. The
-key register also reaches maintenance and factory mode (§6.5), so fujilib never writes
-42001.
+panel's forced stop of an auto calibration or auto zero calibration works only while
+key lock is off (ZPA manual p.55–57, p.62). The key register also reaches maintenance
+and factory mode (§6.5), so fujilib never writes 42001.
+
+A command's reply confirms that the analyzer accepted it, not that it finished
+(TN5A1190a p.11, p.17). Input 30049 is one flag for auto calibration and auto zero
+calibration alike, and a channel measures on its auto-calibration range for the
+duration of one. No register shows blowback running, and blowback is in neither the
+ZPA manual nor its code table.
 
 ### 2.8 Error codes (ZPA manual §8, service manual §4)
 
@@ -553,10 +580,12 @@ devices/       profile.py    DeviceProfile (ZP_PROFILE): registry + regions + li
                models.py     Reading, Frame, ChannelStatus, AnalyzerStatus, DeviceInfo, logs, ...
                decode.py     pure decoders: register banks -> identity, frames, logs, metadata
                reads.py      read procedures: a plan, a client and a decoder; stateless
+               encode.py     a caller's value -> the word a setting write sends
+               writes.py     write procedure: one FC06 write, read back; outcomes
                session.py    THE choke point: gates, lock, deadlines, verify, caches, counters
                analyzer.py   Analyzer — the public facade
-               settings.py   typed settings groups + SettingsSnapshot writes      (Phase 6)
-               operations.py auto-cal / auto-zero / blowback / return-to-measure (Phase 6)
+               settings.py   settings documents: diff and apply
+               operations.py auto-cal / auto-zero / blowback / return-to-measure; plans, status
                factory.py    async open_device(...)  <- THE entry point
                discovery.py  find_devices, DiscoveryResult, DiscoverySummary
                snapshot.py   DeviceSnapshot, FujiDeviceSnapshot
@@ -1036,8 +1065,20 @@ WRITE_ENVELOPE: Final = (  # frozen; not derived from the registry or probing
 
 - **00A4h–00ABh are excluded:** inferred coefficients (§2.6).
 - **07D0h (key simulation) is excluded** (§6.5).
-- **009Eh–00A3h are gated to ZPB/ZPG** by a model `Capability`, and are written only
-  with FC10.
+- **009Eh–00A3h belong to ZPB/ZPG**, and FC10 is the only function that reaches them.
+
+**The reviewed subset.** Inside the envelope, a register is writable only when its
+declaration gives it a write tier. That is 52 registers: the calibration gases and
+calibration scope, the five response times, output hold, hold mode and the five hold
+values, and each channel's range and range method. They are documented, the bench unit
+does not contradict them, they are not options, and the bench analyzer can test them
+all. Every one is a single word inside FC06's reach, so a setting write is FC06.
+Everything else is read-only (`docs/registers.md` gives each group's reason; the
+[safety page](safety.md) summarizes them): the alarms (target encoding contested), the
+automatic schedules and flow times (start time contested; an option), key lock (it
+blocks the panel's forced stop), the averaging, O2-correction and peak-alarm options,
+and the blowback, measurement-point and reference-gas settings of other models.
+Widening the subset is a registry change the owner reviews in `docs/registers.md`.
 
 **Operations are not registers.** The four commands are `OperationSpec`s, each with a
 dedicated facade method, its own safety tier and its own post-conditions. They are
@@ -1048,7 +1089,9 @@ unreachable through `write_parameter`, `SettingsSnapshot` or `fuji-configure app
 
 1. Public writes resolve a **name** to the canonical, immutable registry entry. A
    caller-built `RegisterSpec`, a custom registry and an address in a settings file are
-   all refused.
+   all refused: a setting is written only if its name and address are in
+   `REVIEWED_SETTINGS`, a frozen list in `write_policy.py` written out apart from the
+   registry, and no registry that marks anything else writable passes validation.
 2. The session checks table, exact start, exact width, allowed function, value domain,
    capability and effective safety tier.
 3. `ModbusClient`'s two write methods re-check every request against `WRITE_ENVELOPE` as
@@ -1066,74 +1109,110 @@ says so.
 `devices/session.py` is the only path from the facade to the wire. Every call walks these
 gates, in order, **before any byte is sent**:
 
-1. **State.** The session is open, not broken, and not awaiting resynchronization.
-2. **Safety tier.** Anything above `READ_ONLY` needs `confirm=True`, else
-   `FujiConfirmationRequiredError`. Names and file contents cannot lower a tier.
-3. **Access.** Resolve by name to the canonical spec or operation (§5.4). Writing a
-   read-only register is refused.
-4. **Capability.** Option, model and firmware requirements. An `UNSUPPORTED` entry in
-   the availability cache short-circuits.
-5. **Validation.** Types, names, enum members, channel and range existence, and finite
-   values.
+1. **Access.** Resolve by name to the canonical spec or operation (§5.4). An unknown
+   name, or writing a read-only register, is refused (`FujiValidationError`). The tier
+   of a setting is known only once its name resolves, so this comes first.
+2. **State.** The session is open, not broken, and not awaiting resynchronization.
+3. **Safety tier.** Anything above `READ_ONLY` needs `confirm=True`, exactly `True`,
+   else `FujiConfirmationRequiredError`. Names and file contents cannot lower a tier.
+4. **Capability.** Probed and firmware capabilities: an `UNSUPPORTED` entry in the
+   availability cache short-circuits. Options and model features
+   (`OPTION_CAPABILITIES`): an operation that needs one is refused unless the type
+   code lists it or the caller asserted it with `open_device(options=...)`, and never
+   on a model whose manual describes no such option (`MODEL_OPTIONS`). The model must
+   be known, so such an operation is refused before `identify()`. Options never gate
+   reads: an option's registers read whether it is fitted or not.
+5. **Validation.** Types, enum members by name (never by number), whole numbers
+   within limits, the unit of a scaled value, finite values (`devices/encode.py`).
 
-Then, under the operation lock:
+Then, under the operation lock, for a setting write:
 
-1. refresh the scaling if the value is scaled;
-2. encode, and check the raw limits;
-3. check the write envelope in the client;
-4. do the I/O;
-5. decode and verify;
-6. update availability and counters.
+1. read the status, and refuse while a calibration runs, a channel is being
+   calibrated, the front panel is in a menu, or a manual calibration is in progress
+   at the panel (`FujiAnalyzerStateError`, nothing written);
+2. read the range tables for a scaled value or a range selection, and check that the
+   range exists on the channel (the tables list two ranges for every channel; its
+   range count says which exist);
+3. read the setting and what it depends on (a range selection needs the method to be
+   manual);
+4. encode, and check the raw and percent-of-full-scale limits;
+5. check the write envelope in the client, and write once;
+6. read back and compare (§6.3, §6.4);
+7. mark the range tables stale after a range or scaled write, and count the write for
+   the write-rate warning.
 
 A scaled value's raw limits can only be checked after its scaling is refreshed. So
 validation is split: everything that needs no I/O happens first, and the final raw range
-check comes before the first write frame.
+check comes before the first write frame. A refusal at any gate before step 5 of the
+second list sends no write.
 
 ### 6.2 Safety tiers
 
 `sartoriuslib`'s four tiers, as an `IntEnum`. The tier follows the **effect** of an
-operation, not merely whether it persists:
+operation, not merely whether it persists. Unlike `sartoriuslib`, fujilib requires
+`confirm=True` for `STATEFUL` too, as `servomexlib` does.
 
 | Tier | Operations |
 |---|---|
 | `READ_ONLY` | every read |
 | `STATEFUL` | `return_to_measurement()`, `start_blowback()` |
-| `PERSISTENT` | settings writes that change only configuration (alarms, ranges, averaging, hold mode, response time) |
-| `DANGEROUS` | `start_auto_calibration()` and `start_auto_zero_calibration()`; enabling or changing auto-calibration and auto-zero schedules; changing calibration-gas values or the calibration-scope settings (40026–40035) |
+| `PERSISTENT` | settings writes that change only configuration: response times, output hold, hold mode and hold values, a channel's range and range method |
+| `DANGEROUS` | `start_auto_calibration()` and `start_auto_zero_calibration()`; changing calibration-gas values or the calibration-scope settings (40026–40035) |
 
 Calibration is `DANGEROUS` because it overwrites the calibration coefficients and is only
-correct if the right gas is flowing. Scheduling a calibration is equally dangerous,
-because it causes one later. Every `DANGEROUS` operation reports the channels and ranges
-it will affect, including the widening by the "at once" and "both" settings, before it
-asks for confirmation. The CLI additionally requires `--i-understand-this-is-destructive`
-for that tier, as in the siblings.
+correct if the right gas is flowing. A calibration-gas value is equally dangerous, because
+the next calibration, manual or automatic, is computed from it. The automatic schedules,
+which would also be `DANGEROUS`, are read-only (§5.4). Every calibration reports the
+channels and ranges it will affect, including the widening by the "both" setting, in its
+plan (`plan_auto_calibration()`), which the start methods read again and return. The CLI
+additionally requires `--i-understand-this-is-destructive` for that tier; in the
+siblings the flag exists only on their diagnostic tools.
 
-`PERSISTENT` is a conservative classification. That settings survive a power cycle
-without an explicit save is still unverified (§13.2).
+`PERSISTENT` is the right classification: on the bench unit a setting written over
+Modbus survived a power cycle with no save step (§13.2 #14, findings §13.5).
 
-### 6.3 Write path (Phase 6)
+### 6.3 Write path
 
 ```
-resolve name -> validate -> [refresh (channel, range) decimal point + unit] -> encode
-  -> check raw limits -> choose FC from write_functions (FC06 only within 0000h-009Dh;
-     otherwise FC10, quantity 1 allowed) -> envelope check -> write -> read back -> compare
+resolve name -> gates (§6.1) -> validate -> [status] -> [range tables] -> [setting and
+  what it depends on] -> encode -> check raw and %FS limits -> envelope check
+  -> FC06 write, once -> read back (shielded, own deadline) -> compare
+  -> [a selected range, verified: read the current range until it follows]
 ```
 
-- A mismatch raises `FujiVerificationError` with expected and observed values in the
-  context.
-- **No coalescing across unrequested registers.** Every FC10 word corresponds to an
-  explicitly requested setting. The read planner's gap bridging is never used.
-- **Snapshot apply** preflights the whole input before the first write. It rejects
-  unknown names and operation names, writes in a defined order, and on failure reports
-  which writes completed.
-- **Settings the panel requires to be switched off first** (alarm settings, the
-  auto-calibration schedule) are written by switching off, then writing, then verifying.
-  If anything fails, the automatic function is **left off**, and the partial state is
-  reported with both the primary and the cleanup errors. It is never re-enabled
-  unconditionally in a `finally` block.
+- **FC06 always.** Every writable setting is one word inside FC06's reach (§5.4), so
+  a setting write never coalesces and never bridges: each write is exactly the
+  setting requested. The read planner's gap bridging is never used for writes.
+- **The outcome is what the read-back finds** (`devices/writes.py`): verified,
+  mismatch (`FujiVerificationError`, with the requested, previous and observed words
+  in the context) or unknown (`FujiWriteOutcomeUnknownError`; §6.4).
+- **A range write returns once the channel measures on it** (#70). The analyzer's
+  current range can follow a verified range write some tens of milliseconds later
+  (findings §13.2), so the session reads it, shielded and within the read-back
+  budget, until it shows the range written. If it never does, or cannot be read,
+  the write raises `FujiVerificationError`: the setting is written, but not in
+  effect.
+- **Settings documents** (`devices/settings.py`) are compared with the analyzer as a
+  whole before the first write. Unknown names, operation names, input registers,
+  read-only settings that differ, values that do not fit and a document from another
+  analyzer are refused, and then nothing is written. The writes go in a defined
+  order: output hold before the hold settings when it is switched on, after them
+  when it is switched off; a range method before its range; then the response times,
+  the calibration scope and the calibration gases. The first write that fails stops
+  the rest; the report lists what completed, what failed and what was not attempted.
+  Nothing is rolled back.
+- **Settings the panel requires to be switched off first** (alarms, the automatic
+  schedules) are not in the writable subset. When they join it, they are written by
+  switching off, writing and verifying; if anything fails, the automatic function is
+  **left off**, and the partial state is reported with both the primary and the
+  cleanup errors. It is never re-enabled unconditionally in a `finally` block.
 
-The manual does not state a write-endurance figure. fujilib therefore never writes
-periodically, and the recorder has no write path.
+A written setting is kept through a power cycle without a save step (findings §13.5),
+so every write goes to non-volatile memory, and the manual does not state a
+write-endurance figure. fujilib therefore never writes periodically, the recorder
+has no write path, and a session logs a warning when setting writes exceed
+`write_warn_per_minute` (10 by default) in a rolling minute, as `alicatlib`'s
+EEPROM-wear guard does.
 
 ### 6.4 Timeouts and uncertain outcomes
 
@@ -1146,14 +1225,28 @@ periodically, and the recorder has no write path.
 **A timeout is not a rollback.** A write can be accepted by the analyzer while its reply
 is lost. So once a write request has been sent:
 
-- the read-back runs in a shielded scope with its own short, bounded deadline;
-- the result carries `write_state`: `"verified"`, `"mismatch"` or `"unknown"`, plus
-  whether transmission started and any observed value;
-- an unknown outcome raises `FujiWriteOutcomeUnknownError` (§9);
-- nothing is retried to find out.
+- the read-back runs in a shielded scope with its own bounded deadline, what the
+  port's timing allows two block reads with every retry and a late-reply window
+  (3.2 s at the defaults), so it happens even when the write used up the
+  operation's deadline. A caller that cancels the call itself (not a deadline)
+  cancels it without a read-back; the late-reply window protects the next request;
+- the read-back decides: the register as written is `verified`, whether or not the
+  write's own reply arrived; anything else is a `mismatch` (a write whose reply was
+  lost and that reads back as before did not arrive); a failed read-back leaves it
+  `unknown`;
+- the result (`WriteResult`) carries the state, whether the write was acknowledged,
+  and the requested, previous and observed values;
+- an unknown outcome raises `FujiWriteOutcomeUnknownError` (§9), a mismatch
+  `FujiVerificationError`;
+- nothing is retried to find out, and the write itself is never retried;
+- a port that fails while a write waits for its reply, or during its read-back,
+  breaks the session, as any connection failure does.
 
 An idle command-status flag after a command can mean "never started" or "already
-finished"; fujilib reports that ambiguity instead of guessing.
+finished"; fujilib reports that ambiguity (`CommandOutcome.AMBIGUOUS`) instead of
+guessing. A command whose reply was lost is `started` when the status shows the
+calibration running, `done` when it shows the measurement screen, and otherwise an
+unknown outcome.
 
 `servomexlib` found that an outer deadline equal to one request timeout cancels
 legitimate mid-sweep retries, and resolved it by ignoring the argument. fujilib keeps the
@@ -1270,8 +1363,8 @@ async with await open_device(
 | Parameters (read) | `read_parameter(name)`, `read_parameters(names)`, `read_settings()`, each with `alarm_targets=` (§5.2) | 4 |
 | Streaming | `PollSourceAdapter(name, device)`, `DeviceResult` | 4 |
 | Recording | `record()` over a `PollSource`; `reopen()` after a connection failure | 5 |
-| Parameters (write) | `write_parameter(name, value, *, confirm=False)`; settings helpers such as `set_range`, `configure_alarm`, `set_hold`, `set_response_time` | 6 |
-| Operations | `start_auto_calibration`, `start_auto_zero_calibration`, `start_blowback`, `return_to_measurement`, `calibration_status()`, `wait_for_calibration(timeout=...)` | 6 |
+| Parameters (write) | `write_parameter(name, value, *, unit=None, confirm=False)`; `set_response_time`, `set_output_hold`, `set_hold_mode`, `set_hold_value`, `set_range`, `set_range_method`, `set_calibration_gas`; `diff_settings`, `apply_settings` | 6 |
+| Operations | `start_auto_calibration`, `start_auto_zero_calibration`, `start_blowback`, `return_to_measurement`, `plan_auto_calibration()`, `plan_auto_zero_calibration()`, `calibration_status()`, `wait_for_calibration(timeout=...)` | 6 |
 
 Every I/O method takes keyword-only `timeout: float | None = None`. Everything above
 `READ_ONLY` takes `confirm: bool = False`. Channel arguments accept `ChannelId` or `str`.
@@ -1481,7 +1574,7 @@ Plain `argparse`, each `main(argv=None) -> int`, each drivable with `--fixture`.
 | `fuji-stream` | print each poll at a fixed rate: text, CSV or JSON lines | 5 |
 | `fuji-capture` | record to CSV or Parquet, with a `fujilib-capture/1` metadata document beside it | 5 |
 | `fuji-diag timing` | read-only link timing, busy-wait gaps measured from the reply | 5 |
-| `fuji-configure` | `dump` (0.1.0) / `diff` / `apply` (0.2.0, `--confirm`, settings names only) | 5 / 6 |
+| `fuji-configure` | `dump` / `diff` / `apply` (`apply`: `--confirm`, `--i-understand-this-is-destructive` for a DANGEROUS write, `--dry-run`, settings names only) | 4 / 6 |
 
 The CLI uses the same session and write policy as the facade; it has no private write
 path.
@@ -1500,7 +1593,10 @@ path.
 - **`fuji-configure dump`** writes a document of format `fujilib-settings/1`: the
   analyzer's identity, then every holding register by name (never by address) with its
   decoded value, raw value, unit, access, safety tier and evidence. `diff` and `apply`
-  (Phase 6) will read it.
+  read it (or a document naming only some settings): `diff` says what would be
+  written or refused; `apply` needs `--confirm`, and `--i-understand-this-is-destructive`
+  for a DANGEROUS write, writes nothing if anything is refused, and ends with a
+  `status:` line, exiting 1 unless it is `ok` or `dry_run` (§6.3).
 - **`fuji-capture`** identifies the analyzer, reads its metadata, and records with
   `pipe()` to the file `--out` names; the format follows the extension. Beside it,
   `<out>.meta.json` (format `fujilib-capture/1`) holds the identity, ranges and metadata
@@ -1769,6 +1865,7 @@ FujiError
 │       └── FujiModbusTimeoutError              (also FujiTimeoutError)
 ├── FujiCapabilityError
 │   └── FujiFirmwareError
+├── FujiAnalyzerStateError                  the analyzer's state forbids a write now (§6.1)
 └── FujiSinkError
     ├── FujiSinkDependencyError             (also FujiConfigurationError)
     ├── FujiSinkSchemaError
@@ -1804,8 +1901,18 @@ the write list and the per-request faults. The line is `anymodbus`'s `MockServer
 - **Writes against an independent list.** The simulator accepts only the documented
   writes minus 00A4h–00ABh and 07D0h. The list is written out in `testing/mock.py`, not
   imported from `WRITE_ENVELOPE`, so a widened envelope fails the tests. Any other write
-  raises `MockWriteViolation`, which fails the test. Operation commands are recorded;
-  their effects are not simulated yet.
+  raises `MockWriteViolation`, which fails the test. A write is stored as sent; a
+  test that wants the analyzer to refuse a value injects an exception reply, and
+  one that wants a write acknowledged but not stored injects `FaultKind.IGNORE`.
+- **Operation commands act as the manuals describe**, on the AnyIO clock with the
+  flow times scaled by `time_scale`: return to measurement shows the measurement
+  screen; auto calibration zeroes the enabled channels together, spans them one at a
+  time and holds for the extension when output hold is on; auto zero zeroes and holds
+  as long again. While one runs, 30049 and the channels' auto-zero or auto-span and
+  hold flags are set and each channel measures on its auto-calibration range. Errors
+  set beforehand appear at the end. A command during a run changes nothing. This is
+  written from the manuals, not from fujilib's operations code, and is unverified on
+  hardware: the bench analyzer cannot auto-calibrate.
 - **Reply faults per request:** drop, delay (a late reply), bad CRC, wrong word count,
   wrong function code, garbage, or an exception. Each fault applies once or every time, to
   every request or to the ones a predicate selects.
@@ -1840,7 +1947,7 @@ coherent block capture (findings §4.3).
 | Private API | no fujilib module uses a private `anymodbus` or `anyserial` name |
 | Gates | a refused operation leaves the mock's request log **empty**; preflight refusals send no write frame |
 | Write policy | every public path (facade, CLI, snapshot file, forged spec, operation name in a settings file) is refused outside the envelope; FC10 spans never include unrequested words |
-| Uncertain outcomes | lost write acknowledgement, cancellation after transmission, failed cleanup, a setting changed between write and verify |
+| Uncertain outcomes | lost write acknowledgement; a write whose deadline expires after transmission, still read back; a port that fails during a write or its read-back (the session breaks); a write acknowledged but not stored; a setting changed between write and verify; a command whose reply is lost |
 | Validity | hold or instrument error arriving between the two poll blocks; block-2 failure; derived-channel validity; `detail=False` gives `valid=None` |
 | Labels and presence | a populated channel reading an all-zero triple stays present; contradictory type codes; asserted map wins |
 | Recording | on a manual clock, exact tick, late, drift and drop counts for every overflow policy; error-first recording keeps a fixed schema; every name in every batch; a disconnect ends the recording after its batch, and a reconnect policy rides it out (over a simulated cable pulled and put back); a channel established later stays out of the rows; cancellation and early exit |
@@ -1861,8 +1968,8 @@ from the owner before it is ever run:
 | Marker | Variable | Covers |
 |---|---|---|
 | `hardware` | `FUJILIB_ENABLE_HARDWARE_TESTS` | reads, identify, metadata, logs, discovery, link timing |
-| `hardware_stateful` | `FUJILIB_ENABLE_STATEFUL_TESTS` | settings writes with restore, blowback, return-to-measurement |
-| `hardware_destructive` | `FUJILIB_ENABLE_DESTRUCTIVE_TESTS` | auto calibration and auto zero, with calibration gas |
+| `hardware_stateful` | `FUJILIB_ENABLE_STATEFUL_TESTS` | settings writes with restore, a settings document and its baseline, return-to-measurement; the owner-attended steps (key lock, power cycle, values out of range) are `scripts/probe_write.py` |
+| `hardware_destructive` | `FUJILIB_ENABLE_DESTRUCTIVE_TESTS` | auto calibration and auto zero, with calibration gas; none written: the bench analyzer cannot auto-calibrate |
 
 Bench configuration comes from `FUJILIB_HARDWARE_PORT` and `FUJILIB_HARDWARE_ADDRESS`.
 `docs/hardware-test-day.md` is the written procedure. Timing probes must busy-wait,
@@ -2252,24 +2359,115 @@ Differences from the plan above (decisions §13.1 #45–#56):
   for the command and logs private memory; `scripts/check_soak.py` judges memory by
   its fitted trend; `scripts/recover_parquet.py` recovers a killed Parquet file.
 
-**Release 0.1.0** — read-only monitoring, metadata and acquisition. Before it (#55):
+**Release 0.1.0** — monitoring, metadata and acquisition, and the settings writes and
+operation commands of Phase 6 (#59). Before it (#55):
 the 12-hour recording (#58) and ~~the unplug test~~ (passed 2026-09-29), the owner's
 review of `docs/registers.md` (Phase 1's exit), and a decision on the capa spike (#44).
 
-### Phase 6 — Settings and operation commands (5–7 days, stateful hardware)
+### Phase 6 — Settings and operation commands (software and hardware **done 2026-09-29**)
 
-- Session write path: name resolution, validation, scaling refresh, function selection,
-  envelope check, read-back verification, uncertain-outcome reporting.
-- `devices/settings.py` for a reviewed subset of fully specified settings, and
-  `SettingsSnapshot` diff/apply with preflight.
-- `devices/operations.py`: auto calibration, auto zero, blowback, return to measurement,
+- ~~Session write path: name resolution, validation, scaling refresh, function selection,
+  envelope check, read-back verification, uncertain-outcome reporting~~:
+  `devices/encode.py`, `devices/writes.py`, `Session.gate()`, `Session.write_setting()`.
+- ~~`devices/settings.py` for a reviewed subset of fully specified settings, and
+  `SettingsSnapshot` diff/apply with preflight~~: the subset is declared in the
+  registry (§5.4); `devices/settings.py` compares and applies settings documents.
+- ~~`devices/operations.py`: auto calibration, auto zero, blowback, return to measurement,
   `calibration_status()`, `wait_for_calibration()`, each reporting its affected channels
-  and ranges.
-- `fuji-configure diff/apply`; `docs/safety.md`.
+  and ranges~~, with `plan_auto_calibration()` and `plan_auto_zero_calibration()`.
+- ~~`fuji-configure diff/apply`; `docs/safety.md`~~.
 
-*Tests:* the write-policy and uncertain-outcome suites; write-and-restore hardware tests;
-persistence across a power cycle. Each hardware session is authorized separately.
-**Release 0.2.0.**
+*Software exit:* met on 2026-09-29, locally on Windows and Python 3.13. Lint, both type
+checkers and 2,346 unit tests at 100 % branch coverage pass under asyncio and trio. The
+tests cover the write-policy and uncertain-outcome suites, a refusal test for every gate
+that checks nothing was sent (with stale range tables too), and a recording across a
+simulated calibration. An independent review made sixteen findings; fifteen were fixed
+before handing back, and the ones that changed behaviour are listed with the
+differences below. The sixteenth is a question for the owner: whether the type code
+alone may authorize a calibration (#65), or only an assertion.
+
+*Hardware exit:* **met on 2026-09-29** (below). The stateful session of
+`docs/hardware-test-day.md`, authorized separately and attended by the owner:
+
+- the `hardware_stateful` tests, which write and restore registers of absent channels
+  first, then measurement-affecting settings, then a document and its baseline;
+- key lock (§13.2 #12), a menu at the panel, a power cycle (§13.2 #14) and, if
+  authorized, values out of range, with `scripts/probe_write.py`;
+- the panel's schedule start time (§13.2 #26);
+- a final `fuji-configure diff` against the settings saved first must show nothing to
+  write.
+
+Auto calibration and auto zero calibration are verified only on the simulator: the bench
+analyzer has no auto-calibration option to drive gas valves (§2.6), so the
+`hardware_destructive` tier stays unwritten until a rig with plumbed calibration gases
+exists.
+
+*The bench session* (findings §13):
+
+- The read-only tests passed 52 of 52, and the stateful tests 9 of 10 at first.
+- `test_selecting_the_other_range` failed. The range write was verified, but it read
+  the channel's current range once, straight after, and the analyzer's current-range
+  register can lag the setting by some tens of milliseconds (findings §13.2). The
+  owner saw the panel switch, and four more round trips all switched, so the fault
+  was that `set_range` returned before the range was in effect. It now returns once
+  the channel measures on the range (#70). Rerun the same day, the stateful tests
+  passed 10 of 10 (findings §13.8).
+- Key lock, the panel menu, the power cycle and the out-of-range values ran as planned
+  (§13.2 #12, #14, #32).
+- The start time could not be read: this unit's panel has no auto-calibration menu
+  (#26).
+- The final `fuji-configure diff` showed nothing to write, after the session and again
+  after the rerun.
+
+It goes into **0.1.0** (#59).
+
+Differences from the plan above (decisions §13.1 #59–#70):
+
+- **Research before building changed the design** (§2.6, §2.7, §6.2). "At once" does not
+  widen auto calibration or auto zero; the auto-calibration channels and ranges also
+  drive auto zero; a panel forced stop exists but key lock blocks it; the MODBUS manual
+  defers setting ranges to the instruction manual; the ZPA has no calibration valves
+  of its own. No sibling reads a write back or reports an unknown outcome, so those
+  have no family precedent.
+- **The reviewed subset is 52 registers** (#60), declared writable in the registry;
+  everything else became read-only, including documented settings (§5.4). Every
+  writable setting is one FC06 word, so the write path has no function choice and no
+  coalescing.
+- **Write limits are the narrower of the two manuals'** (#61), plus percent-of-full-scale
+  limits for calibration gases, and a calibration gas needs its range's unit (#62).
+- **Writes and commands wait for a quiet analyzer** (#63): nothing is written while a
+  calibration runs or the panel is in a menu, in a new error class,
+  `FujiAnalyzerStateError`. A calibration is also refused during an instrument error.
+- **The read-back after a lost reply decides the outcome** (#64).
+- **Options are asserted or listed by the type code** (#65): `open_device(options=...)`,
+  `TypeCode.options` from digits 21 and 22, and `MODEL_OPTIONS`; options never gate
+  reads.
+- **No command-line tool for operations** (#66); `apply` stops at the first failure and
+  rolls nothing back (#67); a write-rate warning after `alicatlib` (#69).
+- **The typed helpers are one setting each**: `set_hold_mode` and `set_hold_value`
+  rather than one `set_hold`, and `set_calibration_gas(channel, range, kind, value,
+  unit=...)`. There is no `configure_alarm`, since the alarms are read-only.
+- **A range the channel does not have is refused.** The range tables list two ranges
+  for every channel, so a channel's range count decides; the bench unit's Ch1 and Ch2
+  have one.
+- **The simulator acts on commands** (§10), and can acknowledge a write without storing
+  it.
+- **After the bench session** (findings §13): a range write returns once the channel
+  measures on the range, and the simulator switches ranges after a configurable lag
+  (#70); the `key_lock` register note, `docs/safety.md` and `fuji-configure apply`'s
+  recovery hint no longer suggest that key lock blocks writes; `docs/safety.md` says
+  that written settings are kept and that out-of-range values are stored.
+- **Along the way:** a write whose port fails, or whose read-back's port fails, breaks the
+  session, as does a port that fails in the status read after a command;
+  `Session.verify_timeout`, derived from the port's timing;
+  `apply_settings(max_tier=...)`, so the CLI's destructive flag is checked against
+  apply's own comparison; `CommandResult.before` and
+  `wait_for_calibration(since=...)`; commands that need an option are refused
+  before `identify()`; `REVIEWED_SETTINGS` in `write_policy.py`, so a custom
+  registry cannot widen the subset (§5.4);
+  `fujilib-settings/1` moved to `devices/settings.py`; the register notes gained the
+  instruction manual's side effects (a moving-average change restarts the average,
+  switching the peak alarm on restarts its count).
 
 ### Phase 7 — Remote panel and manual calibration — not planned
 
@@ -2289,15 +2487,15 @@ then start with a design and a hardware prototype, and be estimated after that.
 ### Sequencing
 
 ```
-decisions ─► Phase 0 ─► Phase 1 ─► Phase 3 ─► Phase 4 ─► Phase 5 ─► 0.1.0 ─► Phase 6 ─► 0.2.0
+decisions ─► Phase 0 ─► Phase 1 ─► Phase 3 ─► Phase 4 ─► Phase 5 ─► Phase 6 ─► 0.1.0
                             ▲         ▲           ▲
 anymodbus 0.2.1 ────────────┼─────────┘           │
 Phase 2 (bench) ────────────┴─────────────────────┘   (findings feed registry, defaults, O2 scope)
 ```
 
-Total to 0.1.0 is about 18–23 working days (3.5–4.5 engineer-weeks) plus the hardware
-session and the soak, and another 1–1.5 weeks for 0.2.0. Re-estimate after the first
-complete read-and-record slice.
+The read-and-record slice was estimated at about 18–23 working days (3.5–4.5
+engineer-weeks) plus the hardware session and the soak, and the writes at another
+1–1.5 weeks. Both are in 0.1.0 (§13.1 #59).
 
 ---
 
@@ -2308,7 +2506,7 @@ complete read-and-record slice.
 | # | Decision | Recommendation |
 |---|---|---|
 | 1 | ~~`Sample` and timestamp names: unified API (`t_mono_ns`, …) or `servomexlib`'s (`monotonic_ns`)~~ | **RESOLVED 2026-09-28: unified API.** It is what `capa` reads from `watlowlib`, `sartoriuslib` and `alicatlib` |
-| 2 | Scope of the first release | Read-only monitoring, metadata and acquisition (0.1.0); a reviewed subset of writes in 0.2.0 |
+| 2 | Scope of the first release | ~~Read-only monitoring, metadata and acquisition (0.1.0); a reviewed subset of writes in 0.2.0~~ **Revised 2026-09-29 by the owner (#59):** 0.1.0 has both |
 | 3 | Key simulation and manual calibration | **Not planned** (§6.5) |
 | 4 | ~~Where the manuals live~~ | **RESOLVED 2026-09-28:** `docs/manuals/`, git-ignored |
 | 5 | Names: `Analyzer`, `FujiManager`, `FujiError`, `Fuji.open`, `fuji-*` | As listed |
@@ -2365,11 +2563,23 @@ complete read-and-record slice.
 | 56 | The 24-hour recording | **Adopted 2026-09-28**: the owner left the analyzer connected and allowed any hardware test; read-only, 1 Hz, `fuji-capture` to Parquet with `--reconnect`, under `scripts/soak_monitor.py`. 12 hours rather than 24 since 2026-09-29 (#58) |
 | 57 | What a recording keeps when it cannot be stopped with Ctrl-C, or is killed | **Adopted 2026-09-29 at the owner's request**, after the first 24-hour attempt (findings §12.1): Ctrl-Break stops the recording commands as Ctrl-C does; `fuji-capture` rewrites its `.meta.json` every minute with the counters so far, each write replacing the file whole; its progress line is written from a worker thread; the soak tools gain `recover_parquet.py`, Ctrl-C for the command under `soak_monitor.py`, private memory in its log, and a memory check by fitted trend. Parquet stays the soak's format |
 | 58 | The length of the hardware exit's long recording | **Decided 2026-09-29 by the owner:** 12 hours at 1 Hz, run overnight, instead of 24; a day is not expected to show anything 12 hours would not. The first attempt's 10 h 17 min without a failure or a gap (findings §12.1) supports it |
+| 59 | How Phase 6 is sequenced against 0.1.0 | **Decided 2026-09-29 by the owner:** Phase 6 merges into `main` once its bench session has passed, before 0.1.0 is tagged, so 0.1.0 includes the reviewed writes and the operation commands. (First adopted: the registry corrections before 0.1.0 and the rest after it, so that 0.1.0 stayed read-only) |
+| 60 | Which settings are written | **Adopted 2026-09-29** on the owner's "proceed"; not separately confirmed: the 52 registers of §5.4 (calibration gases and scope, response times, output hold, hold mode and values, range and range method); everything else read-only |
+| 61 | The limits of a write | **Adopted 2026-09-29** on the owner's "proceed"; not separately confirmed: the narrower of the two manuals' where they disagree (the MODBUS manual defers to the instruction manual, TN5A1190a p.28); calibration gases 0-100 % (zero) and 1-105 % (span) of their range's full scale |
+| 62 | The unit of a scaled write | **Adopted 2026-09-29** on the owner's "proceed"; not separately confirmed: required (`unit=`), and refused unless it is the unit of the gas's (channel, range), against a vol%/ppm slip of 10^4 |
+| 63 | Writing while the analyzer is busy | **Adopted 2026-09-29** on the owner's "proceed"; not separately confirmed: refused, nothing written, while a calibration runs, a channel is being calibrated, the panel is in a menu or in a manual calibration (`FujiAnalyzerStateError`); return to measurement is the exception. A calibration is also refused during an instrument error |
+| 64 | The outcome of a write whose reply is lost | **Adopted 2026-09-29** on the owner's "proceed"; not separately confirmed: the read-back decides: as written is verified, otherwise a mismatch; unknown only when the read-back fails too. The write is never retried |
+| 65 | How an option is known to be fitted | **Adopted 2026-09-29** on the owner's "proceed"; not separately confirmed: listed by the type code (digits 21 and 22) or asserted with `open_device(options=...)`, like gas labels; refused otherwise, and always on a model whose manual has no such option (blowback on the ZPA). Options never gate reads |
+| 66 | A command-line tool for the operation commands | **Adopted 2026-09-29** on the owner's "proceed"; not separately confirmed: none; the operation commands are for programs |
+| 67 | What a failed apply does | **Adopted 2026-09-29** on the owner's "proceed"; not separately confirmed: stops at the first failure, reports what completed, failed and was not attempted, and rolls nothing back |
+| 68 | Probing the analyzer's own handling of out-of-range values | **Adopted 2026-09-29** on the owner's "proceed"; not separately confirmed: prepared as `scripts/probe_write.py out-of-range` on a register of an absent component; run only if authorized on the day of the bench session |
+| 69 | A warning against periodic writes | **Adopted 2026-09-29** on the owner's "proceed"; not separately confirmed: after `alicatlib`, a warning above `write_warn_per_minute` setting writes a minute, 10 by default, an argument of `open_device` |
+| 70 | When a range write is complete | **Adopted 2026-09-29** on the owner's "fix what the bench session found"; not separately confirmed: once the channel measures on the range, not when the setting reads back (findings §13.2). The current range is read within the read-back budget until it follows; if it never does, or cannot be read, `FujiVerificationError`. The simulator switches the current range after `MockAnalyzerConfig.range_lag_s` |
 
 ### 13.2 Hardware verification
 
-Answered by the read-only probes of 2026-09-28. Details and data are in
-[protocol-findings.md](protocol-findings.md).
+Answered by the read-only probes of 2026-09-28 and the writes of 2026-09-29. Details
+and data are in [protocol-findings.md](protocol-findings.md).
 
 | # | Question | Result |
 |---|---|---|
@@ -2389,6 +2599,10 @@ Answered by the read-only probes of 2026-09-28. Details and data are in
 | 28 | fujilib's client, read procedures and quiet window on the analyzer | Done 2026-09-28 (findings §10). Every read procedure works; 300 polls at 7.78 Hz with no failure; with no quiet window a read after a cancelled one was lost in 23 of 30 trials, with the window never; stale data was never accepted |
 | 30 | The facade, discovery, the blocking facade and the commands on the analyzer | Done 2026-09-28 (findings §11). 45 of 45 hardware tests under asyncio and trio; open and identify in 0.3 s; an empty station times out and releases the port |
 | 31 | Recording, the sinks and the recording commands on the analyzer | Done 2026-09-28 (findings §12). 52 of 52 hardware tests under asyncio and trio; a 60-second capture at 1 Hz passed every soak check. The first 24-hour attempt was killed after 10 h 17 min without a failed poll (findings §12.1); a 12-hour run replaces it (#58); the unplug test passed 2026-09-29 (findings §12.2) |
+| 12 | Whether key lock (40074) blocks Modbus writes or commands | **It does not block writes** (2026-09-29, findings §13.3). With key lock on, a setting write was acknowledged and verified, and return to measurement was acknowledged. The panel was already on the measurement screen, so whether the command would close a menu under key lock is not shown |
+| 14 | Whether settings survive a power cycle without an explicit save | **They do** (2026-09-29, findings §13.5). A value written over Modbus read back unchanged after the analyzer was off for 10 s; there is no save step |
+| 32 | Whether the analyzer refuses, clamps or stores a value outside a setting's documented range | **It stores it** (2026-09-29, findings §13.6). 61 and 0 written to the response time of NDIR component 4 were acknowledged without an exception and read back as written; fujilib's limits are the only guard. One register tried, of an absent component |
+| 34 | Setting writes and commands on the analyzer | Done 2026-09-29 (findings §13). The current range lags a verified range write by tens of milliseconds (findings §13.2), so a range write now waits for it (#70); with that, 10 of 10 stateful tests pass (findings §13.8). A menu at the panel refuses writes, and return to measurement closes it. Every setting matched the saved ones at the end |
 
 Still open:
 
@@ -2396,10 +2610,12 @@ Still open:
 8. Whether an O2-average channel exists, and at which index. *Needs a unit with the O2
    correction option.*
 11. Calibration-log depth. *Needs firmware 2.24 or later.*
-12. Whether key lock (40074) blocks Modbus writes or commands. *Phase 6.*
+12. ~~Whether key lock (40074) blocks Modbus writes or commands~~: it does not block
+    writes (table above).
 13. Whether "Ch n" alarm registers are indexed by alarm number, as assumed in §2.6.
-    *Phase 6, or a unit with the alarm option.*
-14. Whether settings survive a power cycle without an explicit save. *Phase 6.*
+    *A unit with the alarm option; the alarms are read-only until then.*
+14. ~~Whether settings survive a power cycle without an explicit save~~: they do
+    (table above).
 15. ~~Whether `COM10` and above need the `\\.\` prefix~~ — `anyserial` already
     normalizes it; test canonical port identity instead (§4.1).
 18. Whether the undocumented holding blocks accept writes. **Will not be tested.**
@@ -2407,10 +2623,17 @@ Still open:
 22. The Premus variant and specification. *Owner, from Hummingbird or Fuji.*
 23. The analyzer's current calibration state (§2.11). *Owner.*
 25. Linux timing. *If the rig runs Linux.*
-26. The encoding of the schedule start hour and minute (§2.6). *Owner: read the
-    auto-calibration start time the panel shows; no Modbus traffic is needed.*
-27. The encoding of the alarm target channel (§2.6). *Phase 6, or a unit with the alarm
-    option.*
+26. The encoding of the schedule start hour and minute (§2.6). *Not answerable on the
+    bench unit:* its panel has no auto-calibration menu without the option (findings
+    §13.7), and the registers read hour `0x000C`, minute 0. *A unit with the
+    auto-calibration or auto-zero option: compare its panel with the registers.*
+27. The encoding of the alarm target channel (§2.6). *A unit with the alarm option; the
+    alarms are read-only until then.*
+32. ~~Whether the analyzer refuses, clamps or stores a value outside a setting's
+    documented range~~: it stores it (table above).
+33. What auto calibration and auto zero calibration do on an analyzer without the
+    valve-drive option, and whether 30049 covers the hold extension. *Never on the bench
+    unit; a unit with the option and plumbed gases.*
 29. ~~Trio with a real Windows COM port (§4.7 item 14)~~ — fixed in `anyserial` 0.2.0;
     the hardware tests pass on trio on the bench (findings §10.4). *Linux and macOS
     untested.*
@@ -2431,6 +2654,7 @@ Still open:
 | Program version | **1.02** (shown on the display at power-on) | owner |
 | Channels | Ch1 CO2 0–10.00 vol%, Ch2 CO 0–1.000 vol%, Ch3 O2 0–21.00 / 0–25.00 vol% | bench |
 | Response time | 15 s on every channel | bench |
+| Panel user-mode menu | Switch Ranges, Calibration Parameters, Parameter Setting; no alarm, peak-alarm, auto-calibration or auto-zero menu | owner, 2026-09-29 |
 | Calibration state | doubtful: O2 20.29 vol%, CO2 −0.11 vol% at capture; error log full of calibration errors 5, 6, 7 | bench |
 
 The predictions made from the nameplate held: the channel layout, ranges that differ
@@ -2461,7 +2685,8 @@ per profile, never as constants of the family.
 4. **The capture conditions.** Was the analyzer sampling ambient air when O2 read
    20.29 vol%? When was it last successfully zeroed and spanned?
 5. **Automated calibration.** Is it needed, and is the gas system plumbed for auto
-   calibration?
+   calibration? The bench unit's type code lists no valve-drive option (§2.6), so
+   fujilib refuses auto calibration there unless the option is asserted.
 6. **Deployment.** Will the rig run fujilib on Windows or Linux? May the FTDI latency
    timer be lowered from 16 ms?
 7. **Firmware.** Is a firmware upgrade through Fuji service plausible? It is the only

@@ -1,11 +1,13 @@
 ---
-description: The fuji-* command-line tools — read, discover, decode, dump settings, stream, capture and diagnose a Fuji ZP-series analyzer.
+description: The fuji-* command-line tools — read, discover, decode, compare and apply settings, stream, capture and diagnose a Fuji ZP-series analyzer.
 ---
 
 # Commands
 
-Every command is read-only: it sends read requests and nothing else. Each is
-also a function, `main(argv) -> int`, in `fujilib.cli`.
+Every command but `fuji-configure apply` is read-only: it sends read requests
+and nothing else. `fuji-configure apply` writes settings, behind `--confirm`
+(see [Safety](safety.md)). Each command is also a function,
+`main(argv) -> int`, in `fujilib.cli`.
 
 | Command | What it does |
 |---|---|
@@ -13,12 +15,16 @@ also a function, `main(argv) -> int`, in `fujilib.cli`.
 | `fuji-discover` | find ZP analyzers on named ports (or every port, with `--all-ports`) |
 | `fuji-decode` | decode MODBUS frames or a register dump, offline |
 | `fuji-configure dump` | read every setting and write it as a `fujilib-settings/1` JSON document |
+| `fuji-configure diff` | compare a settings document with the analyzer |
+| `fuji-configure apply` | write the settings of a document that differ, each read back |
 | `fuji-stream` | poll at a fixed rate and print each poll |
 | `fuji-capture` | record to a CSV or Parquet file, with the analyzer's metadata beside it |
 | `fuji-diag timing` | measure the gap the analyzer needs between requests |
 
 **Exit codes.** 0 on success, 1 for a library error (printed as `error: ...`),
-2 for bad arguments. `fuji-discover` also exits 2 when it finds nothing.
+2 for bad arguments. `fuji-discover` also exits 2 when it finds nothing;
+`fuji-configure apply` exits 1 when the document is refused or a write fails,
+and 2 when a write would be DANGEROUS without its flag.
 `fuji-stream` and `fuji-capture` exit 0 when stopped with Ctrl-C, after
 writing and closing what they recorded. On Windows, Ctrl-Break stops them (and
 `fuji-diag timing`) the same way, and it works in a window whose processes
@@ -53,6 +59,46 @@ fuji-discover --all-ports
 
 Every port scanned receives the probe frames, including ports of other
 instruments, so the host's ports are scanned only with `--all-ports`.
+
+## fuji-configure
+
+```
+fuji-configure dump COM8 --out zpa-settings.json
+fuji-configure diff COM8 --file changes.json
+fuji-configure apply COM8 --file changes.json --confirm
+fuji-configure apply COM8 --file gases.json --confirm --i-understand-this-is-destructive
+```
+
+`dump` writes every holding register by name, with its decoded value, raw
+word, unit, access, safety tier and evidence, and the analyzer's identity, as
+a `fujilib-settings/1` document. `--alarm-target N=CHn` scales alarm N's
+limits by that channel's range.
+
+`diff` reads the analyzer and says, for every setting the document names,
+whether it would be written (with its tier), is refused (with the reason), or
+is unchanged. A document written by hand may name only the settings to change:
+
+```json
+{
+  "format": "fujilib-settings/1",
+  "settings": {
+    "response_time.o2": 20,
+    "hold.mode": "setting",
+    "calibration_gas.ch3.range1.span": {"value": 20.9, "unit": "vol%"}
+  }
+}
+```
+
+A calibration gas needs its unit, which must be its range's. An enumerated
+setting takes its name (`setting`, `range_2`, `auto`), never its number.
+
+`apply` compares first, and writes nothing if anything is refused or the
+document is another analyzer's (`--any-analyzer` accepts it). Then it writes
+each setting that differs, in dependency order, reads it back, and stops at
+the first that fails. It ends with `status:` `ok`, `dry_run`, `refused`,
+`partial`, `verify_failed`, `unknown` or `failed`, and a `recovery:` hint when
+something went wrong. `--dry-run` stops after the comparison. See
+[Safety](safety.md) for what may be written and why.
 
 ## fuji-stream
 

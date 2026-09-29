@@ -16,6 +16,7 @@ nav = [
     ] },
     { Recording = "recording.md" },
     { Commands = "cli.md" },
+    { Safety = "safety.md" },
     { "Measurement quality" = "measurement-quality.md" },
     { Reference = [
         { "Register map" = "registers.md" },

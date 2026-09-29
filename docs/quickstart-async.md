@@ -98,6 +98,21 @@ again to continue.
 | `read_clock()`, `read_adc()` | the analyzer's clock and raw A/D counts (undocumented registers) |
 | `snapshot()` | identity and health, from what is cached, with no I/O |
 
+## Changing a setting
+
+A reviewed subset of settings can be written: response times, output hold,
+hold, a channel's range, and the calibration gases and scope. Every write
+needs `confirm=True`, is refused while the analyzer is calibrating or its
+front panel is in a menu, and is read back. See [Safety](safety.md).
+
+```python
+result = await anz.write_parameter("response_time.o2", 20, confirm=True)
+print(result.state, result.previous.value, result.observed.value)  # verified 15 20
+
+await anz.set_range("CH3", 2, confirm=True)
+await anz.set_calibration_gas("CH3", 1, "span", 20.9, unit="vol%", confirm=True)
+```
+
 ## Finding analyzers
 
 ```python
@@ -133,6 +148,7 @@ fuji-read COM8 --gas CH1=co2 --gas CH2=co --gas CH3=o2   # identity and one poll
 fuji-read COM8 --all --format json                       # everything, as JSON
 fuji-discover COM8 --addresses 1-31                      # find stations on a port
 fuji-configure dump COM8 --out settings.json             # every setting, by name
+fuji-configure diff COM8 --file settings.json            # what applying it would change
 fuji-read --fixture bench --all                          # the simulated analyzer
 ```
 
