@@ -96,7 +96,9 @@ async def test_unbounded_deadline() -> None:
 async def test_bounded_deadline_counts_down() -> None:
     dl = Deadline.after(10.0, operation="poll")
     assert dl.bounded
-    assert 9.0 < dl.remaining() <= 10.0
+    # uvloop's clock can stand still between the two readings, and (now + 10) - now
+    # can round to a hair over 10 (63.156 + 10 - 63.156 == 10.000000000000007).
+    assert 9.0 < dl.remaining() <= 10.0 + 1e-9
 
 
 @pytest.mark.parametrize("timeout", [-1.0, math.nan, math.inf])
