@@ -16,6 +16,8 @@ import json
 import signal
 import subprocess
 import sys
+import threading
+import time
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as real_version
 from typing import TYPE_CHECKING, Any
@@ -35,9 +37,9 @@ from fujilib import (
     ProtocolKind,
     Sample,
 )
-from fujilib.cli import _common, capture, diag, stream
+from fujilib.cli import _common, _recording, capture, diag, stream
 from fujilib.cli.stream import text_line
-from fujilib.errors import ErrorContext
+from fujilib.errors import ErrorContext, FujiConfigurationError
 from fujilib.registry.channels import ChannelId, Gas
 from fujilib.registry.enums import AlarmState, ErrorCode
 from fujilib.sinks import row_columns
@@ -473,6 +475,163 @@ def test_capture_records_missing_package_versions(monkeypatch: pytest.MonkeyPatc
     found = capture._versions()
     assert found["pyarrow"] is None
     assert found["fujilib"]
+
+
+def test_capture_writes_its_counters_while_it_records(
+    capsys: pytest.CaptureFixture[str], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real = capture._write_json
+    written: list[dict[str, Any]] = []
+
+    async def keep(path: Path, document: dict[str, object]) -> None:
+        await real(path, document)
+        written.append(json.loads(json.dumps(document, default=str)))
+
+    monkeypatch.setattr(capture, "_CHECKPOINT_S", 0.05)
+    monkeypatch.setattr(capture, "_write_json", keep)
+    out = tmp_path / "run.parquet"
+    argv = [*BENCH, *ASSERT, "--rate", "20", "--duration", "0.5", "--out", str(out), "--quiet"]
+    code, _out, _err = run(capsys, capture.main, *argv)
+    assert code == 0
+    checkpoints = [d for d in written if d["state"] == "recording" and d["summary"] is not None]
+    assert checkpoints
+    assert all(d["finished_at"] is None for d in checkpoints)
+    assert checkpoints[-1]["summary"]["polls"] > 0
+    stamps = [d["updated_at"] for d in written]
+    assert stamps == sorted(stamps)
+    assert written[-1]["state"] == "finished"
+    assert not (tmp_path / "run.parquet.meta.json.part").exists()
+
+
+def test_capture_goes_on_when_a_checkpoint_fails(
+    capsys: pytest.CaptureFixture[str], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real = capture._write_json
+
+    async def busy(path: Path, document: dict[str, object]) -> None:
+        if document["state"] == "recording" and document["summary"] is not None:
+            msg = f"cannot write {path}: busy"
+            raise FujiConfigurationError(msg)
+        await real(path, document)
+
+    monkeypatch.setattr(capture, "_CHECKPOINT_S", 0.02)
+    monkeypatch.setattr(capture, "_write_json", busy)
+    out = tmp_path / "run.csv"
+    argv = [*BENCH, *ASSERT, "--rate", "20", "--duration", "0.3", "--out", str(out), "--quiet"]
+    code, _out, err = run(capsys, capture.main, *argv)
+    assert code == 0
+    assert err.count("warning: cannot write") == 1
+    assert "busy; recording goes on" in err
+    document = json.loads(capture.metadata_path(out).read_text(encoding="utf-8"))
+    assert document["state"] == "finished"
+
+
+def test_a_console_that_stops_taking_output_does_not_hold_up_the_recording(
+    capsys: pytest.CaptureFixture[str], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    release = threading.Event()
+
+    class Selected(io.StringIO):
+        """A console window with a selection: every write waits."""
+
+        def write(self, s: str) -> int:
+            _ = release.wait(10)
+            return len(s)
+
+    monkeypatch.setattr(capture, "_PROGRESS_S", 0.02)
+    monkeypatch.setattr(sys, "stderr", Selected())
+    out = tmp_path / "run.csv"
+    started = time.monotonic()
+    try:
+        code, _out, _err = run(
+            capsys,
+            capture.main,
+            *BENCH,
+            *ASSERT,
+            "--rate",
+            "20",
+            "--duration",
+            "0.5",
+            "--out",
+            str(out),
+        )
+    finally:
+        release.set()
+    assert time.monotonic() - started < 5
+    assert code == 0
+    summary = json.loads(capture.metadata_path(out).read_text(encoding="utf-8"))["summary"]
+    assert summary["polls"] + summary["late"] == summary["target_polls"]
+    assert summary["polls"] > summary["late"]
+
+
+# --- Ctrl-Break -------------------------------------------------------------------------------
+
+# Windows' Ctrl-Break; elsewhere a stand-in that is otherwise unused in these tests.
+if sys.platform == "win32":
+    BREAK = signal.SIGBREAK
+else:
+    BREAK = signal.SIGUSR1
+
+
+class Breaking(Interrupting):
+    """Sends this process Ctrl-Break (or its stand-in) during poll ``at``."""
+
+    async def poll(self, names: Sequence[str] | None = None) -> Mapping[str, DeviceResult[Frame]]:
+        self.polls += 1
+        if self.polls == self.at:
+            signal.raise_signal(BREAK)
+        return await PollSourceAdapter.poll(self, names)
+
+
+def test_capture_stops_cleanly_on_ctrl_break(
+    capsys: pytest.CaptureFixture[str], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(_recording, "_CTRL_BREAK", BREAK)
+    monkeypatch.setattr(capture, "PollSourceAdapter", Breaking)
+    before = signal.getsignal(BREAK)
+    out = tmp_path / "run.parquet"
+    code, stdout, err = run(
+        capsys, capture.main, *BENCH, *ASSERT, "--rate", "20", "--out", str(out)
+    )
+    assert code == 0
+    assert "stopped by Ctrl-C" in err
+    assert "polls:" in stdout
+    document = json.loads(capture.metadata_path(out).read_text(encoding="utf-8"))
+    assert document["state"] == "stopped"
+    assert len(read_parquet(out)) == document["summary"]["polls"] >= 2
+    assert signal.getsignal(BREAK) is before
+
+
+def test_ctrl_break_is_left_alone_where_there_is_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(_recording, "_CTRL_BREAK", None)
+    before = signal.getsignal(BREAK)
+    with _recording.ctrl_break_as_ctrl_c():
+        assert signal.getsignal(BREAK) is before
+
+
+def test_ctrl_break_is_left_alone_when_ctrl_c_has_no_handler(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(_recording, "_CTRL_BREAK", BREAK)
+    before = signal.getsignal(BREAK)
+    previous = signal.signal(signal.SIGINT, signal.SIG_IGN)
+    try:
+        with _recording.ctrl_break_as_ctrl_c():
+            assert signal.getsignal(BREAK) is before
+    finally:
+        _ = signal.signal(signal.SIGINT, previous)
+
+
+def test_ctrl_break_calls_the_ctrl_c_handler(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(_recording, "_CTRL_BREAK", BREAK)
+    seen: list[int] = []
+    previous = signal.signal(signal.SIGINT, lambda signum, frame: seen.append(signum))
+    try:
+        with _recording.ctrl_break_as_ctrl_c():
+            signal.raise_signal(BREAK)
+    finally:
+        _ = signal.signal(signal.SIGINT, previous)
+    assert seen == [signal.SIGINT]
 
 
 # --- fuji-diag timing -------------------------------------------------------------------------

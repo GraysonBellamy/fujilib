@@ -15,8 +15,15 @@ Two files are written:
 - ``<out>.meta.json`` (format ``fujilib-capture/1``): what was recorded and
   how: the analyzer's identity and metadata, the arguments, the package
   versions, and, when the recording ends, how it ended and its counters.
-  It is written when the recording starts and again when it ends. A Parquet
-  file carries the starting version in its metadata as ``fujilib.capture``.
+  It is written when the recording starts, every minute while it runs (with
+  the running counters, so a process that is killed still says how far it
+  got), and when it ends; ``updated_at`` says when. Each write replaces the
+  whole file at once. A Parquet file carries the starting version in its
+  metadata as ``fujilib.capture``.
+
+The progress line is written from a worker thread, so a console that stops
+taking output (a selection in a Windows console window, say) pauses the line
+and not the recording.
 
 Existing files are not replaced without ``--force``.
 
@@ -73,6 +80,7 @@ CAPTURE_FORMAT: Final = "fujilib-capture/1"
 
 _SUFFIXES: Final = {".csv": "csv", ".parquet": "parquet", ".pq": "parquet"}
 _PROGRESS_S: Final = 10.0
+_CHECKPOINT_S: Final = 60.0
 
 
 def metadata_path(out: Path) -> Path:
@@ -121,6 +129,7 @@ def _document(
         "analyzer": {**info_report(info), "ranges": ranges_report(info.ranges)} if info else None,
         "metadata": metadata,
         "started_at": datetime.now(UTC).isoformat(),
+        "updated_at": None,
         "finished_at": None,
         "summary": None,
         "error": None,
@@ -128,22 +137,48 @@ def _document(
 
 
 async def _write_json(path: Path, document: dict[str, object]) -> None:
+    """Write ``document`` to ``path``, stamping ``updated_at``; a reader never sees half of it."""
+    document["updated_at"] = datetime.now(UTC).isoformat()
     text = json.dumps(document, indent=2, default=str) + "\n"
+    part = anyio.Path(path.with_name(path.name + ".part"))
     try:
-        _ = await anyio.Path(path).write_text(text, encoding="utf-8")
+        _ = await part.write_text(text, encoding="utf-8")
+        _ = await part.replace(path)
     except OSError as exc:
         msg = f"cannot write {path}: {exc}"
         raise FujiConfigurationError(msg) from exc
+
+
+async def _say(text: str) -> None:
+    """Write to standard error from a worker thread, which a stopped console can hold up."""
+    _ = await anyio.to_thread.run_sync(sys.stderr.write, text, abandon_on_cancel=True)
 
 
 async def _progress(summary: AcquisitionSummary) -> None:
     started = anyio.current_time()
     while True:
         await anyio.sleep(_PROGRESS_S)
-        sys.stderr.write(
+        await _say(
             f"{anyio.current_time() - started:6.0f} s: {summary.samples_emitted} polls, "
             f"{summary.error_samples} failed, {summary.samples_late} late\n"
         )
+
+
+async def _checkpoint(sidecar: Path, document: dict[str, object], state: RecordingState) -> None:
+    """Rewrite the metadata document with the running counters, every ``_CHECKPOINT_S``.
+
+    A failed write does not stop the recording; the first is reported.
+    """
+    reported = False
+    while True:
+        await anyio.sleep(_CHECKPOINT_S)
+        document["summary"] = state.report()
+        try:
+            await _write_json(sidecar, document)
+        except FujiConfigurationError as exc:
+            if not reported:
+                reported = True
+                await _say(f"warning: {exc}; recording goes on\n")
 
 
 def _sink(args: argparse.Namespace, anz: Analyzer, document: dict[str, object]) -> BaseSink:
@@ -188,6 +223,7 @@ async def _capture(args: argparse.Namespace, state: RecordingState) -> int:
                 async with anyio.create_task_group() as tg:
                     if not args.quiet:
                         _ = tg.start_soon(_progress, rec.summary)
+                    _ = tg.start_soon(_checkpoint, sidecar, document, state)
                     _ = await pipe(rec, sink)
                     tg.cancel_scope.cancel()
             ending = "finished"

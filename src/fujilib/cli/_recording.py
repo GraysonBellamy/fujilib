@@ -3,15 +3,20 @@
 Both record until ``--duration`` has passed, or until Ctrl-C. Ctrl-C is how an
 open-ended recording is meant to end, so it is a clean stop: what was
 recorded is written and closed, the summary is printed, and the exit code is
-0. A connection failure ends a recording with exit code 1, unless
-``--reconnect`` asked for the analyzer to be reopened instead.
+0. On Windows, Ctrl-Break stops them the same way; it still works in a
+window whose processes ignore Ctrl-C, which a window opened by a process that
+ignores it passes on to everything started in it. A connection failure ends a
+recording with exit code 1, unless ``--reconnect`` asked for the analyzer to
+be reopened instead.
 """
 
 from __future__ import annotations
 
 import argparse
 import math
+import signal
 import sys
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final
 
@@ -19,7 +24,8 @@ from fujilib.cli._common import run_async_cli
 from fujilib.streaming.recorder import OverflowPolicy, ReconnectPolicy
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+    from collections.abc import Awaitable, Callable, Generator
+    from types import FrameType
 
     from fujilib.devices.analyzer import Analyzer
     from fujilib.devices.session import Session
@@ -29,6 +35,7 @@ __all__ = [
     "RecordingState",
     "add_record_args",
     "check_record_args",
+    "ctrl_break_as_ctrl_c",
     "device_name",
     "interrupted_note",
     "reconnect_policy",
@@ -38,6 +45,9 @@ __all__ = [
 
 #: The fastest rate the commands accept; a poll takes about 0.12 s (design §2.4).
 _MAX_RATE_HZ: Final = 20.0
+
+#: Windows' Ctrl-Break signal; ``None`` where there is none.
+_CTRL_BREAK: Final[int | None] = getattr(signal, "SIGBREAK", None)
 
 
 def _rate(text: str) -> float:
@@ -168,10 +178,39 @@ class RecordingState:
         return summary_report(self.summary, self.session)
 
 
-def run_recording_cli(body: Callable[[], Awaitable[int]], on_interrupt: Callable[[], None]) -> int:
-    """Run a recording command; Ctrl-C stops it cleanly (exit 0) after ``on_interrupt``."""
+@contextmanager
+def ctrl_break_as_ctrl_c() -> Generator[None]:
+    """While the block runs, Ctrl-Break does whatever Ctrl-C does.
+
+    Entered on the event loop, whose runner has installed its Ctrl-C handler by
+    then, so Ctrl-Break cancels the command as Ctrl-C does. Nothing changes
+    where there is no Ctrl-Break, or when Ctrl-C has no handler to share.
+    """
+    on_ctrl_c = signal.getsignal(signal.SIGINT)
+    if _CTRL_BREAK is None or not callable(on_ctrl_c):
+        yield
+        return
+
+    def on_ctrl_break(signum: int, frame: FrameType | None) -> None:
+        del signum
+        on_ctrl_c(signal.SIGINT, frame)
+
+    previous = signal.signal(_CTRL_BREAK, on_ctrl_break)
     try:
-        return run_async_cli(body)
+        yield
+    finally:
+        _ = signal.signal(_CTRL_BREAK, previous)
+
+
+def run_recording_cli(body: Callable[[], Awaitable[int]], on_interrupt: Callable[[], None]) -> int:
+    """Run a recording command; Ctrl-C or Ctrl-Break runs ``on_interrupt`` and exits 0."""
+
+    async def stoppable() -> int:
+        with ctrl_break_as_ctrl_c():
+            return await body()
+
+    try:
+        return run_async_cli(stoppable)
     except KeyboardInterrupt:
         on_interrupt()
         return 0
