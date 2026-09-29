@@ -18,7 +18,18 @@ registry and run `python scripts/gen_register_docs.py`.
   06 write single, 10 write multiple. FC06 reaches only 0000h-009Dh.
 - **Tier** is the safety tier of a write. Every read is `READ_ONLY`, and so is every
   register fujilib never writes.
-- **Limits** are raw, before scaling. **Scaling** says where the decimal point comes from:
+- **What is writable.** Only the reviewed subset of design §5.4: the calibration gases
+  and calibration scope, the response times, output hold and the hold settings, and each
+  channel's range and range method. They are documented, the bench unit does not
+  contradict them, they are not options, and the bench analyzer can test them all.
+  Every other register is read-only, including the documented alarm, schedule, key-lock,
+  averaging, O2-correction, peak-alarm, blowback, measurement-point and reference-gas
+  settings.
+- **Limits** are raw, before scaling. For a writable register they are the limits of a
+  write: the narrower of the two manuals' where they disagree, since the MODBUS manual
+  defers setting ranges to the instruction manual (TN5A1190a p.28). `write` lists the
+  only values a write may use, or its limits in percent of the range's full scale.
+  **Scaling** says where the decimal point comes from:
   `inline` (the two registers after a concentration), `by_range` (the channel and range's
   decimal-point register), `by_alarm_target` (the range of the alarm's target channel),
   or `fixed(n)`. A scaled concentration takes its unit from the same place.
@@ -33,7 +44,7 @@ registry and run `python scripts/gen_register_docs.py`.
 
 | Table | Registers | Writable | Documented | Observed | Inferred | Contested |
 |---|---|---|---|---|---|---|
-| holding | 162 | 146 | 146 | 0 | 4 | 12 |
+| holding | 162 | 52 | 146 | 0 | 4 | 12 |
 | input | 181 | 0 | 153 | 7 | 21 | 0 |
 
 ## Holding registers
@@ -42,263 +53,290 @@ registry and run `python scripts/gen_register_docs.py`.
 
 | Address | Register | Name | Type | FC | Tier | Limits | Scaling | Requires | Evidence | Ref | Description |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| 0000h | 40001 | `calibration_gas.ch1.range1.zero` | uint16 | 03 06 10 | DANGEROUS | 0..9999 | by_range | - | documented | TN5A1190a p.28 | Ch1 range 1 zero calibration gas concentration. |
-| 0001h | 40002 | `calibration_gas.ch1.range1.span` | uint16 | 03 06 10 | DANGEROUS | 0..9999 | by_range | - | documented | TN5A1190a p.28 | Ch1 range 1 span calibration gas concentration. |
-| 0002h | 40003 | `calibration_gas.ch1.range2.zero` | uint16 | 03 06 10 | DANGEROUS | 0..9999 | by_range | - | documented | TN5A1190a p.28 | Ch1 range 2 zero calibration gas concentration. |
-| 0003h | 40004 | `calibration_gas.ch1.range2.span` | uint16 | 03 06 10 | DANGEROUS | 0..9999 | by_range | - | documented | TN5A1190a p.28 | Ch1 range 2 span calibration gas concentration. |
-| 0004h | 40005 | `calibration_gas.ch2.range1.zero` | uint16 | 03 06 10 | DANGEROUS | 0..9999 | by_range | - | documented | TN5A1190a p.28 | Ch2 range 1 zero calibration gas concentration. |
-| 0005h | 40006 | `calibration_gas.ch2.range1.span` | uint16 | 03 06 10 | DANGEROUS | 0..9999 | by_range | - | documented | TN5A1190a p.28 | Ch2 range 1 span calibration gas concentration. |
-| 0006h | 40007 | `calibration_gas.ch2.range2.zero` | uint16 | 03 06 10 | DANGEROUS | 0..9999 | by_range | - | documented | TN5A1190a p.28 | Ch2 range 2 zero calibration gas concentration. |
-| 0007h | 40008 | `calibration_gas.ch2.range2.span` | uint16 | 03 06 10 | DANGEROUS | 0..9999 | by_range | - | documented | TN5A1190a p.28 | Ch2 range 2 span calibration gas concentration. |
-| 0008h | 40009 | `calibration_gas.ch3.range1.zero` | uint16 | 03 06 10 | DANGEROUS | 0..9999 | by_range | - | documented | TN5A1190a p.28 | Ch3 range 1 zero calibration gas concentration. |
-| 0009h | 40010 | `calibration_gas.ch3.range1.span` | uint16 | 03 06 10 | DANGEROUS | 0..9999 | by_range | - | documented | TN5A1190a p.28 | Ch3 range 1 span calibration gas concentration. |
-| 000Ah | 40011 | `calibration_gas.ch3.range2.zero` | uint16 | 03 06 10 | DANGEROUS | 0..9999 | by_range | - | documented | TN5A1190a p.28 | Ch3 range 2 zero calibration gas concentration. |
-| 000Bh | 40012 | `calibration_gas.ch3.range2.span` | uint16 | 03 06 10 | DANGEROUS | 0..9999 | by_range | - | documented | TN5A1190a p.28 | Ch3 range 2 span calibration gas concentration. |
-| 000Ch | 40013 | `calibration_gas.ch4.range1.zero` | uint16 | 03 06 10 | DANGEROUS | 0..9999 | by_range | - | documented | TN5A1190a p.28 | Ch4 range 1 zero calibration gas concentration. |
-| 000Dh | 40014 | `calibration_gas.ch4.range1.span` | uint16 | 03 06 10 | DANGEROUS | 0..9999 | by_range | - | documented | TN5A1190a p.28 | Ch4 range 1 span calibration gas concentration. |
-| 000Eh | 40015 | `calibration_gas.ch4.range2.zero` | uint16 | 03 06 10 | DANGEROUS | 0..9999 | by_range | - | documented | TN5A1190a p.28 | Ch4 range 2 zero calibration gas concentration. |
-| 000Fh | 40016 | `calibration_gas.ch4.range2.span` | uint16 | 03 06 10 | DANGEROUS | 0..9999 | by_range | - | documented | TN5A1190a p.28 | Ch4 range 2 span calibration gas concentration. |
-| 0010h | 40017 | `calibration_gas.ch5.range1.zero` | uint16 | 03 06 10 | DANGEROUS | 0..9999 | by_range | - | documented | TN5A1190a p.28 | Ch5 range 1 zero calibration gas concentration. |
-| 0011h | 40018 | `calibration_gas.ch5.range1.span` | uint16 | 03 06 10 | DANGEROUS | 0..9999 | by_range | - | documented | TN5A1190a p.28 | Ch5 range 1 span calibration gas concentration. |
-| 0012h | 40019 | `calibration_gas.ch5.range2.zero` | uint16 | 03 06 10 | DANGEROUS | 0..9999 | by_range | - | documented | TN5A1190a p.28 | Ch5 range 2 zero calibration gas concentration. |
-| 0013h | 40020 | `calibration_gas.ch5.range2.span` | uint16 | 03 06 10 | DANGEROUS | 0..9999 | by_range | - | documented | TN5A1190a p.28 | Ch5 range 2 span calibration gas concentration. |
+| 0000h | 40001 | `calibration_gas.ch1.range1.zero` | uint16 | 03 06 10 | DANGEROUS | 0..9999; write 0..100 %FS | by_range | - | documented | TN5A1190a p.28 | Ch1 range 1 zero calibration gas concentration. |
+| 0001h | 40002 | `calibration_gas.ch1.range1.span` | uint16 | 03 06 10 | DANGEROUS | 0..9999; write 1..105 %FS | by_range | - | documented | TN5A1190a p.28 | Ch1 range 1 span calibration gas concentration. |
+| 0002h | 40003 | `calibration_gas.ch1.range2.zero` | uint16 | 03 06 10 | DANGEROUS | 0..9999; write 0..100 %FS | by_range | - | documented | TN5A1190a p.28 | Ch1 range 2 zero calibration gas concentration. |
+| 0003h | 40004 | `calibration_gas.ch1.range2.span` | uint16 | 03 06 10 | DANGEROUS | 0..9999; write 1..105 %FS | by_range | - | documented | TN5A1190a p.28 | Ch1 range 2 span calibration gas concentration. |
+| 0004h | 40005 | `calibration_gas.ch2.range1.zero` | uint16 | 03 06 10 | DANGEROUS | 0..9999; write 0..100 %FS | by_range | - | documented | TN5A1190a p.28 | Ch2 range 1 zero calibration gas concentration. |
+| 0005h | 40006 | `calibration_gas.ch2.range1.span` | uint16 | 03 06 10 | DANGEROUS | 0..9999; write 1..105 %FS | by_range | - | documented | TN5A1190a p.28 | Ch2 range 1 span calibration gas concentration. |
+| 0006h | 40007 | `calibration_gas.ch2.range2.zero` | uint16 | 03 06 10 | DANGEROUS | 0..9999; write 0..100 %FS | by_range | - | documented | TN5A1190a p.28 | Ch2 range 2 zero calibration gas concentration. |
+| 0007h | 40008 | `calibration_gas.ch2.range2.span` | uint16 | 03 06 10 | DANGEROUS | 0..9999; write 1..105 %FS | by_range | - | documented | TN5A1190a p.28 | Ch2 range 2 span calibration gas concentration. |
+| 0008h | 40009 | `calibration_gas.ch3.range1.zero` | uint16 | 03 06 10 | DANGEROUS | 0..9999; write 0..100 %FS | by_range | - | documented | TN5A1190a p.28 | Ch3 range 1 zero calibration gas concentration. |
+| 0009h | 40010 | `calibration_gas.ch3.range1.span` | uint16 | 03 06 10 | DANGEROUS | 0..9999; write 1..105 %FS | by_range | - | documented | TN5A1190a p.28 | Ch3 range 1 span calibration gas concentration. |
+| 000Ah | 40011 | `calibration_gas.ch3.range2.zero` | uint16 | 03 06 10 | DANGEROUS | 0..9999; write 0..100 %FS | by_range | - | documented | TN5A1190a p.28 | Ch3 range 2 zero calibration gas concentration. |
+| 000Bh | 40012 | `calibration_gas.ch3.range2.span` | uint16 | 03 06 10 | DANGEROUS | 0..9999; write 1..105 %FS | by_range | - | documented | TN5A1190a p.28 | Ch3 range 2 span calibration gas concentration. |
+| 000Ch | 40013 | `calibration_gas.ch4.range1.zero` | uint16 | 03 06 10 | DANGEROUS | 0..9999; write 0..100 %FS | by_range | - | documented | TN5A1190a p.28 | Ch4 range 1 zero calibration gas concentration. |
+| 000Dh | 40014 | `calibration_gas.ch4.range1.span` | uint16 | 03 06 10 | DANGEROUS | 0..9999; write 1..105 %FS | by_range | - | documented | TN5A1190a p.28 | Ch4 range 1 span calibration gas concentration. |
+| 000Eh | 40015 | `calibration_gas.ch4.range2.zero` | uint16 | 03 06 10 | DANGEROUS | 0..9999; write 0..100 %FS | by_range | - | documented | TN5A1190a p.28 | Ch4 range 2 zero calibration gas concentration. |
+| 000Fh | 40016 | `calibration_gas.ch4.range2.span` | uint16 | 03 06 10 | DANGEROUS | 0..9999; write 1..105 %FS | by_range | - | documented | TN5A1190a p.28 | Ch4 range 2 span calibration gas concentration. |
+| 0010h | 40017 | `calibration_gas.ch5.range1.zero` | uint16 | 03 06 10 | DANGEROUS | 0..9999; write 0..100 %FS | by_range | - | documented | TN5A1190a p.28 | Ch5 range 1 zero calibration gas concentration. |
+| 0011h | 40018 | `calibration_gas.ch5.range1.span` | uint16 | 03 06 10 | DANGEROUS | 0..9999; write 1..105 %FS | by_range | - | documented | TN5A1190a p.28 | Ch5 range 1 span calibration gas concentration. |
+| 0012h | 40019 | `calibration_gas.ch5.range2.zero` | uint16 | 03 06 10 | DANGEROUS | 0..9999; write 0..100 %FS | by_range | - | documented | TN5A1190a p.28 | Ch5 range 2 zero calibration gas concentration. |
+| 0013h | 40020 | `calibration_gas.ch5.range2.span` | uint16 | 03 06 10 | DANGEROUS | 0..9999; write 1..105 %FS | by_range | - | documented | TN5A1190a p.28 | Ch5 range 2 span calibration gas concentration. |
+
+- `calibration_gas.ch1.range1.zero`, `calibration_gas.ch1.range1.span`, `calibration_gas.ch1.range2.zero`, `calibration_gas.ch1.range2.span`, `calibration_gas.ch2.range1.zero`, `calibration_gas.ch2.range1.span`, `calibration_gas.ch2.range2.zero`, `calibration_gas.ch2.range2.span`, `calibration_gas.ch3.range1.zero`, `calibration_gas.ch3.range1.span`, `calibration_gas.ch3.range2.zero`, `calibration_gas.ch3.range2.span`, `calibration_gas.ch4.range1.zero`, `calibration_gas.ch4.range1.span`, `calibration_gas.ch4.range2.zero`, `calibration_gas.ch4.range2.span`, `calibration_gas.ch5.range1.zero`, `calibration_gas.ch5.range1.span`, `calibration_gas.ch5.range2.zero`, `calibration_gas.ch5.range2.span`: Takes effect at the next calibration, manual or automatic (ZPA p.42). Writes are limited to 0-100 %FS for zero gas and 1-105 %FS for span gas: the ZPA manual gives 1-105 %FS for span gas and no zero-gas limit for NDIR or built-in O2 (ZPA p.42). Its separate limits for external zirconia and reverse-range O2 are not modelled, so some legal values there are refused.
 
 ### Auto calibration
 
 | Address | Register | Name | Type | FC | Tier | Limits | Scaling | Requires | Evidence | Ref | Description |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| 0014h | 40021 | `auto_calibration.ch1.included` | bool | 03 06 10 | DANGEROUS | 0..1 | - | AUTO_CALIBRATION | documented | TN5A1190a p.29 | Whether auto calibration calibrates Ch1. |
-| 0015h | 40022 | `auto_calibration.ch2.included` | bool | 03 06 10 | DANGEROUS | 0..1 | - | AUTO_CALIBRATION | documented | TN5A1190a p.29 | Whether auto calibration calibrates Ch2. |
-| 0016h | 40023 | `auto_calibration.ch3.included` | bool | 03 06 10 | DANGEROUS | 0..1 | - | AUTO_CALIBRATION | documented | TN5A1190a p.29 | Whether auto calibration calibrates Ch3. |
-| 0017h | 40024 | `auto_calibration.ch4.included` | bool | 03 06 10 | DANGEROUS | 0..1 | - | AUTO_CALIBRATION | documented | TN5A1190a p.29 | Whether auto calibration calibrates Ch4. |
-| 0018h | 40025 | `auto_calibration.ch5.included` | bool | 03 06 10 | DANGEROUS | 0..1 | - | AUTO_CALIBRATION | documented | TN5A1190a p.29 | Whether auto calibration calibrates Ch5. |
-| 0042h | 40067 | `auto_calibration.start_day` | DayOfWeek | 03 06 10 | DANGEROUS | 0..6 | - | AUTO_CALIBRATION | documented | TN5A1190a p.30 | Start day of week. |
+| 0014h | 40021 | `auto_calibration.ch1.included` | bool | 03 | READ_ONLY | 0..1 | - | AUTO_CALIBRATION | documented | TN5A1190a p.29 | Whether auto calibration and auto zero calibration calibrate Ch1. |
+| 0015h | 40022 | `auto_calibration.ch2.included` | bool | 03 | READ_ONLY | 0..1 | - | AUTO_CALIBRATION | documented | TN5A1190a p.29 | Whether auto calibration and auto zero calibration calibrate Ch2. |
+| 0016h | 40023 | `auto_calibration.ch3.included` | bool | 03 | READ_ONLY | 0..1 | - | AUTO_CALIBRATION | documented | TN5A1190a p.29 | Whether auto calibration and auto zero calibration calibrate Ch3. |
+| 0017h | 40024 | `auto_calibration.ch4.included` | bool | 03 | READ_ONLY | 0..1 | - | AUTO_CALIBRATION | documented | TN5A1190a p.29 | Whether auto calibration and auto zero calibration calibrate Ch4. |
+| 0018h | 40025 | `auto_calibration.ch5.included` | bool | 03 | READ_ONLY | 0..1 | - | AUTO_CALIBRATION | documented | TN5A1190a p.29 | Whether auto calibration and auto zero calibration calibrate Ch5. |
+| 0042h | 40067 | `auto_calibration.start_day` | DayOfWeek | 03 | READ_ONLY | 0..6 | - | AUTO_CALIBRATION | documented | TN5A1190a p.30 | Start day of week. |
 | 0043h | 40068 | `auto_calibration.start_hour` | uint16 | 03 | READ_ONLY | - | - | AUTO_CALIBRATION | contested | TN5A1190a p.30 | Start hour, raw. |
 | 0044h | 40069 | `auto_calibration.start_minute` | uint16 | 03 | READ_ONLY | - | - | AUTO_CALIBRATION | contested | TN5A1190a p.30 | Start minute, raw. |
-| 0045h | 40070 | `auto_calibration.cycle` | uint16 | 03 06 10 | DANGEROUS | - | - | AUTO_CALIBRATION | documented | TN5A1190a p.30 | Auto calibration cycle, in the cycle unit. |
-| 0046h | 40071 | `auto_calibration.cycle_unit` | ScheduleCycleUnit | 03 06 10 | DANGEROUS | 0..1 | - | AUTO_CALIBRATION | documented | TN5A1190a p.30 | Auto calibration cycle unit. |
-| 0047h | 40072 | `auto_calibration.enabled` | bool | 03 06 10 | DANGEROUS | 0..1 | - | AUTO_CALIBRATION | documented | TN5A1190a p.30 | Auto calibration on/off. |
-| 0073h | 40116 | `auto_calibration.ch1.range` | RangeIndex | 03 06 10 | DANGEROUS | 0..1 | - | AUTO_CALIBRATION | documented | TN5A1190a p.31 | Range Ch1 is auto-calibrated on. |
-| 0074h | 40117 | `auto_calibration.ch2.range` | RangeIndex | 03 06 10 | DANGEROUS | 0..1 | - | AUTO_CALIBRATION | documented | TN5A1190a p.31 | Range Ch2 is auto-calibrated on. |
-| 0075h | 40118 | `auto_calibration.ch3.range` | RangeIndex | 03 06 10 | DANGEROUS | 0..1 | - | AUTO_CALIBRATION | documented | TN5A1190a p.31 | Range Ch3 is auto-calibrated on. |
-| 0076h | 40119 | `auto_calibration.ch4.range` | RangeIndex | 03 06 10 | DANGEROUS | 0..1 | - | AUTO_CALIBRATION | documented | TN5A1190a p.31 | Range Ch4 is auto-calibrated on. |
-| 0077h | 40120 | `auto_calibration.ch5.range` | RangeIndex | 03 06 10 | DANGEROUS | 0..1 | - | AUTO_CALIBRATION | documented | TN5A1190a p.31 | Range Ch5 is auto-calibrated on. |
-| 0084h | 40133 | `auto_calibration.flow_time1` | uint16 | 03 06 10 | DANGEROUS | 60..900 | s | AUTO_CALIBRATION | documented | TN5A1190a p.32 | Auto calibration gas flow time 1. |
-| 0085h | 40134 | `auto_calibration.flow_time2` | uint16 | 03 06 10 | DANGEROUS | 60..900 | s | AUTO_CALIBRATION | documented | TN5A1190a p.32 | Auto calibration gas flow time 2. |
-| 0086h | 40135 | `auto_calibration.flow_time3` | uint16 | 03 06 10 | DANGEROUS | 60..900 | s | AUTO_CALIBRATION | documented | TN5A1190a p.32 | Auto calibration gas flow time 3. |
-| 0087h | 40136 | `auto_calibration.flow_time4` | uint16 | 03 06 10 | DANGEROUS | 60..900 | s | AUTO_CALIBRATION | documented | TN5A1190a p.32 | Auto calibration gas flow time 4. |
-| 0088h | 40137 | `auto_calibration.flow_time5` | uint16 | 03 06 10 | DANGEROUS | 60..900 | s | AUTO_CALIBRATION | documented | TN5A1190a p.32 | Auto calibration gas flow time 5. |
-| 0089h | 40138 | `auto_calibration.flow_time6` | uint16 | 03 06 10 | DANGEROUS | 60..900 | s | AUTO_CALIBRATION | documented | TN5A1190a p.32 | Auto calibration gas flow time 6. |
-| 008Ah | 40139 | `auto_calibration.flow_time7` | uint16 | 03 06 10 | DANGEROUS | 60..900 | s | AUTO_CALIBRATION | documented | TN5A1190a p.32 | Auto calibration gas flow time 7. |
+| 0045h | 40070 | `auto_calibration.cycle` | uint16 | 03 | READ_ONLY | - | - | AUTO_CALIBRATION | documented | TN5A1190a p.30 | Auto calibration cycle, in the cycle unit. |
+| 0046h | 40071 | `auto_calibration.cycle_unit` | ScheduleCycleUnit | 03 | READ_ONLY | 0..1 | - | AUTO_CALIBRATION | documented | TN5A1190a p.30 | Auto calibration cycle unit. |
+| 0047h | 40072 | `auto_calibration.enabled` | bool | 03 | READ_ONLY | 0..1 | - | AUTO_CALIBRATION | documented | TN5A1190a p.30 | Auto calibration on/off. |
+| 0073h | 40116 | `auto_calibration.ch1.range` | RangeIndex | 03 | READ_ONLY | 0..1 | - | AUTO_CALIBRATION | documented | TN5A1190a p.31 | Range Ch1 is calibrated on by auto calibration and auto zero calibration. |
+| 0074h | 40117 | `auto_calibration.ch2.range` | RangeIndex | 03 | READ_ONLY | 0..1 | - | AUTO_CALIBRATION | documented | TN5A1190a p.31 | Range Ch2 is calibrated on by auto calibration and auto zero calibration. |
+| 0075h | 40118 | `auto_calibration.ch3.range` | RangeIndex | 03 | READ_ONLY | 0..1 | - | AUTO_CALIBRATION | documented | TN5A1190a p.31 | Range Ch3 is calibrated on by auto calibration and auto zero calibration. |
+| 0076h | 40119 | `auto_calibration.ch4.range` | RangeIndex | 03 | READ_ONLY | 0..1 | - | AUTO_CALIBRATION | documented | TN5A1190a p.31 | Range Ch4 is calibrated on by auto calibration and auto zero calibration. |
+| 0077h | 40120 | `auto_calibration.ch5.range` | RangeIndex | 03 | READ_ONLY | 0..1 | - | AUTO_CALIBRATION | documented | TN5A1190a p.31 | Range Ch5 is calibrated on by auto calibration and auto zero calibration. |
+| 0084h | 40133 | `auto_calibration.flow_time1` | uint16 | 03 | READ_ONLY | 60..900 | s | AUTO_CALIBRATION | documented | TN5A1190a p.32 | Auto calibration gas flow time 1. |
+| 0085h | 40134 | `auto_calibration.flow_time2` | uint16 | 03 | READ_ONLY | 60..900 | s | AUTO_CALIBRATION | documented | TN5A1190a p.32 | Auto calibration gas flow time 2. |
+| 0086h | 40135 | `auto_calibration.flow_time3` | uint16 | 03 | READ_ONLY | 60..900 | s | AUTO_CALIBRATION | documented | TN5A1190a p.32 | Auto calibration gas flow time 3. |
+| 0087h | 40136 | `auto_calibration.flow_time4` | uint16 | 03 | READ_ONLY | 60..900 | s | AUTO_CALIBRATION | documented | TN5A1190a p.32 | Auto calibration gas flow time 4. |
+| 0088h | 40137 | `auto_calibration.flow_time5` | uint16 | 03 | READ_ONLY | 60..900 | s | AUTO_CALIBRATION | documented | TN5A1190a p.32 | Auto calibration gas flow time 5. |
+| 0089h | 40138 | `auto_calibration.flow_time6` | uint16 | 03 | READ_ONLY | 60..900 | s | AUTO_CALIBRATION | documented | TN5A1190a p.32 | Auto calibration gas flow time 6. |
+| 008Ah | 40139 | `auto_calibration.flow_time7` | uint16 | 03 | READ_ONLY | 60..900 | s | AUTO_CALIBRATION | documented | TN5A1190a p.32 | Auto calibration gas flow time 7. |
 
+- `auto_calibration.ch1.included`, `auto_calibration.ch2.included`, `auto_calibration.ch3.included`, `auto_calibration.ch4.included`, `auto_calibration.ch5.included`: The same list chooses the channels of auto zero calibration (ZPA p.59). Their zero is done together, their span one after another from Ch1 (ZPA p.47).
 - `auto_calibration.start_hour`, `auto_calibration.start_minute`: The manual says BCD (00h-23h / 00h-59h). The bench unit reads 0x000C, which is not BCD, in all three schedules, so the encoding is unconfirmed and the value is kept raw (design §2.6).
 - `auto_calibration.cycle`: No limits in the MODBUS manual; the ZPA manual gives 1-99 h or 1-40 days (ZPA p.55, p.93).
-- `auto_calibration.flow_time1`, `auto_calibration.flow_time2`, `auto_calibration.flow_time3`, `auto_calibration.flow_time4`, `auto_calibration.flow_time5`, `auto_calibration.flow_time6`, `auto_calibration.flow_time7`: Which gas each time belongs to is not stated. The ZPA flow-time screen suggests 1 zero, 2-6 Ch1-Ch5 span, 7 hold extension (inferred, ZPA p.55).
+- `auto_calibration.enabled`: Switch it off before changing the schedule (ZPA p.53). A schedule resumes after a power failure at its next start time (ZPA p.55).
+- `auto_calibration.ch1.range`, `auto_calibration.ch2.range`, `auto_calibration.ch3.range`, `auto_calibration.ch4.range`, `auto_calibration.ch5.range`: The channel switches to this range for the calibration and back afterwards, so the current range can change during one (ZPA p.46).
+- `auto_calibration.flow_time1`, `auto_calibration.flow_time2`, `auto_calibration.flow_time3`, `auto_calibration.flow_time4`, `auto_calibration.flow_time5`, `auto_calibration.flow_time6`, `auto_calibration.flow_time7`: Which gas each time belongs to is not stated. The ZPA flow-time screen suggests 1 zero, 2-6 Ch1-Ch5 span, 7 the hold extension after calibration (inferred, ZPA p.31, p.54-55). Each should be at least five times the channel's response time (ZPA p.54).
 
 ### Calibration scope
 
 | Address | Register | Name | Type | FC | Tier | Limits | Scaling | Requires | Evidence | Ref | Description |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| 0019h | 40026 | `calibration.ch1.zero_mode` | ZeroCalibrationMode | 03 06 10 | DANGEROUS | 0..1 | - | - | documented | TN5A1190a p.29 | Ch1 manual zero: each channel, or every channel at once. |
-| 001Ah | 40027 | `calibration.ch2.zero_mode` | ZeroCalibrationMode | 03 06 10 | DANGEROUS | 0..1 | - | - | documented | TN5A1190a p.29 | Ch2 manual zero: each channel, or every channel at once. |
-| 001Bh | 40028 | `calibration.ch3.zero_mode` | ZeroCalibrationMode | 03 06 10 | DANGEROUS | 0..1 | - | - | documented | TN5A1190a p.29 | Ch3 manual zero: each channel, or every channel at once. |
-| 001Ch | 40029 | `calibration.ch4.zero_mode` | ZeroCalibrationMode | 03 06 10 | DANGEROUS | 0..1 | - | - | documented | TN5A1190a p.29 | Ch4 manual zero: each channel, or every channel at once. |
-| 001Dh | 40030 | `calibration.ch5.zero_mode` | ZeroCalibrationMode | 03 06 10 | DANGEROUS | 0..1 | - | - | documented | TN5A1190a p.29 | Ch5 manual zero: each channel, or every channel at once. |
-| 001Eh | 40031 | `calibration.ch1.range_mode` | CalibrationRangeMode | 03 06 10 | DANGEROUS | 0..1 | - | - | documented | TN5A1190a p.29 | Ch1 calibration adjusts the current range, or both ranges. |
-| 001Fh | 40032 | `calibration.ch2.range_mode` | CalibrationRangeMode | 03 06 10 | DANGEROUS | 0..1 | - | - | documented | TN5A1190a p.29 | Ch2 calibration adjusts the current range, or both ranges. |
-| 0020h | 40033 | `calibration.ch3.range_mode` | CalibrationRangeMode | 03 06 10 | DANGEROUS | 0..1 | - | - | documented | TN5A1190a p.29 | Ch3 calibration adjusts the current range, or both ranges. |
-| 0021h | 40034 | `calibration.ch4.range_mode` | CalibrationRangeMode | 03 06 10 | DANGEROUS | 0..1 | - | - | documented | TN5A1190a p.29 | Ch4 calibration adjusts the current range, or both ranges. |
-| 0022h | 40035 | `calibration.ch5.range_mode` | CalibrationRangeMode | 03 06 10 | DANGEROUS | 0..1 | - | - | documented | TN5A1190a p.29 | Ch5 calibration adjusts the current range, or both ranges. |
+| 0019h | 40026 | `calibration.ch1.zero_mode` | ZeroCalibrationMode | 03 06 10 | DANGEROUS | 0..1 | - | - | documented | TN5A1190a p.29 | Ch1 manual zero at the panel: alone, or with every 'at once' channel. |
+| 001Ah | 40027 | `calibration.ch2.zero_mode` | ZeroCalibrationMode | 03 06 10 | DANGEROUS | 0..1 | - | - | documented | TN5A1190a p.29 | Ch2 manual zero at the panel: alone, or with every 'at once' channel. |
+| 001Bh | 40028 | `calibration.ch3.zero_mode` | ZeroCalibrationMode | 03 06 10 | DANGEROUS | 0..1 | - | - | documented | TN5A1190a p.29 | Ch3 manual zero at the panel: alone, or with every 'at once' channel. |
+| 001Ch | 40029 | `calibration.ch4.zero_mode` | ZeroCalibrationMode | 03 06 10 | DANGEROUS | 0..1 | - | - | documented | TN5A1190a p.29 | Ch4 manual zero at the panel: alone, or with every 'at once' channel. |
+| 001Dh | 40030 | `calibration.ch5.zero_mode` | ZeroCalibrationMode | 03 06 10 | DANGEROUS | 0..1 | - | - | documented | TN5A1190a p.29 | Ch5 manual zero at the panel: alone, or with every 'at once' channel. |
+| 001Eh | 40031 | `calibration.ch1.range_mode` | CalibrationRangeMode | 03 06 10 | DANGEROUS | 0..1 | - | - | documented | TN5A1190a p.29 | Ch1 calibration, manual or automatic, adjusts the current range or both. |
+| 001Fh | 40032 | `calibration.ch2.range_mode` | CalibrationRangeMode | 03 06 10 | DANGEROUS | 0..1 | - | - | documented | TN5A1190a p.29 | Ch2 calibration, manual or automatic, adjusts the current range or both. |
+| 0020h | 40033 | `calibration.ch3.range_mode` | CalibrationRangeMode | 03 06 10 | DANGEROUS | 0..1 | - | - | documented | TN5A1190a p.29 | Ch3 calibration, manual or automatic, adjusts the current range or both. |
+| 0021h | 40034 | `calibration.ch4.range_mode` | CalibrationRangeMode | 03 06 10 | DANGEROUS | 0..1 | - | - | documented | TN5A1190a p.29 | Ch4 calibration, manual or automatic, adjusts the current range or both. |
+| 0022h | 40035 | `calibration.ch5.range_mode` | CalibrationRangeMode | 03 06 10 | DANGEROUS | 0..1 | - | - | documented | TN5A1190a p.29 | Ch5 calibration, manual or automatic, adjusts the current range or both. |
+
+- `calibration.ch1.zero_mode`, `calibration.ch2.zero_mode`, `calibration.ch3.zero_mode`, `calibration.ch4.zero_mode`, `calibration.ch5.zero_mode`: Affects only a manual zero started at the panel. Auto calibration and auto zero calibration zero every enabled channel together whatever it says (ZPA p.47).
+- `calibration.ch1.range_mode`, `calibration.ch2.range_mode`, `calibration.ch3.range_mode`, `calibration.ch4.range_mode`, `calibration.ch5.range_mode`: 'Both' calibrates range 1 and range 2 together (ZPA p.45).
 
 ### Alarms
 
 | Address | Register | Name | Type | FC | Tier | Limits | Scaling | Requires | Evidence | Ref | Description |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| 0023h | 40036 | `alarm1.range1.high` | uint16 | 03 06 10 | PERSISTENT | 0..9999 | by_alarm_target | ALARMS | documented | TN5A1190a p.29 | Alarm 1 range 1 high limit. |
-| 0024h | 40037 | `alarm1.range1.low` | uint16 | 03 06 10 | PERSISTENT | 0..9999 | by_alarm_target | ALARMS | documented | TN5A1190a p.29 | Alarm 1 range 1 low limit. |
-| 0025h | 40038 | `alarm1.range2.high` | uint16 | 03 06 10 | PERSISTENT | 0..9999 | by_alarm_target | ALARMS | documented | TN5A1190a p.29 | Alarm 1 range 2 high limit. |
-| 0026h | 40039 | `alarm1.range2.low` | uint16 | 03 06 10 | PERSISTENT | 0..9999 | by_alarm_target | ALARMS | documented | TN5A1190a p.29 | Alarm 1 range 2 low limit. |
-| 0027h | 40040 | `alarm2.range1.high` | uint16 | 03 06 10 | PERSISTENT | 0..9999 | by_alarm_target | ALARMS | documented | TN5A1190a p.29 | Alarm 2 range 1 high limit. |
-| 0028h | 40041 | `alarm2.range1.low` | uint16 | 03 06 10 | PERSISTENT | 0..9999 | by_alarm_target | ALARMS | documented | TN5A1190a p.29 | Alarm 2 range 1 low limit. |
-| 0029h | 40042 | `alarm2.range2.high` | uint16 | 03 06 10 | PERSISTENT | 0..9999 | by_alarm_target | ALARMS | documented | TN5A1190a p.29 | Alarm 2 range 2 high limit. |
-| 002Ah | 40043 | `alarm2.range2.low` | uint16 | 03 06 10 | PERSISTENT | 0..9999 | by_alarm_target | ALARMS | documented | TN5A1190a p.29 | Alarm 2 range 2 low limit. |
-| 002Bh | 40044 | `alarm3.range1.high` | uint16 | 03 06 10 | PERSISTENT | 0..9999 | by_alarm_target | ALARMS | documented | TN5A1190a p.29 | Alarm 3 range 1 high limit. |
-| 002Ch | 40045 | `alarm3.range1.low` | uint16 | 03 06 10 | PERSISTENT | 0..9999 | by_alarm_target | ALARMS | documented | TN5A1190a p.29 | Alarm 3 range 1 low limit. |
-| 002Dh | 40046 | `alarm3.range2.high` | uint16 | 03 06 10 | PERSISTENT | 0..9999 | by_alarm_target | ALARMS | documented | TN5A1190a p.29 | Alarm 3 range 2 high limit. |
-| 002Eh | 40047 | `alarm3.range2.low` | uint16 | 03 06 10 | PERSISTENT | 0..9999 | by_alarm_target | ALARMS | documented | TN5A1190a p.29 | Alarm 3 range 2 low limit. |
-| 002Fh | 40048 | `alarm4.range1.high` | uint16 | 03 06 10 | PERSISTENT | 0..9999 | by_alarm_target | ALARMS | documented | TN5A1190a p.29 | Alarm 4 range 1 high limit. |
-| 0030h | 40049 | `alarm4.range1.low` | uint16 | 03 06 10 | PERSISTENT | 0..9999 | by_alarm_target | ALARMS | documented | TN5A1190a p.29 | Alarm 4 range 1 low limit. |
-| 0031h | 40050 | `alarm4.range2.high` | uint16 | 03 06 10 | PERSISTENT | 0..9999 | by_alarm_target | ALARMS | documented | TN5A1190a p.29 | Alarm 4 range 2 high limit. |
-| 0032h | 40051 | `alarm4.range2.low` | uint16 | 03 06 10 | PERSISTENT | 0..9999 | by_alarm_target | ALARMS | documented | TN5A1190a p.29 | Alarm 4 range 2 low limit. |
-| 0033h | 40052 | `alarm5.range1.high` | uint16 | 03 06 10 | PERSISTENT | 0..9999 | by_alarm_target | ALARMS | documented | TN5A1190a p.29 | Alarm 5 range 1 high limit. |
-| 0034h | 40053 | `alarm5.range1.low` | uint16 | 03 06 10 | PERSISTENT | 0..9999 | by_alarm_target | ALARMS | documented | TN5A1190a p.29 | Alarm 5 range 1 low limit. |
-| 0035h | 40054 | `alarm5.range2.high` | uint16 | 03 06 10 | PERSISTENT | 0..9999 | by_alarm_target | ALARMS | documented | TN5A1190a p.29 | Alarm 5 range 2 high limit. |
-| 0036h | 40055 | `alarm5.range2.low` | uint16 | 03 06 10 | PERSISTENT | 0..9999 | by_alarm_target | ALARMS | documented | TN5A1190a p.29 | Alarm 5 range 2 low limit. |
-| 0037h | 40056 | `alarm1.mode` | AlarmMode | 03 06 10 | PERSISTENT | 0..4 | - | ALARMS | documented | TN5A1190a p.30 | Alarm 1 mode. |
-| 0038h | 40057 | `alarm2.mode` | AlarmMode | 03 06 10 | PERSISTENT | 0..4 | - | ALARMS | documented | TN5A1190a p.30 | Alarm 2 mode. |
-| 0039h | 40058 | `alarm3.mode` | AlarmMode | 03 06 10 | PERSISTENT | 0..4 | - | ALARMS | documented | TN5A1190a p.30 | Alarm 3 mode. |
-| 003Ah | 40059 | `alarm4.mode` | AlarmMode | 03 06 10 | PERSISTENT | 0..4 | - | ALARMS | documented | TN5A1190a p.30 | Alarm 4 mode. |
-| 003Bh | 40060 | `alarm5.mode` | AlarmMode | 03 06 10 | PERSISTENT | 0..4 | - | ALARMS | documented | TN5A1190a p.30 | Alarm 5 mode. |
-| 003Ch | 40061 | `alarm1.enabled` | bool | 03 06 10 | PERSISTENT | 0..1 | - | ALARMS | documented | TN5A1190a p.30 | Alarm 1 on/off. |
-| 003Dh | 40062 | `alarm2.enabled` | bool | 03 06 10 | PERSISTENT | 0..1 | - | ALARMS | documented | TN5A1190a p.30 | Alarm 2 on/off. |
-| 003Eh | 40063 | `alarm3.enabled` | bool | 03 06 10 | PERSISTENT | 0..1 | - | ALARMS | documented | TN5A1190a p.30 | Alarm 3 on/off. |
-| 003Fh | 40064 | `alarm4.enabled` | bool | 03 06 10 | PERSISTENT | 0..1 | - | ALARMS | documented | TN5A1190a p.30 | Alarm 4 on/off. |
-| 0040h | 40065 | `alarm5.enabled` | bool | 03 06 10 | PERSISTENT | 0..1 | - | ALARMS | documented | TN5A1190a p.30 | Alarm 5 on/off. |
-| 0041h | 40066 | `alarm.hysteresis` | uint16 | 03 06 10 | PERSISTENT | 0..20 | %FS | ALARMS | documented | TN5A1190a p.30 | Alarm hysteresis, common to every alarm. |
+| 0023h | 40036 | `alarm1.range1.high` | uint16 | 03 | READ_ONLY | 0..9999 | by_alarm_target | ALARMS | documented | TN5A1190a p.29 | Alarm 1 range 1 high limit. |
+| 0024h | 40037 | `alarm1.range1.low` | uint16 | 03 | READ_ONLY | 0..9999 | by_alarm_target | ALARMS | documented | TN5A1190a p.29 | Alarm 1 range 1 low limit. |
+| 0025h | 40038 | `alarm1.range2.high` | uint16 | 03 | READ_ONLY | 0..9999 | by_alarm_target | ALARMS | documented | TN5A1190a p.29 | Alarm 1 range 2 high limit. |
+| 0026h | 40039 | `alarm1.range2.low` | uint16 | 03 | READ_ONLY | 0..9999 | by_alarm_target | ALARMS | documented | TN5A1190a p.29 | Alarm 1 range 2 low limit. |
+| 0027h | 40040 | `alarm2.range1.high` | uint16 | 03 | READ_ONLY | 0..9999 | by_alarm_target | ALARMS | documented | TN5A1190a p.29 | Alarm 2 range 1 high limit. |
+| 0028h | 40041 | `alarm2.range1.low` | uint16 | 03 | READ_ONLY | 0..9999 | by_alarm_target | ALARMS | documented | TN5A1190a p.29 | Alarm 2 range 1 low limit. |
+| 0029h | 40042 | `alarm2.range2.high` | uint16 | 03 | READ_ONLY | 0..9999 | by_alarm_target | ALARMS | documented | TN5A1190a p.29 | Alarm 2 range 2 high limit. |
+| 002Ah | 40043 | `alarm2.range2.low` | uint16 | 03 | READ_ONLY | 0..9999 | by_alarm_target | ALARMS | documented | TN5A1190a p.29 | Alarm 2 range 2 low limit. |
+| 002Bh | 40044 | `alarm3.range1.high` | uint16 | 03 | READ_ONLY | 0..9999 | by_alarm_target | ALARMS | documented | TN5A1190a p.29 | Alarm 3 range 1 high limit. |
+| 002Ch | 40045 | `alarm3.range1.low` | uint16 | 03 | READ_ONLY | 0..9999 | by_alarm_target | ALARMS | documented | TN5A1190a p.29 | Alarm 3 range 1 low limit. |
+| 002Dh | 40046 | `alarm3.range2.high` | uint16 | 03 | READ_ONLY | 0..9999 | by_alarm_target | ALARMS | documented | TN5A1190a p.29 | Alarm 3 range 2 high limit. |
+| 002Eh | 40047 | `alarm3.range2.low` | uint16 | 03 | READ_ONLY | 0..9999 | by_alarm_target | ALARMS | documented | TN5A1190a p.29 | Alarm 3 range 2 low limit. |
+| 002Fh | 40048 | `alarm4.range1.high` | uint16 | 03 | READ_ONLY | 0..9999 | by_alarm_target | ALARMS | documented | TN5A1190a p.29 | Alarm 4 range 1 high limit. |
+| 0030h | 40049 | `alarm4.range1.low` | uint16 | 03 | READ_ONLY | 0..9999 | by_alarm_target | ALARMS | documented | TN5A1190a p.29 | Alarm 4 range 1 low limit. |
+| 0031h | 40050 | `alarm4.range2.high` | uint16 | 03 | READ_ONLY | 0..9999 | by_alarm_target | ALARMS | documented | TN5A1190a p.29 | Alarm 4 range 2 high limit. |
+| 0032h | 40051 | `alarm4.range2.low` | uint16 | 03 | READ_ONLY | 0..9999 | by_alarm_target | ALARMS | documented | TN5A1190a p.29 | Alarm 4 range 2 low limit. |
+| 0033h | 40052 | `alarm5.range1.high` | uint16 | 03 | READ_ONLY | 0..9999 | by_alarm_target | ALARMS | documented | TN5A1190a p.29 | Alarm 5 range 1 high limit. |
+| 0034h | 40053 | `alarm5.range1.low` | uint16 | 03 | READ_ONLY | 0..9999 | by_alarm_target | ALARMS | documented | TN5A1190a p.29 | Alarm 5 range 1 low limit. |
+| 0035h | 40054 | `alarm5.range2.high` | uint16 | 03 | READ_ONLY | 0..9999 | by_alarm_target | ALARMS | documented | TN5A1190a p.29 | Alarm 5 range 2 high limit. |
+| 0036h | 40055 | `alarm5.range2.low` | uint16 | 03 | READ_ONLY | 0..9999 | by_alarm_target | ALARMS | documented | TN5A1190a p.29 | Alarm 5 range 2 low limit. |
+| 0037h | 40056 | `alarm1.mode` | AlarmMode | 03 | READ_ONLY | 0..4 | - | ALARMS | documented | TN5A1190a p.30 | Alarm 1 mode. |
+| 0038h | 40057 | `alarm2.mode` | AlarmMode | 03 | READ_ONLY | 0..4 | - | ALARMS | documented | TN5A1190a p.30 | Alarm 2 mode. |
+| 0039h | 40058 | `alarm3.mode` | AlarmMode | 03 | READ_ONLY | 0..4 | - | ALARMS | documented | TN5A1190a p.30 | Alarm 3 mode. |
+| 003Ah | 40059 | `alarm4.mode` | AlarmMode | 03 | READ_ONLY | 0..4 | - | ALARMS | documented | TN5A1190a p.30 | Alarm 4 mode. |
+| 003Bh | 40060 | `alarm5.mode` | AlarmMode | 03 | READ_ONLY | 0..4 | - | ALARMS | documented | TN5A1190a p.30 | Alarm 5 mode. |
+| 003Ch | 40061 | `alarm1.enabled` | bool | 03 | READ_ONLY | 0..1 | - | ALARMS | documented | TN5A1190a p.30 | Alarm 1 on/off. |
+| 003Dh | 40062 | `alarm2.enabled` | bool | 03 | READ_ONLY | 0..1 | - | ALARMS | documented | TN5A1190a p.30 | Alarm 2 on/off. |
+| 003Eh | 40063 | `alarm3.enabled` | bool | 03 | READ_ONLY | 0..1 | - | ALARMS | documented | TN5A1190a p.30 | Alarm 3 on/off. |
+| 003Fh | 40064 | `alarm4.enabled` | bool | 03 | READ_ONLY | 0..1 | - | ALARMS | documented | TN5A1190a p.30 | Alarm 4 on/off. |
+| 0040h | 40065 | `alarm5.enabled` | bool | 03 | READ_ONLY | 0..1 | - | ALARMS | documented | TN5A1190a p.30 | Alarm 5 on/off. |
+| 0041h | 40066 | `alarm.hysteresis` | uint16 | 03 | READ_ONLY | 0..20 | %FS | ALARMS | documented | TN5A1190a p.30 | Alarm hysteresis, common to every alarm. |
 | 0078h | 40121 | `alarm1.target_channel` | uint16 | 03 | READ_ONLY | - | - | ALARMS | contested | TN5A1190a p.31 | Alarm 1 target channel, raw. |
 | 0079h | 40122 | `alarm2.target_channel` | uint16 | 03 | READ_ONLY | - | - | ALARMS | contested | TN5A1190a p.31 | Alarm 2 target channel, raw. |
 | 007Ah | 40123 | `alarm3.target_channel` | uint16 | 03 | READ_ONLY | - | - | ALARMS | contested | TN5A1190a p.31 | Alarm 3 target channel, raw. |
 | 007Bh | 40124 | `alarm4.target_channel` | uint16 | 03 | READ_ONLY | - | - | ALARMS | contested | TN5A1190a p.31 | Alarm 4 target channel, raw. |
 | 007Ch | 40125 | `alarm5.target_channel` | uint16 | 03 | READ_ONLY | - | - | ALARMS | contested | TN5A1190a p.31 | Alarm 5 target channel, raw. |
 | 007Dh | 40126 | `alarm6.target_channel` | uint16 | 03 | READ_ONLY | - | - | ALARMS | contested | TN5A1190a p.31 | Alarm 6 target channel, raw. |
-| 007Eh | 40127 | `alarm6.range1.high` | uint16 | 03 06 10 | PERSISTENT | 0..9999 | by_alarm_target | ALARMS | documented | TN5A1190a p.31 | Alarm 6 range 1 high limit. |
-| 007Fh | 40128 | `alarm6.range1.low` | uint16 | 03 06 10 | PERSISTENT | 0..9999 | by_alarm_target | ALARMS | documented | TN5A1190a p.31 | Alarm 6 range 1 low limit. |
-| 0080h | 40129 | `alarm6.range2.high` | uint16 | 03 06 10 | PERSISTENT | 0..9999 | by_alarm_target | ALARMS | documented | TN5A1190a p.31 | Alarm 6 range 2 high limit. |
-| 0081h | 40130 | `alarm6.range2.low` | uint16 | 03 06 10 | PERSISTENT | 0..9999 | by_alarm_target | ALARMS | documented | TN5A1190a p.31 | Alarm 6 range 2 low limit. |
-| 0082h | 40131 | `alarm6.mode` | AlarmMode | 03 06 10 | PERSISTENT | 0..4 | - | ALARMS | documented | TN5A1190a p.32 | Alarm 6 mode. |
-| 0083h | 40132 | `alarm6.enabled` | bool | 03 06 10 | PERSISTENT | 0..1 | - | ALARMS | documented | TN5A1190a p.32 | Alarm 6 on/off. |
+| 007Eh | 40127 | `alarm6.range1.high` | uint16 | 03 | READ_ONLY | 0..9999 | by_alarm_target | ALARMS | documented | TN5A1190a p.31 | Alarm 6 range 1 high limit. |
+| 007Fh | 40128 | `alarm6.range1.low` | uint16 | 03 | READ_ONLY | 0..9999 | by_alarm_target | ALARMS | documented | TN5A1190a p.31 | Alarm 6 range 1 low limit. |
+| 0080h | 40129 | `alarm6.range2.high` | uint16 | 03 | READ_ONLY | 0..9999 | by_alarm_target | ALARMS | documented | TN5A1190a p.31 | Alarm 6 range 2 high limit. |
+| 0081h | 40130 | `alarm6.range2.low` | uint16 | 03 | READ_ONLY | 0..9999 | by_alarm_target | ALARMS | documented | TN5A1190a p.31 | Alarm 6 range 2 low limit. |
+| 0082h | 40131 | `alarm6.mode` | AlarmMode | 03 | READ_ONLY | 0..4 | - | ALARMS | documented | TN5A1190a p.32 | Alarm 6 mode. |
+| 0083h | 40132 | `alarm6.enabled` | bool | 03 | READ_ONLY | 0..1 | - | ALARMS | documented | TN5A1190a p.32 | Alarm 6 on/off. |
 
-- `alarm1.range1.high`, `alarm1.range1.low`, `alarm1.range2.high`, `alarm1.range2.low`, `alarm2.range1.high`, `alarm2.range1.low`, `alarm2.range2.high`, `alarm2.range2.low`, `alarm3.range1.high`, `alarm3.range1.low`, `alarm3.range2.high`, `alarm3.range2.low`, `alarm4.range1.high`, `alarm4.range1.low`, `alarm4.range2.high`, `alarm4.range2.low`, `alarm5.range1.high`, `alarm5.range1.low`, `alarm5.range2.high`, `alarm5.range2.low`: Scaled by the range of the alarm's target channel; the target encoding is contested. The manual labels these 'Ch1-Ch5'; they are per alarm (design §2.6).
+- `alarm1.range1.high`, `alarm1.range1.low`, `alarm1.range2.high`, `alarm1.range2.low`, `alarm2.range1.high`, `alarm2.range1.low`, `alarm2.range2.high`, `alarm2.range2.low`, `alarm3.range1.high`, `alarm3.range1.low`, `alarm3.range2.high`, `alarm3.range2.low`, `alarm4.range1.high`, `alarm4.range1.low`, `alarm4.range2.high`, `alarm4.range2.low`, `alarm5.range1.high`, `alarm5.range1.low`, `alarm5.range2.high`, `alarm5.range2.low`: Scaled by the range of the alarm's target channel; the target encoding is contested. The manual labels these 'Ch1-Ch5'; they are per alarm (design §2.6). The ZPA manual limits them to 0-100 %FS, with the high limit above the low one by more than the hysteresis, and 0 meaning no alarm (ZPA p.48).
+- `alarm1.enabled`, `alarm2.enabled`, `alarm3.enabled`, `alarm4.enabled`, `alarm5.enabled`: Switch the alarm off before changing its settings (ZPA p.48).
 - `alarm1.target_channel`, `alarm2.target_channel`, `alarm3.target_channel`, `alarm4.target_channel`, `alarm5.target_channel`, `alarm6.target_channel`: The manual gives 0-6 without saying what the values mean. The bench unit reads 0-4 for alarms 1-5 (channel - 1?) and 12 for alarm 6.
-- `alarm6.range1.high`, `alarm6.range1.low`, `alarm6.range2.high`, `alarm6.range2.low`: Scaled by the range of the alarm's target channel; the target encoding is contested.
+- `alarm6.range1.high`, `alarm6.range1.low`, `alarm6.range2.high`, `alarm6.range2.low`: Scaled by the range of the alarm's target channel; the target encoding is contested. The ZPA manual limits them to 0-100 %FS, with the high limit above the low one by more than the hysteresis, and 0 meaning no alarm (ZPA p.48).
+- `alarm6.enabled`: Alarm 6 is an option the ZPA manual never mentions (TN5A1190a p.31).
 
 ### Key lock
 
 | Address | Register | Name | Type | FC | Tier | Limits | Scaling | Requires | Evidence | Ref | Description |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| 0049h | 40074 | `key_lock` | bool | 03 06 10 | PERSISTENT | 0..1 | - | - | documented | TN5A1190a p.30 | Front-panel key lock on/off. |
+| 0049h | 40074 | `key_lock` | bool | 03 | READ_ONLY | 0..1 | - | - | documented | TN5A1190a p.30 | Front-panel key lock on/off. |
+
+- `key_lock`: Locks every panel key but the key lock itself, including the forced stop of a running auto calibration (ZPA p.55, p.64). It does not block Modbus writes: the bench unit applied a setting written while it was on (protocol findings §13.3).
 
 ### Response time
 
 | Address | Register | Name | Type | FC | Tier | Limits | Scaling | Requires | Evidence | Ref | Description |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| 004Bh | 40076 | `response_time.ndir1` | uint16 | 03 06 10 | PERSISTENT | 0..60 | s | - | documented | TN5A1190a p.30 | Response time of NDIR component 1. |
-| 004Dh | 40078 | `response_time.ndir2` | uint16 | 03 06 10 | PERSISTENT | 0..60 | s | - | documented | TN5A1190a p.30 | Response time of NDIR component 2. |
-| 004Fh | 40080 | `response_time.ndir3` | uint16 | 03 06 10 | PERSISTENT | 0..60 | s | - | documented | TN5A1190a p.30 | Response time of NDIR component 3. |
-| 0051h | 40082 | `response_time.ndir4` | uint16 | 03 06 10 | PERSISTENT | 0..60 | s | - | documented | TN5A1190a p.30 | Response time of NDIR component 4. |
-| 0053h | 40084 | `response_time.o2` | uint16 | 03 06 10 | PERSISTENT | 0..60 | s | - | documented | TN5A1190a p.30 | Response time of the O2 measurement, whatever its channel. |
+| 004Bh | 40076 | `response_time.ndir1` | uint16 | 03 06 10 | PERSISTENT | 1..60 | s | - | documented | TN5A1190a p.30 | Response time of NDIR component 1. |
+| 004Dh | 40078 | `response_time.ndir2` | uint16 | 03 06 10 | PERSISTENT | 1..60 | s | - | documented | TN5A1190a p.30 | Response time of NDIR component 2. |
+| 004Fh | 40080 | `response_time.ndir3` | uint16 | 03 06 10 | PERSISTENT | 1..60 | s | - | documented | TN5A1190a p.30 | Response time of NDIR component 3. |
+| 0051h | 40082 | `response_time.ndir4` | uint16 | 03 06 10 | PERSISTENT | 1..60 | s | - | documented | TN5A1190a p.30 | Response time of NDIR component 4. |
+| 0053h | 40084 | `response_time.o2` | uint16 | 03 06 10 | PERSISTENT | 1..60 | s | - | documented | TN5A1190a p.30 | Response time of the O2 measurement, whatever its channel. |
 
-- `response_time.ndir1`, `response_time.ndir2`, `response_time.ndir3`, `response_time.ndir4`: The manual's 'Ch1-Ch4' slots are NDIR components; O2 has its own slot (40084) whatever its channel. The ZPA manual gives 1-60 s (ZPA p.65).
+- `response_time.ndir1`, `response_time.ndir2`, `response_time.ndir3`, `response_time.ndir4`: The manual's 'Ch1-Ch4' slots are NDIR components; O2 has its own slot (40084) whatever its channel. The MODBUS manual gives 0-60 s, the ZPA manual 1-60 s (ZPA p.65); a write is kept to 1-60 s.
+- `response_time.o2`: The MODBUS manual gives 0-60 s, the ZPA manual 1-60 s (ZPA p.65); a write is kept to 1-60 s.
 
 ### Moving average
 
 | Address | Register | Name | Type | FC | Tier | Limits | Scaling | Requires | Evidence | Ref | Description |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| 0054h | 40085 | `moving_average1.period` | uint16 | 03 06 10 | PERSISTENT | 0..59 | - | AVERAGING | documented | TN5A1190a p.30 | Moving-average period 1, in its unit. |
-| 0055h | 40086 | `moving_average2.period` | uint16 | 03 06 10 | PERSISTENT | 0..59 | - | AVERAGING | documented | TN5A1190a p.30 | Moving-average period 2, in its unit. |
-| 0056h | 40087 | `moving_average3.period` | uint16 | 03 06 10 | PERSISTENT | 0..59 | - | AVERAGING | documented | TN5A1190a p.30 | Moving-average period 3, in its unit. |
-| 0057h | 40088 | `moving_average4.period` | uint16 | 03 06 10 | PERSISTENT | 0..59 | - | AVERAGING | documented | TN5A1190a p.30 | Moving-average period 4, in its unit. |
-| 0058h | 40089 | `moving_average1.unit` | PeriodUnit | 03 06 10 | PERSISTENT | 0..1 | - | AVERAGING | documented | TN5A1190a p.30 | Moving-average period 1 unit. |
-| 0059h | 40090 | `moving_average2.unit` | PeriodUnit | 03 06 10 | PERSISTENT | 0..1 | - | AVERAGING | documented | TN5A1190a p.30 | Moving-average period 2 unit. |
-| 005Ah | 40091 | `moving_average3.unit` | PeriodUnit | 03 06 10 | PERSISTENT | 0..1 | - | AVERAGING | documented | TN5A1190a p.30 | Moving-average period 3 unit. |
-| 005Bh | 40092 | `moving_average4.unit` | PeriodUnit | 03 06 10 | PERSISTENT | 0..1 | - | AVERAGING | documented | TN5A1190a p.30 | Moving-average period 4 unit. |
+| 0054h | 40085 | `moving_average1.period` | uint16 | 03 | READ_ONLY | 0..59 | - | AVERAGING | documented | TN5A1190a p.30 | Moving-average period 1, in its unit. |
+| 0055h | 40086 | `moving_average2.period` | uint16 | 03 | READ_ONLY | 0..59 | - | AVERAGING | documented | TN5A1190a p.30 | Moving-average period 2, in its unit. |
+| 0056h | 40087 | `moving_average3.period` | uint16 | 03 | READ_ONLY | 0..59 | - | AVERAGING | documented | TN5A1190a p.30 | Moving-average period 3, in its unit. |
+| 0057h | 40088 | `moving_average4.period` | uint16 | 03 | READ_ONLY | 0..59 | - | AVERAGING | documented | TN5A1190a p.30 | Moving-average period 4, in its unit. |
+| 0058h | 40089 | `moving_average1.unit` | PeriodUnit | 03 | READ_ONLY | 0..1 | - | AVERAGING | documented | TN5A1190a p.30 | Moving-average period 1 unit. |
+| 0059h | 40090 | `moving_average2.unit` | PeriodUnit | 03 | READ_ONLY | 0..1 | - | AVERAGING | documented | TN5A1190a p.30 | Moving-average period 2 unit. |
+| 005Ah | 40091 | `moving_average3.unit` | PeriodUnit | 03 | READ_ONLY | 0..1 | - | AVERAGING | documented | TN5A1190a p.30 | Moving-average period 3 unit. |
+| 005Bh | 40092 | `moving_average4.unit` | PeriodUnit | 03 | READ_ONLY | 0..1 | - | AVERAGING | documented | TN5A1190a p.30 | Moving-average period 4 unit. |
 
-- `moving_average1.period`, `moving_average2.period`, `moving_average3.period`, `moving_average4.period`: Which output each of the four 'orders' averages is not stated. The ZPA manual gives 1-59 min or 1-4 h (ZPA p.65, p.68).
+- `moving_average1.period`, `moving_average2.period`, `moving_average3.period`, `moving_average4.period`: Which output each of the four 'orders' averages is not stated. The ZPA manual gives 1-59 min or 1-4 h (ZPA p.65, p.68). Changing a period restarts that average (ZPA p.68).
 
 ### Output hold
 
 | Address | Register | Name | Type | FC | Tier | Limits | Scaling | Requires | Evidence | Ref | Description |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| 005Ch | 40093 | `output_hold.enabled` | bool | 03 06 10 | PERSISTENT | 0..1 | - | - | documented | TN5A1190a p.31 | Output hold on/off. |
+| 005Ch | 40093 | `output_hold.enabled` | bool | 03 06 10 | PERSISTENT | 0..1 | - | - | documented | TN5A1190a p.31 | Hold the outputs during calibration, on/off. |
+
+- `output_hold.enabled`: Holds the analog outputs and the Modbus concentration registers during a manual or automatic calibration and its gas-replacement time; the display is never held (ZPA p.65, p.67).
 
 ### O2 correction
 
 | Address | Register | Name | Type | FC | Tier | Limits | Scaling | Requires | Evidence | Ref | Description |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| 005Dh | 40094 | `o2_correction.reference` | uint16 | 03 06 10 | PERSISTENT | 1..19 | vol% | O2_CORRECTION | documented | TN5A1190a p.31 | O2 correction reference value. |
-| 009Dh | 40158 | `o2_correction.limit` | uint16 | 03 06 10 | PERSISTENT | 1..20 | vol% | O2_CORRECTION | documented | TN5A1190a p.32 | O2 limit for correction. |
+| 005Dh | 40094 | `o2_correction.reference` | uint16 | 03 | READ_ONLY | 1..19 | vol% | O2_CORRECTION | documented | TN5A1190a p.31 | O2 correction reference value. |
+| 009Dh | 40158 | `o2_correction.limit` | uint16 | 03 | READ_ONLY | 1..20 | vol% | O2_CORRECTION | documented | TN5A1190a p.32 | O2 limit for correction. |
 
-- `o2_correction.reference`: The ZPA manual gives 0-19 % (ZPA p.73).
+- `o2_correction.reference`: The ZPA manual gives 0-19 %, set in the password-protected maintenance mode (ZPA p.73).
+- `o2_correction.limit`: Set in the password-protected maintenance mode (ZPA p.73).
 
 ### Peak alarm
 
 | Address | Register | Name | Type | FC | Tier | Limits | Scaling | Requires | Evidence | Ref | Description |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| 005Eh | 40095 | `peak_alarm.enabled` | bool | 03 06 10 | PERSISTENT | 0..1 | - | - | documented | TN5A1190a p.31 | Peak alarm on/off. |
-| 005Fh | 40096 | `peak_alarm.concentration` | uint16 | 03 06 10 | PERSISTENT | 100..1000 | ppm | - | documented | TN5A1190a p.31 | Peak alarm concentration. |
-| 0060h | 40097 | `peak_alarm.count` | uint16 | 03 06 10 | PERSISTENT | 1..99 | - | - | documented | TN5A1190a p.31 | Peak alarm count. |
-| 0061h | 40098 | `peak_alarm.hysteresis` | uint16 | 03 06 10 | PERSISTENT | 0..20 | %FS | - | documented | TN5A1190a p.31 | Peak alarm hysteresis. |
+| 005Eh | 40095 | `peak_alarm.enabled` | bool | 03 | READ_ONLY | 0..1 | - | - | documented | TN5A1190a p.31 | Peak alarm on/off. |
+| 005Fh | 40096 | `peak_alarm.concentration` | uint16 | 03 | READ_ONLY | 100..1000 | ppm | - | documented | TN5A1190a p.31 | Peak alarm concentration. |
+| 0060h | 40097 | `peak_alarm.count` | uint16 | 03 | READ_ONLY | 1..99 | - | - | documented | TN5A1190a p.31 | Peak alarm count. |
+| 0061h | 40098 | `peak_alarm.hysteresis` | uint16 | 03 | READ_ONLY | 0..20 | %FS | - | documented | TN5A1190a p.31 | Peak alarm hysteresis. |
 
-- `peak_alarm.concentration`: The ZPA manual gives 10-1000 ppm in 5 ppm steps (ZPA p.52).
+- `peak_alarm.enabled`: The CO peak alarm is an option (ZPA p.51). Switching it on restarts the count from 0 (ZPA p.52).
+- `peak_alarm.concentration`: The CO peak alarm is an option (ZPA p.51). The ZPA manual gives 10-1000 ppm in 5 ppm steps (ZPA p.52).
+- `peak_alarm.count`, `peak_alarm.hysteresis`: The CO peak alarm is an option (ZPA p.51).
 
 ### Auto zero calibration
 
 | Address | Register | Name | Type | FC | Tier | Limits | Scaling | Requires | Evidence | Ref | Description |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| 0062h | 40099 | `auto_zero.start_day` | DayOfWeek | 03 06 10 | DANGEROUS | 0..6 | - | AUTO_ZERO | documented | TN5A1190a p.31 | Start day of week. |
+| 0062h | 40099 | `auto_zero.start_day` | DayOfWeek | 03 | READ_ONLY | 0..6 | - | AUTO_ZERO | documented | TN5A1190a p.31 | Start day of week. |
 | 0063h | 40100 | `auto_zero.start_hour` | uint16 | 03 | READ_ONLY | - | - | AUTO_ZERO | contested | TN5A1190a p.31 | Start hour, raw. |
 | 0064h | 40101 | `auto_zero.start_minute` | uint16 | 03 | READ_ONLY | - | - | AUTO_ZERO | contested | TN5A1190a p.31 | Start minute, raw. |
-| 0065h | 40102 | `auto_zero.cycle` | uint16 | 03 06 10 | DANGEROUS | - | - | AUTO_ZERO | documented | TN5A1190a p.31 | Auto zero calibration cycle, in the cycle unit. |
-| 0066h | 40103 | `auto_zero.cycle_unit` | ScheduleCycleUnit | 03 06 10 | DANGEROUS | 0..1 | - | AUTO_ZERO | documented | TN5A1190a p.31 | Auto zero calibration cycle unit. |
-| 0067h | 40104 | `auto_zero.enabled` | bool | 03 06 10 | DANGEROUS | 0..1 | - | AUTO_ZERO | documented | TN5A1190a p.31 | Auto zero calibration on/off. |
-| 0068h | 40105 | `auto_zero.flow_time` | uint16 | 03 06 10 | DANGEROUS | 60..900 | s | AUTO_ZERO | documented | TN5A1190a p.31 | Auto zero calibration gas flow time. |
+| 0065h | 40102 | `auto_zero.cycle` | uint16 | 03 | READ_ONLY | - | - | AUTO_ZERO | documented | TN5A1190a p.31 | Auto zero calibration cycle, in the cycle unit. |
+| 0066h | 40103 | `auto_zero.cycle_unit` | ScheduleCycleUnit | 03 | READ_ONLY | 0..1 | - | AUTO_ZERO | documented | TN5A1190a p.31 | Auto zero calibration cycle unit. |
+| 0067h | 40104 | `auto_zero.enabled` | bool | 03 | READ_ONLY | 0..1 | - | AUTO_ZERO | documented | TN5A1190a p.31 | Auto zero calibration on/off. |
+| 0068h | 40105 | `auto_zero.flow_time` | uint16 | 03 | READ_ONLY | 60..900 | s | AUTO_ZERO | documented | TN5A1190a p.31 | Auto zero calibration gas flow time. |
 
 - `auto_zero.start_hour`, `auto_zero.start_minute`: The manual says BCD (00h-23h / 00h-59h). The bench unit reads 0x000C, which is not BCD, in all three schedules, so the encoding is unconfirmed and the value is kept raw (design §2.6).
 - `auto_zero.cycle`: No limits in the MODBUS manual; the ZPA manual gives 1-99 h or 1-40 days (ZPA p.60, p.93).
+- `auto_zero.enabled`: Switch it off before changing the schedule (ZPA p.59). Where it falls due with an auto calibration, the auto calibration runs instead (ZPA p.60).
+- `auto_zero.flow_time`: The gas replacement time after the calibration is the same (ZPA p.60).
 
 ### Ranges
 
 | Address | Register | Name | Type | FC | Tier | Limits | Scaling | Requires | Evidence | Ref | Description |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| 0069h | 40106 | `range.ch1.selected` | RangeIndex | 03 06 10 | PERSISTENT | 0..1 | - | - | documented | TN5A1190a p.31 | Ch1 selected range (ignored while remote range is on). |
-| 006Ah | 40107 | `range.ch2.selected` | RangeIndex | 03 06 10 | PERSISTENT | 0..1 | - | - | documented | TN5A1190a p.31 | Ch2 selected range (ignored while remote range is on). |
-| 006Bh | 40108 | `range.ch3.selected` | RangeIndex | 03 06 10 | PERSISTENT | 0..1 | - | - | documented | TN5A1190a p.31 | Ch3 selected range (ignored while remote range is on). |
-| 006Ch | 40109 | `range.ch4.selected` | RangeIndex | 03 06 10 | PERSISTENT | 0..1 | - | - | documented | TN5A1190a p.31 | Ch4 selected range (ignored while remote range is on). |
-| 006Dh | 40110 | `range.ch5.selected` | RangeIndex | 03 06 10 | PERSISTENT | 0..1 | - | - | documented | TN5A1190a p.31 | Ch5 selected range (ignored while remote range is on). |
-| 006Eh | 40111 | `range.ch1.method` | RangeMethod | 03 06 10 | PERSISTENT | 0..2 | - | - | documented | TN5A1190a p.31 | Ch1 range-change method. |
-| 006Fh | 40112 | `range.ch2.method` | RangeMethod | 03 06 10 | PERSISTENT | 0..2 | - | - | documented | TN5A1190a p.31 | Ch2 range-change method. |
-| 0070h | 40113 | `range.ch3.method` | RangeMethod | 03 06 10 | PERSISTENT | 0..2 | - | - | documented | TN5A1190a p.31 | Ch3 range-change method. |
-| 0071h | 40114 | `range.ch4.method` | RangeMethod | 03 06 10 | PERSISTENT | 0..2 | - | - | documented | TN5A1190a p.31 | Ch4 range-change method. |
-| 0072h | 40115 | `range.ch5.method` | RangeMethod | 03 06 10 | PERSISTENT | 0..2 | - | - | documented | TN5A1190a p.31 | Ch5 range-change method. |
+| 0069h | 40106 | `range.ch1.selected` | RangeIndex | 03 06 10 | PERSISTENT | 0..1 | - | - | documented | TN5A1190a p.31 | Ch1 selected range, used while the range method is manual. |
+| 006Ah | 40107 | `range.ch2.selected` | RangeIndex | 03 06 10 | PERSISTENT | 0..1 | - | - | documented | TN5A1190a p.31 | Ch2 selected range, used while the range method is manual. |
+| 006Bh | 40108 | `range.ch3.selected` | RangeIndex | 03 06 10 | PERSISTENT | 0..1 | - | - | documented | TN5A1190a p.31 | Ch3 selected range, used while the range method is manual. |
+| 006Ch | 40109 | `range.ch4.selected` | RangeIndex | 03 06 10 | PERSISTENT | 0..1 | - | - | documented | TN5A1190a p.31 | Ch4 selected range, used while the range method is manual. |
+| 006Dh | 40110 | `range.ch5.selected` | RangeIndex | 03 06 10 | PERSISTENT | 0..1 | - | - | documented | TN5A1190a p.31 | Ch5 selected range, used while the range method is manual. |
+| 006Eh | 40111 | `range.ch1.method` | RangeMethod | 03 06 10 | PERSISTENT | 0..2; write 0, 2 | - | - | documented | TN5A1190a p.31 | Ch1 range-change method. |
+| 006Fh | 40112 | `range.ch2.method` | RangeMethod | 03 06 10 | PERSISTENT | 0..2; write 0, 2 | - | - | documented | TN5A1190a p.31 | Ch2 range-change method. |
+| 0070h | 40113 | `range.ch3.method` | RangeMethod | 03 06 10 | PERSISTENT | 0..2; write 0, 2 | - | - | documented | TN5A1190a p.31 | Ch3 range-change method. |
+| 0071h | 40114 | `range.ch4.method` | RangeMethod | 03 06 10 | PERSISTENT | 0..2; write 0, 2 | - | - | documented | TN5A1190a p.31 | Ch4 range-change method. |
+| 0072h | 40115 | `range.ch5.method` | RangeMethod | 03 06 10 | PERSISTENT | 0..2; write 0, 2 | - | - | documented | TN5A1190a p.31 | Ch5 range-change method. |
+
+- `range.ch1.selected`, `range.ch2.selected`, `range.ch3.selected`, `range.ch4.selected`, `range.ch5.selected`: The MODBUS manual says it is ignored while remote range is on; the ZPA manual, while the method is remote or auto (ZPA p.40). A write needs the method to be manual. The current range follows some tens of milliseconds after the write reads back (protocol findings §13.2); fujilib waits for it.
+- `range.ch1.method`, `range.ch2.method`, `range.ch3.method`, `range.ch4.method`, `range.ch5.method`: Remote range follows an input contact of the DIO option (ZPA p.29), so it is not written.
 
 ### Hold
 
 | Address | Register | Name | Type | FC | Tier | Limits | Scaling | Requires | Evidence | Ref | Description |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| 008Bh | 40140 | `hold.mode` | HoldMode | 03 06 10 | PERSISTENT | 0..1 | - | - | documented | TN5A1190a p.32 | What the outputs hold during calibration. |
+| 008Bh | 40140 | `hold.mode` | HoldMode | 03 06 10 | PERSISTENT | 0..1 | - | - | documented | TN5A1190a p.32 | What the outputs hold during calibration: the last value or the set value. |
 | 008Ch | 40141 | `hold.ch1.value` | uint16 | 03 06 10 | PERSISTENT | 0..100 | %FS | - | documented | TN5A1190a p.32 | Ch1 hold set value. |
 | 008Dh | 40142 | `hold.ch2.value` | uint16 | 03 06 10 | PERSISTENT | 0..100 | %FS | - | documented | TN5A1190a p.32 | Ch2 hold set value. |
 | 008Eh | 40143 | `hold.ch3.value` | uint16 | 03 06 10 | PERSISTENT | 0..100 | %FS | - | documented | TN5A1190a p.32 | Ch3 hold set value. |
 | 008Fh | 40144 | `hold.ch4.value` | uint16 | 03 06 10 | PERSISTENT | 0..100 | %FS | - | documented | TN5A1190a p.32 | Ch4 hold set value. |
 | 0090h | 40145 | `hold.ch5.value` | uint16 | 03 06 10 | PERSISTENT | 0..100 | %FS | - | documented | TN5A1190a p.32 | Ch5 hold set value. |
 
+- `hold.mode`: On the panel it can be chosen only while output hold is on (ZPA p.66).
+- `hold.ch1.value`, `hold.ch2.value`, `hold.ch3.value`, `hold.ch4.value`, `hold.ch5.value`: In percent of the full scale of whichever range is in use (ZPA p.67).
+
 ### Blowback
 
 | Address | Register | Name | Type | FC | Tier | Limits | Scaling | Requires | Evidence | Ref | Description |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| 0091h | 40146 | `blowback.start_day` | DayOfWeek | 03 06 10 | PERSISTENT | 0..6 | - | BLOWBACK | documented | TN5A1190a p.32 | Start day of week. |
+| 0091h | 40146 | `blowback.start_day` | DayOfWeek | 03 | READ_ONLY | 0..6 | - | BLOWBACK | documented | TN5A1190a p.32 | Start day of week. |
 | 0092h | 40147 | `blowback.start_hour` | uint16 | 03 | READ_ONLY | - | - | BLOWBACK | contested | TN5A1190a p.32 | Start hour, raw. |
 | 0093h | 40148 | `blowback.start_minute` | uint16 | 03 | READ_ONLY | - | - | BLOWBACK | contested | TN5A1190a p.32 | Start minute, raw. |
-| 0094h | 40149 | `blowback.cycle` | uint16 | 03 06 10 | PERSISTENT | 1..99 | - | BLOWBACK | documented | TN5A1190a p.32 | Blowback cycle, in the cycle unit. |
-| 0095h | 40150 | `blowback.cycle_unit` | ScheduleCycleUnit | 03 06 10 | PERSISTENT | 0..1 | - | BLOWBACK | documented | TN5A1190a p.32 | Blowback cycle unit. |
-| 0096h | 40151 | `blowback.duration` | uint16 | 03 06 10 | PERSISTENT | 1..900 | s | BLOWBACK | documented | TN5A1190a p.32 | Blowback time. |
-| 0097h | 40152 | `blowback.enabled` | bool | 03 06 10 | PERSISTENT | 0..1 | - | BLOWBACK | documented | TN5A1190a p.32 | Blowback on/off. |
-| 0098h | 40153 | `blowback.displacement_time` | uint16 | 03 06 10 | PERSISTENT | 60..900 | s | BLOWBACK | documented | TN5A1190a p.32 | Gas displacement time after blowback. |
+| 0094h | 40149 | `blowback.cycle` | uint16 | 03 | READ_ONLY | 1..99 | - | BLOWBACK | documented | TN5A1190a p.32 | Blowback cycle, in the cycle unit. |
+| 0095h | 40150 | `blowback.cycle_unit` | ScheduleCycleUnit | 03 | READ_ONLY | 0..1 | - | BLOWBACK | documented | TN5A1190a p.32 | Blowback cycle unit. |
+| 0096h | 40151 | `blowback.duration` | uint16 | 03 | READ_ONLY | 1..900 | s | BLOWBACK | documented | TN5A1190a p.32 | Blowback time. |
+| 0097h | 40152 | `blowback.enabled` | bool | 03 | READ_ONLY | 0..1 | - | BLOWBACK | documented | TN5A1190a p.32 | Blowback on/off. |
+| 0098h | 40153 | `blowback.displacement_time` | uint16 | 03 | READ_ONLY | 60..900 | s | BLOWBACK | documented | TN5A1190a p.32 | Gas displacement time after blowback. |
 
 - `blowback.start_hour`, `blowback.start_minute`: The manual says BCD (00h-23h / 00h-59h). The bench unit reads 0x000C, which is not BCD, in all three schedules, so the encoding is unconfirmed and the value is kept raw (design §2.6).
 - `blowback.cycle`: 1-99 in hours, 1-7 in days.
+- `blowback.enabled`: Blowback appears in neither the ZPA manual nor its code table, nor in the service manual's ZPA parts list (TN5A1191b p.10).
 
 ### Measurement point
 
 | Address | Register | Name | Type | FC | Tier | Limits | Scaling | Requires | Evidence | Ref | Description |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| 0099h | 40154 | `measurement_point.cycle` | uint16 | 03 06 10 | PERSISTENT | 1..99 | - | MEASUREMENT_POINT | documented | TN5A1190a p.32 | Measurement-point change cycle, in its unit. |
-| 009Ah | 40155 | `measurement_point.cycle_unit` | PeriodUnit | 03 06 10 | PERSISTENT | 0..1 | - | MEASUREMENT_POINT | documented | TN5A1190a p.32 | Measurement-point change cycle unit. |
-| 009Bh | 40156 | `measurement_point.displacement_time` | uint16 | 03 06 10 | PERSISTENT | 60..900 | s | MEASUREMENT_POINT | documented | TN5A1190a p.32 | Measurement-point displacement time. |
-| 009Ch | 40157 | `measurement_point.mode` | MeasurementPoint | 03 06 10 | PERSISTENT | 0..2 | - | MEASUREMENT_POINT | documented | TN5A1190a p.32 | Measurement-point setting. |
+| 0099h | 40154 | `measurement_point.cycle` | uint16 | 03 | READ_ONLY | 1..99 | - | MEASUREMENT_POINT | documented | TN5A1190a p.32 | Measurement-point change cycle, in its unit. |
+| 009Ah | 40155 | `measurement_point.cycle_unit` | PeriodUnit | 03 | READ_ONLY | 0..1 | - | MEASUREMENT_POINT | documented | TN5A1190a p.32 | Measurement-point change cycle unit. |
+| 009Bh | 40156 | `measurement_point.displacement_time` | uint16 | 03 | READ_ONLY | 60..900 | s | MEASUREMENT_POINT | documented | TN5A1190a p.32 | Measurement-point displacement time. |
+| 009Ch | 40157 | `measurement_point.mode` | MeasurementPoint | 03 | READ_ONLY | 0..2 | - | MEASUREMENT_POINT | documented | TN5A1190a p.32 | Measurement-point setting. |
 
-- `measurement_point.cycle`: 1-60 in minutes, 1-99 in hours.
+- `measurement_point.cycle`: 1-60 in minutes, 1-99 in hours. Not in the ZPA manual.
 
 ### Reference gas (ZPB/ZPG)
 
 | Address | Register | Name | Type | FC | Tier | Limits | Scaling | Requires | Evidence | Ref | Description |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| 009Eh | 40159 | `reference_gas.switching_time` | uint16 | 03 10 | PERSISTENT | 1..30 | s | REFERENCE_GAS | documented | TN5A1190a p.32 | Reference-gas switching time. |
-| 009Fh | 40160 | `reference_gas.measuring_time` | uint16 | 03 10 | PERSISTENT | 1..60 | s | REFERENCE_GAS | documented | TN5A1190a p.32 | Reference-gas measuring time. |
-| 00A0h | 40161 | `reference_gas.ch1.average` | uint16 | 03 10 | PERSISTENT | 0..9 | - | REFERENCE_GAS | documented | TN5A1190a p.32 | Ch1 average period, in cycles. |
-| 00A1h | 40162 | `reference_gas.ch2.average` | uint16 | 03 10 | PERSISTENT | 0..9 | - | REFERENCE_GAS | documented | TN5A1190a p.32 | Ch2 average period, in cycles. |
-| 00A2h | 40163 | `reference_gas.ch3.average` | uint16 | 03 10 | PERSISTENT | 0..9 | - | REFERENCE_GAS | documented | TN5A1190a p.32 | Ch3 average period, in cycles. |
-| 00A3h | 40164 | `reference_gas.ch4.average` | uint16 | 03 10 | PERSISTENT | 0..9 | - | REFERENCE_GAS | documented | TN5A1190a p.32 | Ch4 average period, in cycles. |
+| 009Eh | 40159 | `reference_gas.switching_time` | uint16 | 03 | READ_ONLY | 1..30 | s | REFERENCE_GAS | documented | TN5A1190a p.32 | Reference-gas switching time. |
+| 009Fh | 40160 | `reference_gas.measuring_time` | uint16 | 03 | READ_ONLY | 1..60 | s | REFERENCE_GAS | documented | TN5A1190a p.32 | Reference-gas measuring time. |
+| 00A0h | 40161 | `reference_gas.ch1.average` | uint16 | 03 | READ_ONLY | 0..9 | - | REFERENCE_GAS | documented | TN5A1190a p.32 | Ch1 average period, in cycles. |
+| 00A1h | 40162 | `reference_gas.ch2.average` | uint16 | 03 | READ_ONLY | 0..9 | - | REFERENCE_GAS | documented | TN5A1190a p.32 | Ch2 average period, in cycles. |
+| 00A2h | 40163 | `reference_gas.ch3.average` | uint16 | 03 | READ_ONLY | 0..9 | - | REFERENCE_GAS | documented | TN5A1190a p.32 | Ch3 average period, in cycles. |
+| 00A3h | 40164 | `reference_gas.ch4.average` | uint16 | 03 | READ_ONLY | 0..9 | - | REFERENCE_GAS | documented | TN5A1190a p.32 | Ch4 average period, in cycles. |
 
 ### Interference compensation
 

@@ -53,6 +53,12 @@ class Defaults:
     #: window turned a lost request into a clean read (findings §10.3).
     resync_window_s: float = 0.1
 
+    #: Setting writes per minute above which a session logs a warning. No
+    #: manual states how many writes the analyzer's memory tolerates, so
+    #: fujilib never writes periodically; this catches a caller that does, as
+    #: ``alicatlib``'s EEPROM-wear guard does. 0 turns the warning off.
+    write_warn_per_minute: int = 10
+
 
 #: The defaults in use.
 DEFAULTS: Final = Defaults()

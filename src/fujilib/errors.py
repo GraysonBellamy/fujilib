@@ -340,6 +340,19 @@ class FujiFirmwareError(FujiCapabilityError):
     """
 
 
+# --- Analyzer state ------------------------------------------------------
+
+
+class FujiAnalyzerStateError(FujiError):
+    """What the analyzer is doing forbids the write or command now; nothing was written.
+
+    Raised after reading the analyzer's status and before any write
+    (design §6.1): a calibration is running, the front panel shows a menu, or
+    the analyzer reports an error that makes a calibration meaningless.
+    Retryable once the analyzer is back on the measurement screen.
+    """
+
+
 # --- Sinks ---------------------------------------------------------------
 
 
@@ -370,6 +383,7 @@ class FujiSinkWriteError(FujiSinkError):
 
 __all__ = [
     "ErrorContext",
+    "FujiAnalyzerStateError",
     "FujiCapabilityError",
     "FujiConfigurationError",
     "FujiConfirmationRequiredError",

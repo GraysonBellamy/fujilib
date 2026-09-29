@@ -12,6 +12,12 @@ Deliberately excluded:
   is inferred, not documented (design §2.6);
 - ``07D0h``, key simulation, whose keys also reach the factory menu (design §6.5).
 
+Inside the envelope, only :data:`REVIEWED_SETTINGS` are ever written: the
+reviewed subset of design §5.4, by name and address, also written out here
+independently of the registry. The registry refuses to mark anything else
+writable, and a setting write is refused for anything not in it, so neither a
+custom registry nor a forged spec can widen it.
+
 The four operation commands are :class:`OperationSpec` entries, not registers:
 each has its own facade method, safety tier and post-conditions, and none is
 reachable by writing a parameter.
@@ -33,6 +39,7 @@ if TYPE_CHECKING:
 __all__ = [
     "KEY_SIMULATION_ADDRESS",
     "OPERATIONS",
+    "REVIEWED_SETTINGS",
     "WRITE_ENVELOPE",
     "OperationSpec",
     "WriteRange",
@@ -66,6 +73,30 @@ WRITE_ENVELOPE: Final[tuple[WriteRange, ...]] = (
     WriteRange(fc=FC_WRITE_SINGLE, first=0x0000, last=0x009D),
     WriteRange(fc=FC_WRITE_MULTIPLE, first=0x0000, last=0x00A3),
     WriteRange(fc=FC_WRITE_SINGLE, first=0x07D1, last=0x07D4),  # operation commands 42002-42005
+)
+
+
+_CHANNELS: Final = range(1, 6)
+
+#: The settings fujilib writes (design §5.4), as ``(name, holding address)``.
+REVIEWED_SETTINGS: Final[frozenset[tuple[str, int]]] = frozenset(
+    {
+        *(
+            (f"calibration_gas.ch{c}.range{r}.{kind}", 4 * (c - 1) + 2 * (r - 1) + k)
+            for c in _CHANNELS
+            for r in (1, 2)
+            for k, kind in enumerate(("zero", "span"))
+        ),
+        *((f"calibration.ch{c}.zero_mode", 0x19 + c - 1) for c in _CHANNELS),
+        *((f"calibration.ch{c}.range_mode", 0x1E + c - 1) for c in _CHANNELS),
+        *((f"response_time.ndir{k}", 0x4B + 2 * (k - 1)) for k in range(1, 5)),
+        ("response_time.o2", 0x53),
+        ("output_hold.enabled", 0x5C),
+        *((f"range.ch{c}.selected", 0x69 + c - 1) for c in _CHANNELS),
+        *((f"range.ch{c}.method", 0x6E + c - 1) for c in _CHANNELS),
+        ("hold.mode", 0x8B),
+        *((f"hold.ch{c}.value", 0x8C + c - 1) for c in _CHANNELS),
+    }
 )
 
 

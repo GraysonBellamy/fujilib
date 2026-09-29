@@ -21,6 +21,7 @@ from anyserial import canonical_port_name
 
 from fujilib.config import DEFAULTS
 from fujilib.devices.analyzer import Analyzer
+from fujilib.devices.capability import OPTION_CAPABILITIES, Capability
 from fujilib.devices.profile import ZP_PROFILE
 from fujilib.devices.session import Session
 from fujilib.errors import ErrorContext, FujiConnectionError, FujiValidationError
@@ -51,6 +52,8 @@ async def open_device(
     timeout: float = DEFAULTS.request_timeout_s,
     identify: bool = True,
     channel_map: Mapping[ChannelId | str, Gas | str] | None = None,
+    options: Capability = Capability.NONE,
+    write_warn_per_minute: int = DEFAULTS.write_warn_per_minute,
 ) -> Analyzer:
     r"""Open the analyzer at station ``address`` on ``port``.
 
@@ -75,6 +78,12 @@ async def open_device(
         identify: Identify the analyzer before returning (six transactions).
         channel_map: The gas on each channel, e.g. ``{"CH1": "co2", "CH3":
             "o2"}``. Only an asserted label is fit for calculation (design §2.9).
+        options: Options the analyzer has, whatever its type code says, e.g.
+            ``Capability.AUTO_CALIBRATION | Capability.AUTO_ZERO`` for a unit
+            whose calibration gases are plumbed. The type code only suggests
+            them, like gas labels (design §6.1).
+        write_warn_per_minute: Setting writes a minute above which a warning is
+            logged; 0 for never (design §6.3).
 
     Raises:
         FujiValidationError: an argument is invalid; nothing was opened.
@@ -85,6 +94,7 @@ async def open_device(
     """
     _check_protocol(profile, protocol)
     _check_address(address)
+    _check_options(options, write_warn_per_minute)
     asserted = coerce_channel_map(channel_map) if channel_map is not None else None
     reopener: Reopener | None = None
     if isinstance(port, str):
@@ -108,7 +118,13 @@ async def open_device(
     try:
         modbus = ModbusPort(transport, request_timeout=timeout, owns_transport=owns_transport)
         session = Session(
-            modbus, address=address, profile=profile, channel_map=asserted, reopener=reopener
+            modbus,
+            address=address,
+            profile=profile,
+            channel_map=asserted,
+            reopener=reopener,
+            options=options,
+            write_warn_per_minute=write_warn_per_minute,
         )
         analyzer = Analyzer(session)
         if identify:
@@ -149,6 +165,21 @@ def _check_protocol(profile: DeviceProfile, protocol: ProtocolKind | str | None)
 
 def _is_transport(value: object) -> bool:
     return isinstance(value, Transport)
+
+
+def _check_options(options: object, write_warn_per_minute: object) -> None:
+    if not isinstance(options, Capability) or options & ~OPTION_CAPABILITIES:
+        msg = f"options must be option capabilities, e.g. Capability.AUTO_ZERO; got {options!r}"
+        raise FujiValidationError(msg)
+    if not (
+        isinstance(write_warn_per_minute, int)
+        and not isinstance(write_warn_per_minute, bool)
+        and write_warn_per_minute >= 0
+    ):
+        msg = (
+            f"write_warn_per_minute must be a whole number 0 or more, got {write_warn_per_minute!r}"
+        )
+        raise FujiValidationError(msg)
 
 
 def _check_address(address: int) -> None:

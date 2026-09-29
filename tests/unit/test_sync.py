@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -11,14 +12,17 @@ from anyserial.testing import serial_port_pair
 from fujilib import (
     Availability,
     Capability,
+    FujiCapabilityError,
     FujiConnectionError,
     FujiFirmwareError,
     Gas,
     ProtocolKind,
     ReadingState,
 )
+from fujilib.devices.operations import CalibrationRun, CommandOutcome
+from fujilib.devices.settings import SETTINGS_FORMAT, ApplyStatus
 from fujilib.sync import Fuji, SyncAnalyzer, SyncPortal, find_devices
-from fujilib.testing import mock_transport
+from fujilib.testing import DEFAULT_ZPA_BANK, MockAnalyzer, mock_transport
 from fujilib.transport.serial import SerialTransport
 from tests.facade import bench
 
@@ -106,6 +110,43 @@ def test_every_method_on_the_simulator() -> None:
         assert "hold.mode" in anz.read_settings()
         assert anz.snapshot(name="zpa").name == "zpa"
         assert repr(anz) == "<SyncAnalyzer ZPA on mock://zp station 1>"
+
+
+def test_every_write_and_command_on_the_simulator() -> None:
+    mock = MockAnalyzer(replace(DEFAULT_ZPA_BANK, time_scale=0.0001))
+    settings = {"format": SETTINGS_FORMAT, "settings": {"response_time.ndir2": 20}}
+    with (
+        SyncPortal() as portal,
+        portal.wrap_async_context_manager(mock_transport(mock)) as (transport, _line),
+        Fuji.open(
+            transport,
+            channel_map={"CH1": "co2", "CH2": "co", "CH3": "o2"},
+            options=Capability.AUTO_CALIBRATION | Capability.AUTO_ZERO,
+            write_warn_per_minute=0,
+            portal=portal,
+        ) as anz,
+    ):
+        assert anz.options == Capability.AUTO_CALIBRATION | Capability.AUTO_ZERO
+        assert anz.write_parameter("response_time.o2", 16, confirm=True).verified
+        assert anz.set_response_time("CH1", 16, confirm=True).verified
+        assert anz.set_output_hold(True, confirm=True).verified
+        assert anz.set_hold_mode("setting", confirm=True).verified
+        assert anz.set_hold_value("CH5", 10, confirm=True).verified
+        assert anz.set_range("CH3", 2, confirm=True).verified
+        assert anz.set_range_method("CH3", "auto", confirm=True).verified
+        assert anz.set_calibration_gas("CH3", 1, "span", 20.9, unit="vol%", confirm=True).verified
+        assert [c.name for c in anz.diff_settings(settings).writes] == ["response_time.ndir2"]
+        assert anz.apply_settings(settings, confirm=True).status is ApplyStatus.OK
+        assert not anz.calibration_status().busy
+        assert anz.plan_auto_calibration().estimated_duration_s > 0
+        assert anz.plan_auto_zero_calibration().run is CalibrationRun.AUTO_ZERO
+        assert anz.start_auto_zero_calibration(confirm=True).outcome is CommandOutcome.STARTED
+        assert anz.wait_for_calibration(timeout=5, interval=0.01).saw_running
+        assert anz.start_auto_calibration(confirm=True).outcome is CommandOutcome.STARTED
+        assert anz.wait_for_calibration(timeout=5, interval=0.01).saw_running
+        assert anz.return_to_measurement(confirm=True).outcome is CommandOutcome.DONE
+        with pytest.raises(FujiCapabilityError, match="the ZPA has no blowback"):
+            anz.start_blowback(confirm=True)
 
 
 def test_the_analyzer_closes_with_its_block() -> None:

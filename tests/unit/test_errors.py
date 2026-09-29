@@ -11,6 +11,7 @@ import pytest
 from fujilib import errors
 from fujilib.errors import (
     ErrorContext,
+    FujiAnalyzerStateError,
     FujiCapabilityError,
     FujiConfigurationError,
     FujiConfirmationRequiredError,
@@ -61,6 +62,7 @@ DESIGN_BASES: dict[type[FujiError], tuple[type[Exception], ...]] = {
     FujiModbusTimeoutError: (FujiModbusError, FujiTimeoutError),
     FujiCapabilityError: (FujiError,),
     FujiFirmwareError: (FujiCapabilityError,),
+    FujiAnalyzerStateError: (FujiError,),
     FujiSinkError: (FujiError,),
     FujiSinkDependencyError: (FujiSinkError, FujiConfigurationError),
     FujiSinkSchemaError: (FujiSinkError,),

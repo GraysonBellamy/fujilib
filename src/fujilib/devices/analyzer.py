@@ -10,7 +10,10 @@ parameter name is refused before anything is sent.
   default) leaves it to the per-transaction timeout and the retries.
 - Channel arguments accept a :class:`~fujilib.registry.channels.ChannelId` or a
   string such as ``"CH3"``.
-- Nothing here writes to the analyzer.
+- Everything that changes the analyzer takes ``confirm``, and is refused
+  before anything is sent unless it is ``True`` (design §6.2). A setting write
+  is written once and read back (:class:`~fujilib.devices.writes.WriteResult`);
+  only the reviewed subset of the register map is writable (design §5.4).
 
 Example::
 
@@ -23,20 +26,43 @@ Example::
 
 from __future__ import annotations
 
+import math
 from functools import partial
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Self
 
-from fujilib.devices import reads
-from fujilib.devices.capability import PROBED_CAPABILITIES, Availability, Capability
-from fujilib.errors import ErrorContext, FujiValidationError
-from fujilib.registry.channels import ChannelId, coerce_channel, coerce_channel_map
+import anyio
+
+from fujilib._deadline import Deadline
+from fujilib.devices import operations, reads
+from fujilib.devices.capability import (
+    OPTION_CAPABILITIES,
+    PROBED_CAPABILITIES,
+    Availability,
+    Capability,
+    SafetyTier,
+)
+from fujilib.devices.encode import prepare_value
+from fujilib.devices.operations import CalibrationRun, CalibrationWait
+from fujilib.devices.settings import ApplyReport, SettingsDocument, diff_settings
+from fujilib.devices.writes import outcome_error
+from fujilib.errors import (
+    ErrorContext,
+    FujiConfirmationRequiredError,
+    FujiConnectionError,
+    FujiError,
+    FujiTimeoutError,
+    FujiValidationError,
+)
+from fujilib.registry.channels import ChannelId, Gas, coerce_channel, coerce_channel_map
+from fujilib.registry.enums import RangeIndex
 from fujilib.registry.registers import ScalingKind
+from fujilib.registry.write_policy import OPERATIONS
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping, Sequence
     from types import TracebackType
 
-    from fujilib._deadline import Deadline
     from fujilib.devices.decode import RegisterValue
     from fujilib.devices.models import (
         AdcValues,
@@ -51,16 +77,24 @@ if TYPE_CHECKING:
         RangeInfo,
         Reading,
     )
+    from fujilib.devices.operations import CalibrationPlan, CalibrationStatus, CommandResult
     from fujilib.devices.reads import ClockReading
     from fujilib.devices.session import Session
+    from fujilib.devices.settings import SettingsDiff
     from fujilib.devices.snapshot import FujiDeviceSnapshot
+    from fujilib.devices.writes import WriteResult
     from fujilib.protocol.base import ProtocolClient, ProtocolKind
-    from fujilib.registry.channels import Gas
+    from fujilib.registry.enums import ErrorCode, HoldMode, RangeMethod
+    from fujilib.registry.registers import RegisterSpec
+    from fujilib.registry.units import Unit
 
 __all__ = ["Analyzer"]
 
 #: Alarms 1-6, whose target channels the caller may supply (design §5.2).
 _ALARMS = range(1, 7)
+#: Response-time slots by name: four NDIR components and O2 (design §2.6).
+_RESPONSE_SLOTS = frozenset({"o2", "ndir1", "ndir2", "ndir3", "ndir4"})
+_NDIR_SLOTS = 4
 
 
 class Analyzer:
@@ -143,6 +177,11 @@ class Analyzer:
     def last_frame(self) -> Frame | None:
         """The most recent poll's frame, or ``None``."""
         return self._session.last_frame
+
+    @property
+    def options(self) -> Capability:
+        """The options taken as fitted: asserted when opening, or listed by the type code."""
+        return self._session.options
 
     async def snapshot(self, *, name: str | None = None) -> FujiDeviceSnapshot:
         """Identity and health from cached state, with no I/O (unified API §H).
@@ -490,7 +529,8 @@ class Analyzer:
         )
         requires = Capability.NONE
         for spec in specs:
-            requires |= spec.requires
+            # An option never gates a read: its registers read whether it is fitted or not.
+            requires |= spec.requires & ~OPTION_CAPABILITIES
         probed = [c for c in PROBED_CAPABILITIES if c in requires]
 
         async def body(client: ProtocolClient, deadline: Deadline) -> Mapping[str, RegisterValue]:
@@ -510,10 +550,612 @@ class Analyzer:
 
         return await session.run(operation, body, timeout=timeout, requires=requires)
 
+    # --- Settings ------------------------------------------------------------------------
+
+    async def write_parameter(
+        self,
+        name: str,
+        value: object,
+        *,
+        unit: Unit | str | None = None,
+        confirm: bool = False,
+        timeout: float | None = None,
+    ) -> WriteResult:
+        """Write one setting by its name in the register map, then read it back (design §6.3).
+
+        Only the reviewed subset is writable (``docs/registers.md``, design
+        §5.4). ``value`` is ``True``/``False`` for a flag, an enum member or its
+        name for an enumerated setting, a whole number for a time or count, and
+        for a calibration gas a number in ``unit``, which is then required and
+        must be the unit of the gas's (channel, range).
+
+        Before the write the analyzer's status is read, and the write refused
+        while a calibration runs or the front panel is in a menu. The write is
+        sent once, never retried, and read back whatever happens to its reply.
+        About six transactions.
+
+        Raises:
+            FujiValidationError: an unknown or read-only name, or a value that
+                does not fit; nothing was written.
+            FujiConfirmationRequiredError: ``confirm`` is not ``True``; nothing
+                was sent.
+            FujiAnalyzerStateError: a calibration is running or the panel is in
+                a menu; nothing was written.
+            FujiModbusError: the analyzer refused the write; nothing was applied.
+            FujiVerificationError: the setting reads back as something else.
+            FujiWriteOutcomeUnknownError: neither the write's reply nor the
+                read-back arrived; the write may or may not have been applied.
+        """
+        spec = self._writable(name)
+        return await self._write(
+            "write_parameter", spec, value, unit=unit, confirm=confirm, timeout=timeout
+        )
+
+    async def set_response_time(
+        self,
+        target: ChannelId | str,
+        seconds: int,
+        *,
+        confirm: bool = False,
+        timeout: float | None = None,
+    ) -> WriteResult:
+        """Set a response time, 1-60 s, by channel or by slot (``"o2"``, ``"ndir1"``..``"ndir4"``).
+
+        There are four NDIR-component slots and one O2 slot, not one per
+        channel (design §2.6). A channel is mapped to its slot only through
+        asserted gases: O2 to the O2 slot, the n-th NDIR channel to ``ndirn``,
+        which needs every channel before it asserted. Otherwise name the slot.
+
+        Raises:
+            FujiValidationError: the channel cannot be mapped to a slot; as
+                :meth:`write_parameter` otherwise.
+            FujiError: as :meth:`write_parameter`.
+        """
+        name = self._response_time_name(target)
+        return await self._write(
+            "set_response_time", self._writable(name), seconds, confirm=confirm, timeout=timeout
+        )
+
+    async def set_output_hold(
+        self, enabled: bool, *, confirm: bool = False, timeout: float | None = None
+    ) -> WriteResult:
+        """Hold the outputs, and the Modbus concentrations, during calibration, or not.
+
+        Raises:
+            FujiError: as :meth:`write_parameter`.
+        """
+        spec = self._writable("output_hold.enabled")
+        return await self._write("set_output_hold", spec, enabled, confirm=confirm, timeout=timeout)
+
+    async def set_hold_mode(
+        self, mode: HoldMode | str, *, confirm: bool = False, timeout: float | None = None
+    ) -> WriteResult:
+        """What the outputs hold during calibration: ``last_value`` or ``setting``.
+
+        Raises:
+            FujiError: as :meth:`write_parameter`.
+        """
+        spec = self._writable("hold.mode")
+        return await self._write("set_hold_mode", spec, mode, confirm=confirm, timeout=timeout)
+
+    async def set_hold_value(
+        self,
+        channel: ChannelId | str,
+        percent_fs: int,
+        *,
+        confirm: bool = False,
+        timeout: float | None = None,
+    ) -> WriteResult:
+        """The value a measured channel holds in ``setting`` mode, 0-100 % of full scale.
+
+        Raises:
+            FujiValidationError: ``channel`` is not one of channels 1-5.
+            FujiError: as :meth:`write_parameter`.
+        """
+        cid = _measured(channel)
+        spec = self._writable(f"hold.ch{cid.number}.value")
+        return await self._write(
+            "set_hold_value", spec, percent_fs, confirm=confirm, timeout=timeout
+        )
+
+    async def set_range(
+        self,
+        channel: ChannelId | str,
+        range_number: int,
+        *,
+        confirm: bool = False,
+        timeout: float | None = None,
+    ) -> WriteResult:
+        """Select range 1 or 2 of a measured channel, whose range method must be manual.
+
+        It returns once the channel measures on the range: the analyzer
+        switches some tens of milliseconds after the setting reads back, so
+        the channel's current range is read until it follows, within the
+        read-back budget.
+
+        Raises:
+            FujiValidationError: ``channel`` is not one of channels 1-5,
+                ``range_number`` is not 1 or 2, or the channel's range method
+                is not manual; nothing was written.
+            FujiVerificationError: the setting reads back otherwise, or it
+                reads back as written but the channel did not switch to it.
+            FujiError: as :meth:`write_parameter`.
+        """
+        cid = _measured(channel)
+        if range_number not in {1, 2} or isinstance(range_number, bool):
+            msg = f"range_number must be 1 or 2, got {range_number!r}"
+            raise FujiValidationError(msg, context=ErrorContext(channel=cid.value))
+        spec = self._writable(f"range.ch{cid.number}.selected")
+        index = RangeIndex(range_number - 1)
+        return await self._write("set_range", spec, index, confirm=confirm, timeout=timeout)
+
+    async def set_range_method(
+        self,
+        channel: ChannelId | str,
+        method: RangeMethod | str,
+        *,
+        confirm: bool = False,
+        timeout: float | None = None,
+    ) -> WriteResult:
+        """How a measured channel changes range: ``manual`` or ``auto`` (``remote`` is refused).
+
+        Raises:
+            FujiValidationError: ``channel`` is not one of channels 1-5, or the
+                method is not ``manual`` or ``auto``.
+            FujiError: as :meth:`write_parameter`.
+        """
+        cid = _measured(channel)
+        spec = self._writable(f"range.ch{cid.number}.method")
+        return await self._write("set_range_method", spec, method, confirm=confirm, timeout=timeout)
+
+    async def set_calibration_gas(
+        self,
+        channel: ChannelId | str,
+        range_number: int,
+        kind: str,
+        value: float | str,
+        *,
+        unit: Unit | str,
+        confirm: bool = False,
+        timeout: float | None = None,
+    ) -> WriteResult:
+        """Set the zero or span calibration gas of a measured channel's range. DANGEROUS.
+
+        It takes effect at the next calibration, manual or automatic, and a
+        wrong value miscalibrates the analyzer then. ``unit`` must be the
+        range's own; span gas is limited to 1-105 % and zero gas to 0-100 % of
+        the range's full scale.
+
+        Raises:
+            FujiValidationError: ``channel``, ``range_number`` or ``kind``
+                (``"zero"`` or ``"span"``) is not one there is, or the value
+                does not fit the range.
+            FujiError: as :meth:`write_parameter`.
+        """
+        cid = _measured(channel)
+        if (
+            range_number not in {1, 2}
+            or isinstance(range_number, bool)
+            or kind
+            not in {
+                "zero",
+                "span",
+            }
+        ):
+            msg = f"expected range 1 or 2 and kind 'zero' or 'span', got {range_number!r}, {kind!r}"
+            raise FujiValidationError(msg, context=ErrorContext(channel=cid.value))
+        spec = self._writable(f"calibration_gas.ch{cid.number}.range{range_number}.{kind}")
+        return await self._write(
+            "set_calibration_gas", spec, value, unit=unit, confirm=confirm, timeout=timeout
+        )
+
+    async def diff_settings(
+        self,
+        document: SettingsDocument | Mapping[str, object],
+        *,
+        any_analyzer: bool = False,
+        timeout: float | None = None,
+    ) -> SettingsDiff:
+        """Compare a settings document (``fujilib-settings/1``) with the analyzer's settings.
+
+        Read-only: the range tables and every setting are read (four
+        transactions), and each setting of the document is found unchanged, to
+        be written, or refused, with the reason (:mod:`fujilib.devices.settings`).
+        A document from another analyzer is refused unless ``any_analyzer``.
+
+        Raises:
+            FujiValidationError: the document is not a settings document.
+            FujiError: a transaction failed.
+        """
+        doc = (
+            document
+            if isinstance(document, SettingsDocument)
+            else SettingsDocument.from_json(dict(document))
+        )
+        session = self._session
+
+        async def body(client: ProtocolClient, deadline: Deadline) -> SettingsDiff:
+            info = session.info
+            if info is None:
+                identity = await session.profile.identify(client, probe=True, deadline=deadline)
+                info = session.learn_identity(identity)
+            ranges = session.learn_ranges(await reads.read_ranges(client, deadline=deadline))
+            current = await reads.read_settings(client, ranges=ranges, deadline=deadline)
+            return diff_settings(
+                doc,
+                current,
+                registry=session.profile.registry,
+                ranges=ranges,
+                serial_number=info.serial_number,
+                any_analyzer=any_analyzer,
+            )
+
+        return await session.run("diff_settings", body, timeout=timeout)
+
+    async def apply_settings(
+        self,
+        document: SettingsDocument | Mapping[str, object],
+        *,
+        confirm: bool = False,
+        any_analyzer: bool = False,
+        max_tier: SafetyTier = SafetyTier.DANGEROUS,
+        timeout: float | None = None,
+    ) -> ApplyReport:
+        """Write the settings of a document that differ from the analyzer's.
+
+        The whole document is compared first (:meth:`diff_settings`); if any
+        setting is refused, nothing is written. ``confirm`` must then be
+        ``True``; the CLI also asks for its destructive flag when a write is
+        DANGEROUS. The writes go one at a time in dependency order, each read
+        back; the first that fails stops the rest, and nothing is rolled back.
+        ``max_tier`` refuses a document whose writes go above it, judged on
+        the comparison made here, not on an earlier one: the CLI passes
+        ``PERSISTENT`` unless its destructive flag is given. ``timeout`` bounds
+        the whole apply.
+
+        Raises:
+            FujiValidationError: the document is not a settings document, or is
+                refused; nothing was written.
+            FujiConfirmationRequiredError: there is something to write and
+                ``confirm`` is not ``True``, or a write is above ``max_tier``;
+                nothing was written.
+            FujiError: the comparison's reads failed. A failed *write* does not
+                raise: it is in the report.
+        """
+        deadline = Deadline.after(timeout, operation="apply_settings")
+        diff = await self.diff_settings(
+            document, any_analyzer=any_analyzer, timeout=_remaining(deadline)
+        )
+        if not diff.ok:
+            raise diff.refusal()
+        if not diff.writes:
+            return ApplyReport(diff, ())
+        if diff.tier > max_tier:
+            msg = (
+                f"applying the settings would make {diff.tier.name} writes, above "
+                f"{max_tier.name}; nothing was written"
+            )
+            raise FujiConfirmationRequiredError(
+                msg, context=ErrorContext(extra={"safety": diff.tier.name.lower()})
+            )
+        self._session.gate(
+            "apply_settings", tier=diff.tier, confirm=confirm, subject="applying the settings"
+        )
+        registry = self._session.profile.registry
+        completed: list[WriteResult] = []
+        writes = diff.writes
+        for index, change in enumerate(writes):
+            spec = registry.resolve(change.name)
+            try:
+                result = await self._write(
+                    "apply_settings",
+                    spec,
+                    change.desired.value,
+                    unit=change.desired.unit,
+                    confirm=confirm,
+                    timeout=_remaining(deadline),
+                )
+            except FujiError as exc:
+                rest = tuple(c.name for c in writes[index + 1 :])
+                return ApplyReport(diff, tuple(completed), change.name, exc, rest)
+            completed.append(result)
+        return ApplyReport(diff, tuple(completed))
+
+    # --- Operations ----------------------------------------------------------------------
+
+    async def calibration_status(self, *, timeout: float | None = None) -> CalibrationStatus:
+        """What is calibrating, held or failed. Two transactions, the poll's status blocks."""
+        status = await self._read_status("calibration_status", timeout)
+        return operations.calibration_status(status)
+
+    async def plan_auto_calibration(self, *, timeout: float | None = None) -> CalibrationPlan:
+        """What :meth:`start_auto_calibration` would calibrate, against which gases, for how long.
+
+        Read-only: the channels enabled for it, their ranges (both where the
+        calibration range is "both"), the calibration gases, whether the
+        outputs are held, and an estimated duration inferred from the flow
+        times. Two transactions, plus the range tables if needed.
+        """
+        return await self._plan("plan_auto_calibration", CalibrationRun.AUTO_CALIBRATION, timeout)
+
+    async def plan_auto_zero_calibration(self, *, timeout: float | None = None) -> CalibrationPlan:
+        """What :meth:`start_auto_zero_calibration` would zero; as :meth:`plan_auto_calibration`."""
+        return await self._plan("plan_auto_zero_calibration", CalibrationRun.AUTO_ZERO, timeout)
+
+    async def start_auto_calibration(
+        self, *, confirm: bool = False, timeout: float | None = None
+    ) -> CommandResult:
+        """Run auto calibration once (42003). DANGEROUS: it overwrites the calibration.
+
+        It zeroes and spans every channel enabled for it against the
+        calibration gases the analyzer's own valves let in, so it is right only
+        where those gases are plumbed. It needs the auto-calibration option,
+        which the type code lists or ``open_device(options=...)`` asserts. It is
+        refused while a calibration runs, the panel is in a menu, or the
+        analyzer reports an instrument error. The plan is read and returned
+        with the result; no register stops a calibration once started.
+
+        Raises:
+            FujiConfirmationRequiredError: ``confirm`` is not ``True``; nothing was sent.
+            FujiCapabilityError: the option is not fitted; nothing was sent.
+            FujiAnalyzerStateError: the analyzer's state forbids it; nothing was sent.
+            FujiWriteOutcomeUnknownError: its reply was lost and the status
+                does not show it running.
+            FujiError: a transaction failed.
+        """
+        return await self._command(
+            "start_auto_calibration", CalibrationRun.AUTO_CALIBRATION, confirm, timeout
+        )
+
+    async def start_auto_zero_calibration(
+        self, *, confirm: bool = False, timeout: float | None = None
+    ) -> CommandResult:
+        """Run auto zero calibration once (42004). DANGEROUS; as :meth:`start_auto_calibration`.
+
+        It zeroes every channel enabled for auto calibration, and needs the
+        auto-zero option.
+        """
+        return await self._command(
+            "start_auto_zero_calibration", CalibrationRun.AUTO_ZERO, confirm, timeout
+        )
+
+    async def start_blowback(
+        self, *, confirm: bool = False, timeout: float | None = None
+    ) -> CommandResult:
+        """Run blowback once (42005). STATEFUL; the blowback option, which no ZPA has.
+
+        No register shows blowback running, so the outcome is only ``sent``.
+
+        Raises:
+            FujiCapabilityError: the analyzer has no blowback; nothing was sent.
+            FujiError: as :meth:`start_auto_calibration`.
+        """
+        return await self._command("start_blowback", None, confirm, timeout)
+
+    async def return_to_measurement(
+        self, *, confirm: bool = False, timeout: float | None = None
+    ) -> CommandResult:
+        """Put the front panel back on the measurement screen (42002). STATEFUL.
+
+        It takes an operator out of whatever menu they are in, so it is not
+        refused while the panel is in one. It does not stop a calibration.
+
+        Raises:
+            FujiConfirmationRequiredError: ``confirm`` is not ``True``; nothing was sent.
+            FujiVerificationError: acknowledged, but the panel does not show
+                the measurement screen.
+            FujiWriteOutcomeUnknownError: its reply was lost and the status
+                cannot be read.
+            FujiError: a transaction failed.
+        """
+        return await self._command("return_to_measurement", None, confirm, timeout)
+
+    async def wait_for_calibration(
+        self,
+        *,
+        timeout: float,
+        interval: float = 2.0,
+        since: CalibrationStatus | None = None,
+    ) -> CalibrationWait:
+        """Wait until nothing is calibrating, reading the status every ``interval`` seconds.
+
+        The port is free between reads, so a recording goes on meanwhile.
+        ``timeout`` bounds the whole wait. The result says whether a
+        calibration was seen running at all (if not, it may have ended
+        already), whether any error 4-9 is active at the end, and which
+        appeared since ``since``: pass the ``before`` of the command's result,
+        or the wait's own first read is the baseline.
+
+        Raises:
+            FujiValidationError: ``timeout`` or ``interval`` is not a positive number.
+            FujiTimeoutError: something was still calibrating at ``timeout``; its
+                context says whether a calibration was seen and how many reads
+                were made.
+            FujiError: a status read failed.
+        """
+        _check_seconds("timeout", timeout)
+        _check_seconds("interval", interval)
+        deadline = Deadline.after(timeout, operation="wait_for_calibration")
+        saw_running = False
+        polls = 0
+        try:
+            with deadline.enforce():
+                first = await self.calibration_status()
+                status = first
+                while True:
+                    polls += 1
+                    if not status.busy:
+                        return CalibrationWait(
+                            final=status,
+                            saw_running=saw_running,
+                            polls=polls,
+                            elapsed_s=deadline.elapsed(),
+                            new_errors=_new_errors((since or first).errors, status.errors),
+                        )
+                    saw_running = True
+                    await anyio.sleep(interval)
+                    status = await self.calibration_status()
+        except FujiTimeoutError as exc:
+            raise exc.with_context(saw_running=saw_running, polls=polls) from exc.__cause__
+
+    async def _plan(
+        self, operation: str, run: CalibrationRun, timeout: float | None
+    ) -> CalibrationPlan:
+        session = self._session
+
+        async def body(client: ProtocolClient, deadline: Deadline) -> CalibrationPlan:
+            ranges = await session.ensure_ranges(client, deadline)
+            return await operations.read_calibration_plan(
+                client,
+                run,
+                ranges=ranges,
+                established=[c.channel for c in session.channels],
+                deadline=deadline,
+            )
+
+        return await session.run(operation, body, timeout=timeout)
+
+    async def _command(
+        self,
+        name: str,
+        run: CalibrationRun | None,
+        confirm: bool,
+        timeout: float | None,
+    ) -> CommandResult:
+        spec = OPERATIONS[name]
+        session = self._session
+        session.gate(name, tier=spec.safety, confirm=confirm, requires=spec.requires)
+
+        async def body(client: ProtocolClient, deadline: Deadline) -> CommandResult:
+            plan = None
+            before = None
+            if name != "return_to_measurement":
+                status = await session.check_quiet(client, deadline, name)
+                before = operations.calibration_status(status)
+                if run is not None:
+                    operations.check_healthy(status, name)
+                    ranges = await session.ensure_ranges(client, deadline)
+                    plan = await operations.read_calibration_plan(
+                        client,
+                        run,
+                        ranges=ranges,
+                        established=[c.channel for c in session.channels],
+                        deadline=deadline,
+                    )
+            result = await operations.send_command(
+                client,
+                spec,
+                plan=plan,
+                before=before,
+                deadline=deadline,
+                verify_timeout=session.verify_timeout,
+            )
+            if isinstance(result.status_error, FujiConnectionError):
+                session.note_port_failure(result.status_error)
+            return result
+
+        return await session.run(
+            name, body, timeout=timeout, tier=spec.safety, confirm=confirm, requires=spec.requires
+        )
+
+    def _writable(self, name: str) -> RegisterSpec:
+        spec = self._session.profile.registry.resolve(name)
+        if not spec.writable:
+            msg = (
+                f"{name} is read-only: fujilib writes only the reviewed subset of the "
+                "register map (docs/registers.md, design §5.4)"
+            )
+            raise FujiValidationError(msg, context=ErrorContext(extra={"setting": name}))
+        return spec
+
+    async def _write(
+        self,
+        operation: str,
+        spec: RegisterSpec,
+        value: object,
+        *,
+        unit: Unit | str | None = None,
+        confirm: bool,
+        timeout: float | None,
+    ) -> WriteResult:
+        session = self._session
+        tier, requires = spec.safety, spec.requires
+        session.gate(
+            operation, tier=tier, confirm=confirm, requires=requires, subject=f"writing {spec.name}"
+        )
+        prepared = prepare_value(spec, value, unit=unit)
+
+        async def body(client: ProtocolClient, deadline: Deadline) -> WriteResult:
+            result = await session.write_setting(client, deadline, prepared, command=operation)
+            error = outcome_error(result)
+            if error is not None:
+                raise error
+            return result
+
+        return await session.run(
+            operation, body, timeout=timeout, tier=tier, confirm=confirm, requires=requires
+        )
+
+    def _response_time_name(self, target: ChannelId | str) -> str:
+        slot_name = target.strip().lower()
+        if slot_name in _RESPONSE_SLOTS:
+            return f"response_time.{slot_name}"
+        cid = _measured(target)
+        asserted = self._session.asserted
+        if asserted.get(cid) is Gas.O2:
+            return "response_time.o2"
+        slot = 0
+        for number in range(1, cid.number + 1):
+            gas = asserted.get(ChannelId.from_number(number))
+            if gas is None:
+                msg = (
+                    f"{cid.value}'s response-time slot follows from the asserted gases of "
+                    f"channels 1-{cid.number}, and CH{number} has none; name the slot "
+                    "instead: 'o2' or 'ndir1'-'ndir4'"
+                )
+                raise FujiValidationError(msg, context=ErrorContext(channel=cid.value))
+            if gas is not Gas.O2:
+                slot += 1
+        if slot > _NDIR_SLOTS:
+            msg = f"{cid.value} would be NDIR component {slot}; there are only four"
+            raise FujiValidationError(msg, context=ErrorContext(channel=cid.value))
+        return f"response_time.ndir{slot}"
+
     def __repr__(self) -> str:
         info = self._session.info
         model = info.model if info is not None else "unidentified"
         return f"<Analyzer {model} on {self.port} station {self.address}>"
+
+
+def _remaining(deadline: Deadline) -> float | None:
+    return max(deadline.remaining(), 0.0) if deadline.bounded else None
+
+
+def _check_seconds(name: str, value: object) -> None:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int | float)
+        or not math.isfinite(value)
+        or value <= 0
+    ):
+        msg = f"{name} must be a positive number of seconds, got {value!r}"
+        raise FujiValidationError(msg)
+
+
+def _new_errors(
+    before: Mapping[ChannelId, frozenset[ErrorCode]],
+    after: Mapping[ChannelId, frozenset[ErrorCode]],
+) -> Mapping[ChannelId, frozenset[ErrorCode]]:
+    new = {c: codes - before.get(c, frozenset()) for c, codes in after.items()}
+    return MappingProxyType({c: codes for c, codes in new.items() if codes})
+
+
+def _measured(channel: ChannelId | str) -> ChannelId:
+    cid = coerce_channel(channel)
+    if not cid.is_measured:
+        msg = f"{cid.value} is a derived channel; only channels 1-5 have this setting"
+        raise FujiValidationError(msg, context=ErrorContext(channel=cid.value))
+    return cid
 
 
 def _alarm_targets(

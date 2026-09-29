@@ -15,7 +15,13 @@ from __future__ import annotations
 from enum import Flag, IntEnum, StrEnum, auto
 from typing import Final
 
-__all__ = ["PROBED_CAPABILITIES", "Availability", "Capability", "SafetyTier"]
+__all__ = [
+    "OPTION_CAPABILITIES",
+    "PROBED_CAPABILITIES",
+    "Availability",
+    "Capability",
+    "SafetyTier",
+]
 
 
 class SafetyTier(IntEnum):
@@ -42,7 +48,9 @@ class Capability(Flag):
     """Features that depend on firmware, options or model.
 
     The first group is **probed** by ``identify()`` and never assumed
-    (design §6.6). The rest gate writes to option registers; they do not gate
+    (design §6.6). The rest are options and model features
+    (:data:`OPTION_CAPABILITIES`): the type code suggests them and the caller
+    may assert them. They gate the operation commands that need them, never
     reads, because an option's registers read even when it is not fitted.
     """
 
@@ -81,6 +89,19 @@ PROBED_CAPABILITIES: Final[tuple[Capability, ...]] = (
     Capability.ADC_VALUES,
     Capability.TYPE_CODE_EXT,
     Capability.CALIBRATION_LOG,
+)
+
+#: The options and model features: the type code suggests them, the caller
+#: may assert them, and an operation that needs one is refused without it.
+OPTION_CAPABILITIES: Final = (
+    Capability.ALARMS
+    | Capability.AUTO_CALIBRATION
+    | Capability.AUTO_ZERO
+    | Capability.AVERAGING
+    | Capability.O2_CORRECTION
+    | Capability.BLOWBACK
+    | Capability.MEASUREMENT_POINT
+    | Capability.REFERENCE_GAS
 )
 
 

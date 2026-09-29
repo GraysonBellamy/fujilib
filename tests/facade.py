@@ -17,6 +17,7 @@ from anyserial import SerialConfig
 from anyserial.testing import serial_port_pair
 
 from fujilib.devices.analyzer import Analyzer
+from fujilib.devices.capability import Capability
 from fujilib.devices.profile import ZP_PROFILE
 from fujilib.devices.session import Session
 from fujilib.errors import FujiConnectionError
@@ -100,17 +101,24 @@ async def analyzer_on(
     address: int = 1,
     channel_map: Mapping[ChannelId, Gas] | None = ASSERTED,
     identify: bool = True,
+    options: Capability = Capability.NONE,
     **timing: Any,
 ) -> AsyncGenerator[tuple[Analyzer, MockLine]]:
     """An :class:`Analyzer` on a line carrying ``analyzers``; identified unless asked not to.
 
-    The analyzers' request logs are cleared after identification, so a test
-    sees only its own transactions.
+    ``options`` are asserted as fitted. The analyzers' request logs are cleared
+    after identification, so a test sees only its own transactions.
     """
     async with mock_transport(*analyzers) as (transport, line):
         port = ModbusPort(transport, **{**FAST, **timing})
         analyzer = Analyzer(
-            Session(port, address=address, profile=ZP_PROFILE, channel_map=channel_map)
+            Session(
+                port,
+                address=address,
+                profile=ZP_PROFILE,
+                channel_map=channel_map,
+                options=options,
+            )
         )
         try:
             if identify:

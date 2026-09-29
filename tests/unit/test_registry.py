@@ -134,15 +134,77 @@ def test_every_write_function_is_inside_the_envelope() -> None:
 
 
 def test_function_code_choice() -> None:
-    assert REGISTRY.resolve("o2_correction.limit").write_functions == {
+    assert REGISTRY.resolve("hold.ch5.value").write_functions == {
         FC_WRITE_SINGLE,
         FC_WRITE_MULTIPLE,
     }
-    assert REGISTRY.resolve("reference_gas.switching_time").write_functions == {FC_WRITE_MULTIPLE}
+    assert REGISTRY.resolve("reference_gas.switching_time").write_functions == frozenset()
     for spec in REGISTRY.select("interference"):
         assert spec.access is Access.READ
         assert spec.evidence is Evidence.INFERRED
         assert spec.dtype is DataType.UINT32_LH
+
+
+#: The reviewed write subset (design §5.4), spelled out so any change to it is deliberate.
+WRITABLE = frozenset(
+    [
+        *(
+            f"calibration_gas.ch{c}.range{r}.{kind}"
+            for c in range(1, 6)
+            for r in (1, 2)
+            for kind in ("zero", "span")
+        ),
+        *(f"calibration.ch{c}.{mode}" for c in range(1, 6) for mode in ("zero_mode", "range_mode")),
+        *(f"response_time.ndir{k}" for k in range(1, 5)),
+        "response_time.o2",
+        "output_hold.enabled",
+        "hold.mode",
+        *(f"hold.ch{c}.value" for c in range(1, 6)),
+        *(f"range.ch{c}.{part}" for c in range(1, 6) for part in ("selected", "method")),
+    ]
+)
+
+
+def test_the_writable_subset_is_exactly_the_reviewed_one() -> None:
+    assert len(WRITABLE) == 52
+    assert {s.name for s in REGISTRY if s.writable} == WRITABLE
+    for spec in REGISTRY:
+        if spec.writable:
+            assert spec.requires is Capability.NONE, spec.name
+            assert spec.count == 1
+
+
+@pytest.mark.parametrize(
+    "prefix",
+    [
+        "alarm1",
+        "alarm6",
+        "alarm.hysteresis",
+        "auto_calibration",
+        "auto_zero",
+        "blowback",
+        "key_lock",
+        "moving_average1",
+        "o2_correction",
+        "peak_alarm",
+        "measurement_point",
+        "reference_gas",
+    ],
+)
+def test_settings_outside_the_subset_are_read_only(prefix: str) -> None:
+    specs = REGISTRY.select(prefix)
+    assert specs
+    assert not any(s.writable for s in specs)
+
+
+def test_write_limits() -> None:
+    assert (
+        REGISTRY.resolve("response_time.o2").minimum,
+        REGISTRY.resolve("response_time.o2").maximum,
+    ) == (1, 60)
+    assert REGISTRY.resolve("range.ch3.method").write_values == frozenset({0, 2})
+    assert REGISTRY.resolve("calibration_gas.ch3.range1.span").write_percent_fs == (1, 105)
+    assert REGISTRY.resolve("calibration_gas.ch3.range1.zero").write_percent_fs == (0, 100)
 
 
 @pytest.mark.parametrize(
@@ -150,10 +212,9 @@ def test_function_code_choice() -> None:
     [
         ("calibration_gas", SafetyTier.DANGEROUS),
         ("calibration", SafetyTier.DANGEROUS),
-        ("auto_calibration", SafetyTier.DANGEROUS),
-        ("auto_zero", SafetyTier.DANGEROUS),
-        ("alarm1", SafetyTier.PERSISTENT),
         ("response_time", SafetyTier.PERSISTENT),
+        ("output_hold", SafetyTier.PERSISTENT),
+        ("hold", SafetyTier.PERSISTENT),
         ("range.ch1.method", SafetyTier.PERSISTENT),
     ],
 )
@@ -216,7 +277,7 @@ def test_at_finds_multi_word_values() -> None:
 
 
 def _good() -> RegisterSpec:
-    return REGISTRY.resolve("alarm1.mode")
+    return REGISTRY.resolve("hold.mode")
 
 
 def _bad(**changes: Any) -> RegisterSpec:
@@ -235,13 +296,37 @@ def _bad(**changes: Any) -> RegisterSpec:
         (_bad(manual_ref=""), "reference"),
         (_bad(minimum=5, maximum=1, enum=None, dtype=DataType.UINT16), "minimum exceeds"),
         (_bad(enum=None), "ENUM type"),
-        (_bad(maximum=9), "limits do not match AlarmMode"),
+        (_bad(maximum=9), "limits do not match HoldMode"),
         (_bad(dtype=DataType.BOOL, enum=None, minimum=0, maximum=4), "0..1"),
         (_bad(scaling=Scaling(ScalingKind.FIXED)), "fixed scaling"),
         (_bad(scaling=Scaling(ScalingKind.BY_RANGE)), "range scaling"),
         (_bad(scaling=Scaling(ScalingKind.BY_ALARM_TARGET), range=None), "alarm-target"),
         (_bad(scaling=Scaling(ScalingKind.INLINE)), "inline scaling"),
         (_bad(count=2), "count 2"),
+        (_bad(name="hold.mode.copy"), "only the reviewed settings"),
+        (_bad(address=0x8A), "only the reviewed settings"),
+        (_bad(write_functions=frozenset({FC_WRITE_MULTIPLE})), "one word that FC06"),
+        (_bad(write_values=frozenset({7})), "write values"),
+        (_bad(write_values=frozenset()), "write values"),
+        (_bad(write_percent_fs=(0, 100)), "need range scaling"),
+        (
+            _bad(
+                scaling=Scaling(ScalingKind.BY_RANGE),
+                channel=ChannelId.CH1,
+                range=1,
+                write_percent_fs=(5, 1),
+            ),
+            "0 <= low <= high",
+        ),
+        (
+            _bad(
+                access=Access.READ,
+                write_functions=frozenset(),
+                safety=SafetyTier.READ_ONLY,
+                write_values=frozenset({0}),
+            ),
+            "read-only but has write limits",
+        ),
         (_bad(read_functions=frozenset({0x04})), "read functions"),
         (
             _bad(table=RegisterTable.INPUT, read_functions=frozenset({0x04})),
@@ -259,7 +344,7 @@ def test_validate_map_rejects(spec: RegisterSpec, match: str) -> None:
 
 
 def test_validate_map_rejects_duplicates_and_overlaps() -> None:
-    good = _good()
+    good = REGISTRY.resolve("alarm1.mode")  # read-only, so a renamed copy is not refused for that
     with pytest.raises(FujiConfigurationError, match="duplicate"):
         validate_map([good, good], [], ZP_REGIONS)
     with pytest.raises(FujiConfigurationError, match="overlap"):

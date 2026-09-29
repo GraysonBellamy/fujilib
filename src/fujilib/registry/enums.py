@@ -120,8 +120,10 @@ class HoldMode(IntEnum):
 class ZeroCalibrationMode(IntEnum):
     """Manual zero calibration scope (holding 40026–40030).
 
-    ``AT_ONCE`` zeroes every channel so set when any one is zeroed, which widens
-    a calibration beyond the channel it was started on (design §2.6).
+    ``AT_ONCE`` zeroes every channel so set when any one is zeroed at the panel,
+    which widens a manual zero beyond the channel it was started on. Auto
+    calibration and auto zero calibration ignore it: they zero every enabled
+    channel together (ZPA manual p.47; design §2.6).
     """
 
     EACH = 0
@@ -131,8 +133,8 @@ class ZeroCalibrationMode(IntEnum):
 class CalibrationRangeMode(IntEnum):
     """Which ranges a calibration adjusts (holding 40031–40035).
 
-    ``BOTH`` calibrates both ranges together, widening a calibration beyond the
-    range it was started on (design §2.6).
+    ``BOTH`` calibrates both ranges together, manual or automatic, widening a
+    calibration beyond the range it was started on (ZPA manual p.45; design §2.6).
     """
 
     CURRENT = 0

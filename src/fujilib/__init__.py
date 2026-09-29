@@ -45,6 +45,7 @@ from fujilib.devices.session import Session, SessionState
 from fujilib.devices.snapshot import DeviceSnapshot, FujiDeviceSnapshot
 from fujilib.errors import (
     ErrorContext,
+    FujiAnalyzerStateError,
     FujiCapabilityError,
     FujiConfigurationError,
     FujiConfirmationRequiredError,
@@ -113,6 +114,7 @@ __all__ = [
     "ErrorContext",
     "ErrorLogEntry",
     "Frame",
+    "FujiAnalyzerStateError",
     "FujiCapabilityError",
     "FujiConfigurationError",
     "FujiConfirmationRequiredError",

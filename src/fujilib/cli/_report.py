@@ -12,6 +12,8 @@ from enum import Enum
 from typing import TYPE_CHECKING
 
 from fujilib.devices.capability import PROBED_CAPABILITIES
+from fujilib.devices.settings import ChangeAction
+from fujilib.devices.writes import describe
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -29,14 +31,18 @@ if TYPE_CHECKING:
         RangeInfo,
     )
     from fujilib.devices.reads import ClockReading
+    from fujilib.devices.settings import ApplyReport, SettingChange, SettingsDiff
     from fujilib.devices.snapshot import FujiDeviceSnapshot
+    from fujilib.devices.writes import WriteResult
     from fujilib.registry.typecode import TypeCode
 
 __all__ = [
     "adc_report",
+    "apply_report",
     "calibration_log_report",
     "channels_report",
     "clock_report",
+    "diff_report",
     "error_log_report",
     "frame_report",
     "info_report",
@@ -238,3 +244,57 @@ def snapshot_report(snapshot: FujiDeviceSnapshot) -> dict[str, object]:
 def settings_report(values: Mapping[str, RegisterValue]) -> dict[str, object]:
     """Every register of a settings read, by name."""
     return {name: parameter_report(value) for name, value in values.items()}
+
+
+def _wanted(change: SettingChange) -> str:
+    desired = change.desired
+    shown = desired.value if desired.value is not None else f"raw {desired.raw}"
+    return f"{shown} {desired.unit}" if desired.unit else str(shown)
+
+
+def change_report(change: SettingChange) -> dict[str, object]:
+    """One setting of a document against the analyzer."""
+    out: dict[str, object] = {
+        "action": change.action.value,
+        "current": describe(change.current) if change.current is not None else None,
+        "wanted": _wanted(change),
+    }
+    if change.action is ChangeAction.WRITE:
+        out["safety"] = change.safety.name.lower()
+    if change.reason is not None:
+        out["reason"] = change.reason
+    return out
+
+
+def diff_report(diff: SettingsDiff) -> dict[str, object]:
+    """A document against the analyzer: the writes in order, the refusals, a count of the rest."""
+    out: dict[str, object] = {}
+    if diff.identity_mismatch is not None:
+        out["analyzer"] = diff.identity_mismatch
+    out["write"] = {c.name: change_report(c) for c in diff.writes}
+    out["refused"] = {c.name: change_report(c) for c in diff.refused}
+    out["unchanged"] = len(diff.unchanged)
+    out["tier"] = diff.tier.name.lower()
+    return out
+
+
+def write_report(result: WriteResult) -> dict[str, object]:
+    """One setting write and what its read-back found."""
+    return {
+        "before": describe(result.previous),
+        "written": describe(result.requested),
+        "read_back": describe(result.observed) if result.observed is not None else None,
+        "state": result.state.value,
+        "acknowledged": result.acknowledged,
+    }
+
+
+def apply_report(report: ApplyReport) -> dict[str, object]:
+    """What applying a document did, ending with its status."""
+    out = diff_report(report.diff)
+    out["written"] = {r.name: write_report(r) for r in report.completed}
+    if report.failed is not None:
+        out["failed"] = {"setting": report.failed, "error": str(report.error)}
+        out["not_attempted"] = list(report.not_attempted)
+    out["status"] = report.status.value
+    return out

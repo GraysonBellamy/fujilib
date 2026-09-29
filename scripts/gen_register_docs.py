@@ -55,7 +55,18 @@ registry and run `python scripts/gen_register_docs.py`.
   06 write single, 10 write multiple. FC06 reaches only 0000h-009Dh.
 - **Tier** is the safety tier of a write. Every read is `READ_ONLY`, and so is every
   register fujilib never writes.
-- **Limits** are raw, before scaling. **Scaling** says where the decimal point comes from:
+- **What is writable.** Only the reviewed subset of design §5.4: the calibration gases
+  and calibration scope, the response times, output hold and the hold settings, and each
+  channel's range and range method. They are documented, the bench unit does not
+  contradict them, they are not options, and the bench analyzer can test them all.
+  Every other register is read-only, including the documented alarm, schedule, key-lock,
+  averaging, O2-correction, peak-alarm, blowback, measurement-point and reference-gas
+  settings.
+- **Limits** are raw, before scaling. For a writable register they are the limits of a
+  write: the narrower of the two manuals' where they disagree, since the MODBUS manual
+  defers setting ranges to the instruction manual (TN5A1190a p.28). `write` lists the
+  only values a write may use, or its limits in percent of the range's full scale.
+  **Scaling** says where the decimal point comes from:
   `inline` (the two registers after a concentration), `by_range` (the channel and range's
   decimal-point register), `by_alarm_target` (the range of the alarm's target channel),
   or `fixed(n)`. A scaled concentration takes its unit from the same place.
@@ -105,11 +116,17 @@ def _functions(fcs: frozenset[int]) -> str:
 
 
 def _limits(spec: RegisterSpec) -> str:
-    if spec.minimum is None and spec.maximum is None:
-        return "-"
-    low = "" if spec.minimum is None else spec.minimum
-    high = "" if spec.maximum is None else spec.maximum
-    return f"{low}..{high}"
+    parts: list[str] = []
+    if spec.minimum is not None or spec.maximum is not None:
+        low = "" if spec.minimum is None else spec.minimum
+        high = "" if spec.maximum is None else spec.maximum
+        parts.append(f"{low}..{high}")
+    if spec.write_values is not None:
+        parts.append("write " + ", ".join(str(v) for v in sorted(spec.write_values)))
+    if spec.write_percent_fs is not None:
+        low_fs, high_fs = spec.write_percent_fs
+        parts.append(f"write {low_fs}..{high_fs} %FS")
+    return "; ".join(parts) or "-"
 
 
 def _scaling(spec: RegisterSpec) -> str:

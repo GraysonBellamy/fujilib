@@ -30,6 +30,7 @@ from fujilib.testing import (
     FaultKind,
     MockAnalyzer,
     MockAnalyzerConfig,
+    MockCalibration,
     MockLine,
     MockRegion,
     MockRequest,
@@ -357,6 +358,112 @@ async def test_documented_writes_are_accepted() -> None:
     assert [mock.holding[a] for a in range(0x23, 0x27)] == [5000, 10, 1000, 10]
     assert mock.commands == [(0x07D2, 1)]
     assert mock.transactions()[:2] == [(FC06, 0x0049, 1), (FC10, 0x0023, 4)]
+
+
+async def test_a_range_selected_under_the_manual_method_becomes_current() -> None:
+    mock = analyzer()
+    mock.holding[0x6E] = 2  # Ch1 changes range automatically
+    async with raw_bus(mock) as bus:
+        await bus.slave(1).write_registers(0x0069, [1, 1, 1, 1, 1])
+    assert mock.register("range.ch1.current") == (0,)
+    assert [mock.register(f"range.ch{c}.current") for c in range(2, 6)] == [(1,)] * 4
+    assert mock.range_changes == {}
+
+
+async def test_a_range_becomes_current_after_the_lag() -> None:
+    mock = MockAnalyzer(replace(DEFAULT_ZPA_BANK, range_lag_s=0.1))
+    async with raw_bus(mock) as bus:
+        slave = bus.slave(1)
+        await slave.write_register(0x006B, 1)
+        assert await slave.read_input_registers(0x0027, count=1) == (0,)
+        assert 3 in mock.range_changes
+        await anyio.sleep(0.12)
+        assert await slave.read_input_registers(0x0027, count=1) == (1,)
+    assert mock.range_changes == {}
+
+
+def running(mock: MockAnalyzer) -> MockCalibration | None:
+    """The calibration running now (read afresh, past any narrowing)."""
+    return mock.calibration
+
+
+def enabled(*channels: int, scale: float = 0.001) -> MockAnalyzer:
+    """A station with auto calibration enabled on ``channels``, flow times 100 s each."""
+    holding = {0x14 + c - 1: 1 for c in channels}
+    holding.update({0x84 + k: 100 for k in range(7)})
+    holding[0x68] = 100
+    return MockAnalyzer(MockAnalyzerConfig(holding=holding, time_scale=scale))
+
+
+async def test_auto_calibration_runs_its_phases_on_the_clock() -> None:
+    mock = enabled(1, 3)
+    mock.holding[0x5C] = 1  # output hold
+    mock.holding[0x73 + 2] = 1  # Ch3 calibrates on range 2
+    async with raw_bus(mock) as bus:
+        slave = bus.slave(1)
+        await slave.write_register(0x07D2, 1)
+        calibration = mock.calibration
+        assert calibration is not None
+        assert calibration.kind == "auto_calibration"
+        assert calibration.channels == (1, 3)
+        assert calibration.duration_s == pytest.approx(0.4)  # pyright: ignore[reportUnknownMemberType]
+        assert [p[0] for p in calibration.phases] == ["zero", "span", "span", "extension"]
+        assert calibration.phase_at(0.05) == ("zero", None)
+        assert calibration.phase_at(0.25) == ("span", 3)
+        assert calibration.phase_at(0.35) == ("extension", None)
+        assert calibration.phase_at(0.45) is None
+        status = await slave.read_input_registers(0x30, count=1)
+        assert status == (1,)
+        assert mock.register("range.ch3.current") == (1,)
+        assert mock.register("status.ch1.auto_zero_running") == (1,)
+        assert mock.register("status.ch3.hold") == (1,)
+        await slave.write_register(0x07D3, 1)  # ignored while one runs
+        assert running(mock) is calibration
+        await anyio.sleep(0.45)
+        assert await slave.read_input_registers(0x30, count=1) == (0,)
+    assert running(mock) is None
+    assert mock.register("range.ch3.current") == (0,)
+    assert mock.register("status.ch3.hold") == (0,)
+    assert mock.commands == [(0x07D2, 1), (0x07D3, 1)]
+
+
+async def test_auto_zero_zeroes_and_its_errors_appear_at_the_end() -> None:
+    mock = enabled(2)
+    mock.calibration_errors = {2: 5}
+    async with raw_bus(mock) as bus:
+        await bus.slave(1).write_register(0x07D3, 1)
+        calibration = mock.calibration
+        assert calibration is not None
+        assert calibration.kind == "auto_zero"
+        assert [p[0] for p in calibration.phases] == ["zero"]
+        mock.finish_calibration()
+        mock.finish_calibration()  # nothing running: nothing to do
+    assert mock.register("error.ch2.e5.active") == (1,)
+    assert mock.register("error.ch2.e9.active") == (0,)  # 9 is for auto calibration only
+    assert mock.register("status.calibration_error") == (1,)
+    assert mock.calibration_errors == {}
+
+
+async def test_commands_that_change_nothing() -> None:
+    mock = enabled(1)
+    mock.set_register("display.screen", 8)
+    async with raw_bus(mock) as bus:
+        slave = bus.slave(1)
+        await slave.write_register(0x07D2, 2)  # only 1 means run
+        await slave.write_register(0x07D4, 1)  # blowback: no status register to show it
+        assert running(mock) is None
+        assert mock.register("display.screen") == (8,)
+        await slave.write_register(0x07D1, 1)
+    assert mock.register("display.screen") == (0,)
+    assert mock.commands == [(0x07D2, 2), (0x07D4, 1), (0x07D1, 1)]
+
+
+async def test_an_ignored_write_is_acknowledged_and_not_stored() -> None:
+    mock = analyzer()
+    mock.inject(FaultKind.IGNORE)
+    async with raw_bus(mock) as bus:
+        await bus.slave(1).write_register(0x0049, 1)
+    assert mock.holding.get(0x0049, 0) == 0
 
 
 async def test_an_over_long_write_is_refused_by_the_analyzer() -> None:

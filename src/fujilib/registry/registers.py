@@ -10,13 +10,23 @@ Addresses are 0-based relative addresses, exactly as on the wire. Page
 references are PDF page numbers of the manuals, which match the page markers
 of the text extracts (the printed page numbers differ).
 
+**What is writable.** A holding register is writable only when its
+declaration gives it a write tier. That is the reviewed subset of design §5.4:
+documented, not contradicted by the bench unit, not an option, and testable on
+the bench analyzer. Every other register, holding or input, is read-only. For
+a writable register ``minimum`` and ``maximum`` are the limits of a write, the
+narrower of the two manuals' where they disagree (the MODBUS manual defers
+setting ranges to the instruction manual, TN5A1190a p.28).
+
 The whole map is validated at import (:func:`validate_map`) and a violation
 fails loudly as :class:`~fujilib.errors.FujiConfigurationError`:
 
 - names are unique;
 - no two entries overlap within a table;
 - every entry lies inside a region for each function code it lists;
-- every writable entry lies inside the frozen write envelope;
+- every writable entry lies inside the frozen write envelope, is one word,
+  can be written with FC06, and is one of the reviewed settings of
+  :data:`~fujilib.registry.write_policy.REVIEWED_SETTINGS`;
 - only documented registers are writable, and only above ``READ_ONLY``;
 - enum, limit and scaling metadata are consistent.
 """
@@ -58,7 +68,7 @@ from fujilib.registry.regions import (
     RegionMap,
     RegisterTable,
 )
-from fujilib.registry.write_policy import envelope_allows
+from fujilib.registry.write_policy import REVIEWED_SETTINGS, envelope_allows
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
@@ -74,9 +84,6 @@ __all__ = [
     "ScalingKind",
     "validate_map",
 ]
-
-#: The last holding address FC06 may write (TN5A1190a p.23).
-_FC06_LAST: Final = 0x009D
 
 
 class Access(StrEnum):
@@ -128,10 +135,11 @@ _BY_ALARM: Final = Scaling(ScalingKind.BY_ALARM_TARGET)
 class RegisterSpec:
     """One register (or a multi-word value) of the map.
 
-    ``minimum`` and ``maximum`` are raw limits, before scaling. ``unit`` is a
-    fixed display unit (``"s"``, ``"%FS"``); a scaled concentration takes its
-    unit from the same source as its decimals. ``notes`` records where the
-    manuals disagree or the bench unit contradicts them.
+    ``minimum`` and ``maximum`` are raw limits, before scaling; for a writable
+    register they are the limits of a write. ``unit`` is a fixed display unit
+    (``"s"``, ``"%FS"``); a scaled concentration takes its unit from the same
+    source as its decimals. ``notes`` records where the manuals disagree or the
+    bench unit contradicts them.
     """
 
     name: str
@@ -151,6 +159,10 @@ class RegisterSpec:
     unit: str | None = None
     minimum: int | None = None
     maximum: int | None = None
+    write_values: frozenset[int] | None = None
+    """The raw values a write may use, where fewer than the limits allow."""
+    write_percent_fs: tuple[int, int] | None = None
+    """For a range-scaled setting: the limits of a write, in percent of the range's full scale."""
     enum: type[IntEnum] | None = None
     channel: ChannelId | None = None
     range: int | None = None
@@ -240,10 +252,8 @@ def _read_functions(table: RegisterTable) -> frozenset[int]:
     return frozenset({table.read_function})
 
 
-def _write_functions(address: int, count: int) -> frozenset[int]:
-    if address + count - 1 <= _FC06_LAST and count == 1:
-        return frozenset({FC_WRITE_SINGLE, FC_WRITE_MULTIPLE})
-    return frozenset({FC_WRITE_MULTIPLE})
+#: A writable setting is one word inside FC06's reach, so either function writes it.
+_WRITE_FUNCTIONS: Final = frozenset({FC_WRITE_SINGLE, FC_WRITE_MULTIPLE})
 
 
 def _spec(
@@ -252,9 +262,9 @@ def _spec(
     group: str,
     address: int,
     *,
-    safety: SafetyTier,
     ref: str,
     doc: str,
+    write: SafetyTier | None = None,
     dtype: DataType = DataType.UINT16,
     evidence: Evidence = Evidence.DOCUMENTED,
     count: int = 1,
@@ -262,6 +272,8 @@ def _spec(
     unit: str | None = None,
     minimum: int | None = None,
     maximum: int | None = None,
+    write_values: frozenset[int] | None = None,
+    write_percent_fs: tuple[int, int] | None = None,
     enum: type[IntEnum] | None = None,
     channel: ChannelId | None = None,
     rng: int | None = None,
@@ -271,15 +283,14 @@ def _spec(
 ) -> RegisterSpec:
     """Build a spec. ``enum`` implies an ENUM type and its limits; a BOOL is 0..1.
 
-    A documented holding register is writable, with FC06 wherever FC06 reaches;
-    every other register is read-only.
+    ``write`` makes the register writable at that safety tier; without it the
+    register is read-only.
     """
     if enum is not None:
         dtype = DataType.ENUM
         minimum, maximum = min(enum), max(enum)
     elif dtype is DataType.BOOL:
         minimum, maximum = 0, 1
-    writable = table is RegisterTable.HOLDING and evidence is Evidence.DOCUMENTED
     return RegisterSpec(
         name=name,
         group=group,
@@ -287,10 +298,10 @@ def _spec(
         address=address,
         count=count,
         dtype=dtype,
-        access=Access.READ_WRITE if writable else Access.READ,
+        access=Access.READ_WRITE if write is not None else Access.READ,
         read_functions=_read_functions(table),
-        write_functions=_write_functions(address, count) if writable else frozenset(),
-        safety=safety if writable else SafetyTier.READ_ONLY,
+        write_functions=_WRITE_FUNCTIONS if write is not None else frozenset(),
+        safety=write if write is not None else SafetyTier.READ_ONLY,
         evidence=evidence,
         manual_ref=ref,
         doc=doc,
@@ -298,6 +309,8 @@ def _spec(
         unit=unit,
         minimum=minimum,
         maximum=maximum,
+        write_values=write_values,
+        write_percent_fs=write_percent_fs,
         enum=enum,
         channel=channel,
         range=rng,
@@ -314,7 +327,6 @@ def _setting(name: str, group: str, address: int, **kw: Any) -> RegisterSpec:
 
 def _input(name: str, group: str, address: int, **kw: Any) -> RegisterSpec:
     """An input register: always read-only (see :func:`_spec`)."""
-    kw.setdefault("safety", SafetyTier.READ_ONLY)
     return _spec(RegisterTable.INPUT, name, group, address, **kw)
 
 
@@ -338,9 +350,23 @@ _NO_CYCLE_LIMITS: Final = (
 _BY_ALARM_TARGET_NOTE: Final = (
     "Scaled by the range of the alarm's target channel; the target encoding is contested."
 )
+_ALARM_LIMIT_NOTE: Final = (
+    "The ZPA manual limits them to 0-100 %FS, with the high limit above the low one by more "
+    "than the hysteresis, and 0 meaning no alarm (ZPA p.48)."
+)
 
 
 # --- Holding registers ------------------------------------------------------
+
+
+_GAS_LIMITS: Final = {"zero": (0, 100), "span": (1, 105)}
+_GAS_NOTE: Final = (
+    "Takes effect at the next calibration, manual or automatic (ZPA p.42). Writes are "
+    "limited to 0-100 %FS for zero gas and 1-105 %FS for span gas: the ZPA manual gives "
+    "1-105 %FS for span gas and no zero-gas limit for NDIR or built-in O2 (ZPA p.42). "
+    "Its separate limits for external zirconia and reverse-range O2 are not modelled, so "
+    "some legal values there are refused."
+)
 
 
 def _calibration_settings() -> Iterator[RegisterSpec]:
@@ -351,48 +377,59 @@ def _calibration_settings() -> Iterator[RegisterSpec]:
                     f"calibration_gas.ch{c}.range{r}.{kind}",
                     "Calibration gas",
                     4 * (c - 1) + 2 * (r - 1) + k,
-                    safety=SafetyTier.DANGEROUS,
+                    write=SafetyTier.DANGEROUS,
                     ref="TN5A1190a p.28",
                     doc=f"Ch{c} range {r} {kind} calibration gas concentration.",
                     minimum=0,
                     maximum=9999,
+                    write_percent_fs=_GAS_LIMITS[kind],
                     scaling=_BY_RANGE,
                     channel=_ch(c),
                     rng=r,
+                    notes=_GAS_NOTE,
                 )
     for c in _CHANNELS_5:
         yield _setting(
             f"auto_calibration.ch{c}.included",
             "Auto calibration",
             0x14 + c - 1,
-            safety=SafetyTier.DANGEROUS,
             ref="TN5A1190a p.29",
-            doc=f"Whether auto calibration calibrates Ch{c}.",
+            doc=f"Whether auto calibration and auto zero calibration calibrate Ch{c}.",
             channel=_ch(c),
             requires=Capability.AUTO_CALIBRATION,
             dtype=DataType.BOOL,
+            notes=(
+                "The same list chooses the channels of auto zero calibration (ZPA p.59). "
+                "Their zero is done together, their span one after another from Ch1 (ZPA p.47)."
+            ),
         )
     for c in _CHANNELS_5:
         yield _setting(
             f"calibration.ch{c}.zero_mode",
             "Calibration scope",
             0x19 + c - 1,
-            safety=SafetyTier.DANGEROUS,
+            write=SafetyTier.DANGEROUS,
             ref="TN5A1190a p.29",
-            doc=f"Ch{c} manual zero: each channel, or every channel at once.",
+            doc=f"Ch{c} manual zero at the panel: alone, or with every 'at once' channel.",
             channel=_ch(c),
             enum=ZeroCalibrationMode,
+            notes=(
+                "Affects only a manual zero started at the panel. Auto calibration and auto "
+                "zero calibration zero every enabled channel together whatever it says "
+                "(ZPA p.47)."
+            ),
         )
     for c in _CHANNELS_5:
         yield _setting(
             f"calibration.ch{c}.range_mode",
             "Calibration scope",
             0x1E + c - 1,
-            safety=SafetyTier.DANGEROUS,
+            write=SafetyTier.DANGEROUS,
             ref="TN5A1190a p.29",
-            doc=f"Ch{c} calibration adjusts the current range, or both ranges.",
+            doc=f"Ch{c} calibration, manual or automatic, adjusts the current range or both.",
             channel=_ch(c),
             enum=CalibrationRangeMode,
+            notes="'Both' calibrates range 1 and range 2 together (ZPA p.45).",
         )
 
 
@@ -405,7 +442,6 @@ def _alarm_settings() -> Iterator[RegisterSpec]:
                     f"alarm{n}.range{r}.{kind}",
                     "Alarms",
                     0x23 + 4 * (n - 1) + 2 * (r - 1) + k,
-                    safety=SafetyTier.PERSISTENT,
                     ref="TN5A1190a p.29",
                     doc=f"Alarm {n} range {r} {kind} limit.",
                     minimum=0,
@@ -414,7 +450,8 @@ def _alarm_settings() -> Iterator[RegisterSpec]:
                     alarm=n,
                     rng=r,
                     notes=_BY_ALARM_TARGET_NOTE
-                    + " The manual labels these 'Ch1-Ch5'; they are per alarm (design §2.6).",
+                    + " The manual labels these 'Ch1-Ch5'; they are per alarm (design §2.6). "
+                    + _ALARM_LIMIT_NOTE,
                     **common,
                 )
     for n in _ALARMS_5:
@@ -422,7 +459,6 @@ def _alarm_settings() -> Iterator[RegisterSpec]:
             f"alarm{n}.mode",
             "Alarms",
             0x37 + n - 1,
-            safety=SafetyTier.PERSISTENT,
             ref="TN5A1190a p.30",
             doc=f"Alarm {n} mode.",
             alarm=n,
@@ -434,18 +470,17 @@ def _alarm_settings() -> Iterator[RegisterSpec]:
             f"alarm{n}.enabled",
             "Alarms",
             0x3C + n - 1,
-            safety=SafetyTier.PERSISTENT,
             ref="TN5A1190a p.30",
             doc=f"Alarm {n} on/off.",
             alarm=n,
             dtype=DataType.BOOL,
+            notes="Switch the alarm off before changing its settings (ZPA p.48).",
             **common,
         )
     yield _setting(
         "alarm.hysteresis",
         "Alarms",
         0x41,
-        safety=SafetyTier.PERSISTENT,
         ref="TN5A1190a p.30",
         doc="Alarm hysteresis, common to every alarm.",
         minimum=0,
@@ -458,7 +493,6 @@ def _alarm_settings() -> Iterator[RegisterSpec]:
             f"alarm{n}.target_channel",
             "Alarms",
             0x78 + n - 1,
-            safety=SafetyTier.PERSISTENT,
             ref="TN5A1190a p.31",
             doc=f"Alarm {n} target channel, raw.",
             evidence=Evidence.CONTESTED,
@@ -475,7 +509,6 @@ def _alarm_settings() -> Iterator[RegisterSpec]:
                 f"alarm6.range{r}.{kind}",
                 "Alarms",
                 0x7E + 2 * (r - 1) + k,
-                safety=SafetyTier.PERSISTENT,
                 ref="TN5A1190a p.31",
                 doc=f"Alarm 6 range {r} {kind} limit.",
                 minimum=0,
@@ -483,14 +516,13 @@ def _alarm_settings() -> Iterator[RegisterSpec]:
                 scaling=_BY_ALARM,
                 alarm=6,
                 rng=r,
-                notes=_BY_ALARM_TARGET_NOTE,
+                notes=_BY_ALARM_TARGET_NOTE + " " + _ALARM_LIMIT_NOTE,
                 **common,
             )
     yield _setting(
         "alarm6.mode",
         "Alarms",
         0x82,
-        safety=SafetyTier.PERSISTENT,
         ref="TN5A1190a p.32",
         doc="Alarm 6 mode.",
         alarm=6,
@@ -501,11 +533,11 @@ def _alarm_settings() -> Iterator[RegisterSpec]:
         "alarm6.enabled",
         "Alarms",
         0x83,
-        safety=SafetyTier.PERSISTENT,
         ref="TN5A1190a p.32",
         doc="Alarm 6 on/off.",
         alarm=6,
         dtype=DataType.BOOL,
+        notes="Alarm 6 is an option the ZPA manual never mentions (TN5A1190a p.31).",
         **common,
     )
 
@@ -515,7 +547,6 @@ def _schedule(
     group: str,
     base: int,
     *,
-    safety: SafetyTier,
     requires: Capability,
     ref: str,
 ) -> Iterator[RegisterSpec]:
@@ -524,7 +555,6 @@ def _schedule(
         f"{prefix}.start_day",
         group,
         base,
-        safety=safety,
         requires=requires,
         ref=ref,
         doc="Start day of week.",
@@ -535,7 +565,6 @@ def _schedule(
             f"{prefix}.start_{part}",
             group,
             base + offset,
-            safety=safety,
             requires=requires,
             ref=ref,
             doc=f"Start {part}, raw.",
@@ -545,14 +574,13 @@ def _schedule(
 
 
 def _automatic_functions() -> Iterator[RegisterSpec]:
-    auto_cal = {"requires": Capability.AUTO_CALIBRATION, "safety": SafetyTier.DANGEROUS}
+    auto_cal = {"requires": Capability.AUTO_CALIBRATION}
     yield from _schedule(
         "auto_calibration",
         "Auto calibration",
         0x42,
         ref="TN5A1190a p.30",
         requires=Capability.AUTO_CALIBRATION,
-        safety=SafetyTier.DANGEROUS,
     )
     yield _setting(
         "auto_calibration.cycle",
@@ -579,6 +607,10 @@ def _automatic_functions() -> Iterator[RegisterSpec]:
         ref="TN5A1190a p.30",
         doc="Auto calibration on/off.",
         dtype=DataType.BOOL,
+        notes=(
+            "Switch it off before changing the schedule (ZPA p.53). A schedule resumes "
+            "after a power failure at its next start time (ZPA p.55)."
+        ),
         **auto_cal,
     )
     for c in _CHANNELS_5:
@@ -587,9 +619,13 @@ def _automatic_functions() -> Iterator[RegisterSpec]:
             "Auto calibration",
             0x73 + c - 1,
             ref="TN5A1190a p.31",
-            doc=f"Range Ch{c} is auto-calibrated on.",
+            doc=f"Range Ch{c} is calibrated on by auto calibration and auto zero calibration.",
             channel=_ch(c),
             enum=RangeIndex,
+            notes=(
+                "The channel switches to this range for the calibration and back afterwards, "
+                "so the current range can change during one (ZPA p.46)."
+            ),
             **auto_cal,
         )
     for k in range(1, 8):
@@ -604,19 +640,20 @@ def _automatic_functions() -> Iterator[RegisterSpec]:
             unit="s",
             notes=(
                 "Which gas each time belongs to is not stated. The ZPA flow-time screen "
-                "suggests 1 zero, 2-6 Ch1-Ch5 span, 7 hold extension (inferred, ZPA p.55)."
+                "suggests 1 zero, 2-6 Ch1-Ch5 span, 7 the hold extension after calibration "
+                "(inferred, ZPA p.31, p.54-55). Each should be at least five times the "
+                "channel's response time (ZPA p.54)."
             ),
             **auto_cal,
         )
 
-    auto_zero = {"requires": Capability.AUTO_ZERO, "safety": SafetyTier.DANGEROUS}
+    auto_zero = {"requires": Capability.AUTO_ZERO}
     yield from _schedule(
         "auto_zero",
         "Auto zero calibration",
         0x62,
         ref="TN5A1190a p.31",
         requires=Capability.AUTO_ZERO,
-        safety=SafetyTier.DANGEROUS,
     )
     yield _setting(
         "auto_zero.cycle",
@@ -643,6 +680,10 @@ def _automatic_functions() -> Iterator[RegisterSpec]:
         ref="TN5A1190a p.31",
         doc="Auto zero calibration on/off.",
         dtype=DataType.BOOL,
+        notes=(
+            "Switch it off before changing the schedule (ZPA p.59). Where it falls due "
+            "with an auto calibration, the auto calibration runs instead (ZPA p.60)."
+        ),
         **auto_zero,
     )
     yield _setting(
@@ -654,17 +695,17 @@ def _automatic_functions() -> Iterator[RegisterSpec]:
         minimum=60,
         maximum=900,
         unit="s",
+        notes="The gas replacement time after the calibration is the same (ZPA p.60).",
         **auto_zero,
     )
 
-    blowback = {"requires": Capability.BLOWBACK, "safety": SafetyTier.PERSISTENT}
+    blowback = {"requires": Capability.BLOWBACK}
     yield from _schedule(
         "blowback",
         "Blowback",
         0x91,
         ref="TN5A1190a p.32",
         requires=Capability.BLOWBACK,
-        safety=SafetyTier.PERSISTENT,
     )
     yield _setting(
         "blowback.cycle",
@@ -704,6 +745,10 @@ def _automatic_functions() -> Iterator[RegisterSpec]:
         ref="TN5A1190a p.32",
         doc="Blowback on/off.",
         dtype=DataType.BOOL,
+        notes=(
+            "Blowback appears in neither the ZPA manual nor its code table, nor in the "
+            "service manual's ZPA parts list (TN5A1191b p.10)."
+        ),
         **blowback,
     )
     yield _setting(
@@ -725,37 +770,47 @@ def _measurement_settings() -> Iterator[RegisterSpec]:
         "key_lock",
         "Key lock",
         0x49,
-        safety=persistent,
         ref="TN5A1190a p.30",
         doc="Front-panel key lock on/off.",
         dtype=DataType.BOOL,
+        notes=(
+            "Locks every panel key but the key lock itself, including the forced stop of a "
+            "running auto calibration (ZPA p.55, p.64). It does not block Modbus writes: "
+            "the bench unit applied a setting written while it was on (protocol findings "
+            "§13.3)."
+        ),
     )
     for k in range(1, 5):
         yield _setting(
             f"response_time.ndir{k}",
             "Response time",
             0x4B + 2 * (k - 1),
-            safety=persistent,
+            write=persistent,
             ref="TN5A1190a p.30",
             doc=f"Response time of NDIR component {k}.",
-            minimum=0,
+            minimum=1,
             maximum=60,
             unit="s",
             notes=(
                 "The manual's 'Ch1-Ch4' slots are NDIR components; O2 has its own slot "
-                "(40084) whatever its channel. The ZPA manual gives 1-60 s (ZPA p.65)."
+                "(40084) whatever its channel. The MODBUS manual gives 0-60 s, the ZPA "
+                "manual 1-60 s (ZPA p.65); a write is kept to 1-60 s."
             ),
         )
     yield _setting(
         "response_time.o2",
         "Response time",
         0x53,
-        safety=persistent,
+        write=persistent,
         ref="TN5A1190a p.30",
         doc="Response time of the O2 measurement, whatever its channel.",
-        minimum=0,
+        minimum=1,
         maximum=60,
         unit="s",
+        notes=(
+            "The MODBUS manual gives 0-60 s, the ZPA manual 1-60 s (ZPA p.65); a write is "
+            "kept to 1-60 s."
+        ),
     )
     averaging = {"requires": Capability.AVERAGING}
     for k in range(1, 5):
@@ -763,14 +818,14 @@ def _measurement_settings() -> Iterator[RegisterSpec]:
             f"moving_average{k}.period",
             "Moving average",
             0x54 + k - 1,
-            safety=persistent,
             ref="TN5A1190a p.30",
             doc=f"Moving-average period {k}, in its unit.",
             minimum=0,
             maximum=59,
             notes=(
                 "Which output each of the four 'orders' averages is not stated. The ZPA "
-                "manual gives 1-59 min or 1-4 h (ZPA p.65, p.68)."
+                "manual gives 1-59 min or 1-4 h (ZPA p.65, p.68). Changing a period "
+                "restarts that average (ZPA p.68)."
             ),
             **averaging,
         )
@@ -779,7 +834,6 @@ def _measurement_settings() -> Iterator[RegisterSpec]:
             f"moving_average{k}.unit",
             "Moving average",
             0x58 + k - 1,
-            safety=persistent,
             ref="TN5A1190a p.30",
             doc=f"Moving-average period {k} unit.",
             enum=PeriodUnit,
@@ -789,141 +843,159 @@ def _measurement_settings() -> Iterator[RegisterSpec]:
         "output_hold.enabled",
         "Output hold",
         0x5C,
-        safety=persistent,
+        write=persistent,
         ref="TN5A1190a p.31",
-        doc="Output hold on/off.",
+        doc="Hold the outputs during calibration, on/off.",
         dtype=DataType.BOOL,
+        notes=(
+            "Holds the analog outputs and the Modbus concentration registers during a "
+            "manual or automatic calibration and its gas-replacement time; the display is "
+            "never held (ZPA p.65, p.67)."
+        ),
     )
     correction = {"requires": Capability.O2_CORRECTION}
     yield _setting(
         "o2_correction.reference",
         "O2 correction",
         0x5D,
-        safety=persistent,
         ref="TN5A1190a p.31",
         doc="O2 correction reference value.",
         minimum=1,
         maximum=19,
         unit="vol%",
-        notes="The ZPA manual gives 0-19 % (ZPA p.73).",
+        notes=(
+            "The ZPA manual gives 0-19 %, set in the password-protected maintenance mode "
+            "(ZPA p.73)."
+        ),
         **correction,
     )
     yield _setting(
         "o2_correction.limit",
         "O2 correction",
         0x9D,
-        safety=persistent,
         ref="TN5A1190a p.32",
         doc="O2 limit for correction.",
         minimum=1,
         maximum=20,
         unit="vol%",
+        notes="Set in the password-protected maintenance mode (ZPA p.73).",
         **correction,
     )
+    peak = "The CO peak alarm is an option (ZPA p.51)."
     yield _setting(
         "peak_alarm.enabled",
         "Peak alarm",
         0x5E,
-        safety=persistent,
         ref="TN5A1190a p.31",
         doc="Peak alarm on/off.",
         dtype=DataType.BOOL,
+        notes=peak + " Switching it on restarts the count from 0 (ZPA p.52).",
     )
     yield _setting(
         "peak_alarm.concentration",
         "Peak alarm",
         0x5F,
-        safety=persistent,
         ref="TN5A1190a p.31",
         doc="Peak alarm concentration.",
         minimum=100,
         maximum=1000,
         unit="ppm",
-        notes="The ZPA manual gives 10-1000 ppm in 5 ppm steps (ZPA p.52).",
+        notes=peak + " The ZPA manual gives 10-1000 ppm in 5 ppm steps (ZPA p.52).",
     )
     yield _setting(
         "peak_alarm.count",
         "Peak alarm",
         0x60,
-        safety=persistent,
         ref="TN5A1190a p.31",
         doc="Peak alarm count.",
         minimum=1,
         maximum=99,
+        notes=peak,
     )
     yield _setting(
         "peak_alarm.hysteresis",
         "Peak alarm",
         0x61,
-        safety=persistent,
         ref="TN5A1190a p.31",
         doc="Peak alarm hysteresis.",
         minimum=0,
         maximum=20,
         unit="%FS",
+        notes=peak,
     )
     for c in _CHANNELS_5:
         yield _setting(
             f"range.ch{c}.selected",
             "Ranges",
             0x69 + c - 1,
-            safety=persistent,
+            write=persistent,
             ref="TN5A1190a p.31",
-            doc=f"Ch{c} selected range (ignored while remote range is on).",
+            doc=f"Ch{c} selected range, used while the range method is manual.",
             channel=_ch(c),
             enum=RangeIndex,
+            notes=(
+                "The MODBUS manual says it is ignored while remote range is on; the ZPA "
+                "manual, while the method is remote or auto (ZPA p.40). A write needs the "
+                "method to be manual. The current range follows some tens of milliseconds "
+                "after the write reads back (protocol findings §13.2); fujilib waits for it."
+            ),
         )
     for c in _CHANNELS_5:
         yield _setting(
             f"range.ch{c}.method",
             "Ranges",
             0x6E + c - 1,
-            safety=persistent,
+            write=persistent,
             ref="TN5A1190a p.31",
             doc=f"Ch{c} range-change method.",
             channel=_ch(c),
             enum=RangeMethod,
+            write_values=frozenset({int(RangeMethod.MANUAL), int(RangeMethod.AUTO)}),
+            notes=(
+                "Remote range follows an input contact of the DIO option (ZPA p.29), so it "
+                "is not written."
+            ),
         )
     yield _setting(
         "hold.mode",
         "Hold",
         0x8B,
-        safety=persistent,
+        write=persistent,
         ref="TN5A1190a p.32",
-        doc="What the outputs hold during calibration.",
+        doc="What the outputs hold during calibration: the last value or the set value.",
         enum=HoldMode,
+        notes="On the panel it can be chosen only while output hold is on (ZPA p.66).",
     )
     for c in _CHANNELS_5:
         yield _setting(
             f"hold.ch{c}.value",
             "Hold",
             0x8C + c - 1,
-            safety=persistent,
+            write=persistent,
             ref="TN5A1190a p.32",
             doc=f"Ch{c} hold set value.",
             minimum=0,
             maximum=100,
             unit="%FS",
             channel=_ch(c),
+            notes="In percent of the full scale of whichever range is in use (ZPA p.67).",
         )
     point = {"requires": Capability.MEASUREMENT_POINT}
     yield _setting(
         "measurement_point.cycle",
         "Measurement point",
         0x99,
-        safety=persistent,
         ref="TN5A1190a p.32",
         doc="Measurement-point change cycle, in its unit.",
         minimum=1,
         maximum=99,
-        notes="1-60 in minutes, 1-99 in hours.",
+        notes="1-60 in minutes, 1-99 in hours. Not in the ZPA manual.",
         **point,
     )
     yield _setting(
         "measurement_point.cycle_unit",
         "Measurement point",
         0x9A,
-        safety=persistent,
         ref="TN5A1190a p.32",
         doc="Measurement-point change cycle unit.",
         enum=PeriodUnit,
@@ -933,7 +1005,6 @@ def _measurement_settings() -> Iterator[RegisterSpec]:
         "measurement_point.displacement_time",
         "Measurement point",
         0x9B,
-        safety=persistent,
         ref="TN5A1190a p.32",
         doc="Measurement-point displacement time.",
         minimum=60,
@@ -945,7 +1016,6 @@ def _measurement_settings() -> Iterator[RegisterSpec]:
         "measurement_point.mode",
         "Measurement point",
         0x9C,
-        safety=persistent,
         ref="TN5A1190a p.32",
         doc="Measurement-point setting.",
         enum=MeasurementPoint,
@@ -954,7 +1024,7 @@ def _measurement_settings() -> Iterator[RegisterSpec]:
 
 
 def _model_specific() -> Iterator[RegisterSpec]:
-    reference = {"requires": Capability.REFERENCE_GAS, "safety": SafetyTier.PERSISTENT}
+    reference = {"requires": Capability.REFERENCE_GAS}
     yield _setting(
         "reference_gas.switching_time",
         "Reference gas (ZPB/ZPG)",
@@ -996,7 +1066,6 @@ def _model_specific() -> Iterator[RegisterSpec]:
             0xA4 + 2 * (k - 1),
             count=2,
             dtype=DataType.UINT32_LH,
-            safety=SafetyTier.READ_ONLY,
             evidence=Evidence.INFERRED,
             ref="TN5A1190a p.32",
             doc=f"Interference compensation coefficient {k} (interpretation inferred).",
@@ -1440,12 +1509,19 @@ def _check_spec(spec: RegisterSpec, regions: RegionMap) -> None:  # noqa: PLR091
         for fc in sorted(spec.write_functions):
             if not envelope_allows(fc, spec.address, spec.count):
                 bad(f"FC{fc:02X} is outside the write envelope")
+        if spec.count != 1 or FC_WRITE_SINGLE not in spec.write_functions:
+            bad("a writable setting must be one word that FC06 can write")
+        if (spec.name, spec.address) not in REVIEWED_SETTINGS:
+            bad("only the reviewed settings may be writable (design §5.4)")
     elif spec.write_functions or spec.safety is not SafetyTier.READ_ONLY:
         bad("read-only but has write functions or a write tier")
+    elif spec.write_values is not None or spec.write_percent_fs is not None:
+        bad("read-only but has write limits")
     if not spec.manual_ref:
         bad("no manual or findings reference")
     if spec.minimum is not None and spec.maximum is not None and spec.minimum > spec.maximum:
         bad("minimum exceeds maximum")
+    _check_write_limits(spec, bad)
     if (spec.dtype is DataType.ENUM) != (spec.enum is not None):
         bad("an ENUM type and an enum class must go together")
     if spec.enum is not None and (spec.minimum, spec.maximum) != (min(spec.enum), max(spec.enum)):
@@ -1453,6 +1529,20 @@ def _check_spec(spec: RegisterSpec, regions: RegionMap) -> None:  # noqa: PLR091
     if spec.dtype is DataType.BOOL and (spec.minimum, spec.maximum) != (0, 1):
         bad("a flag's limits must be 0..1")
     _check_scaling(spec, bad)
+
+
+def _check_write_limits(spec: RegisterSpec, bad: Callable[[str], NoReturn]) -> None:
+    if spec.write_values is not None:
+        low = spec.minimum if spec.minimum is not None else 0
+        high = spec.maximum if spec.maximum is not None else 0xFFFF
+        if not spec.write_values or not all(low <= v <= high for v in spec.write_values):
+            bad("write values must be some of the values its limits allow")
+    if spec.write_percent_fs is not None:
+        low, high = spec.write_percent_fs
+        if spec.scaling.kind is not ScalingKind.BY_RANGE:
+            bad("percent-of-full-scale limits need range scaling")
+        if not 0 <= low <= high:
+            bad("percent-of-full-scale limits must be 0 <= low <= high")
 
 
 def _check_scaling(spec: RegisterSpec, bad: Callable[[str], NoReturn]) -> None:

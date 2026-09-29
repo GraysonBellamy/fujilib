@@ -16,6 +16,7 @@ from contextlib import ExitStack, contextmanager
 from typing import TYPE_CHECKING, Self
 
 from fujilib.config import DEFAULTS
+from fujilib.devices.capability import Capability, SafetyTier
 from fujilib.devices.factory import open_device
 from fujilib.devices.profile import ZP_PROFILE
 from fujilib.sync.portal import SyncPortal
@@ -25,7 +26,7 @@ if TYPE_CHECKING:
     from types import TracebackType
 
     from fujilib.devices.analyzer import Analyzer
-    from fujilib.devices.capability import Availability, Capability
+    from fujilib.devices.capability import Availability
     from fujilib.devices.decode import RegisterValue
     from fujilib.devices.models import (
         AdcValues,
@@ -40,12 +41,22 @@ if TYPE_CHECKING:
         RangeInfo,
         Reading,
     )
+    from fujilib.devices.operations import (
+        CalibrationPlan,
+        CalibrationStatus,
+        CalibrationWait,
+        CommandResult,
+    )
     from fujilib.devices.profile import DeviceProfile
     from fujilib.devices.reads import ClockReading
     from fujilib.devices.session import Session
+    from fujilib.devices.settings import ApplyReport, SettingsDiff, SettingsDocument
     from fujilib.devices.snapshot import FujiDeviceSnapshot
+    from fujilib.devices.writes import WriteResult
     from fujilib.protocol.base import ProtocolKind
     from fujilib.registry.channels import ChannelId, Gas
+    from fujilib.registry.enums import HoldMode, RangeMethod
+    from fujilib.registry.units import Unit
     from fujilib.transport.base import SerialSettings, Transport
 
 __all__ = ["Fuji", "SyncAnalyzer"]
@@ -116,6 +127,11 @@ class SyncAnalyzer:
     def port(self) -> str:
         """:attr:`Analyzer.port`."""
         return self._anz.port
+
+    @property
+    def options(self) -> Capability:
+        """:attr:`Analyzer.options`."""
+        return self._anz.options
 
     @property
     def protocol(self) -> ProtocolKind:
@@ -233,6 +249,194 @@ class SyncAnalyzer:
             self._anz.read_settings, alarm_targets=alarm_targets, timeout=timeout
         )
 
+    # --- Settings ------------------------------------------------------------------------
+
+    def write_parameter(
+        self,
+        name: str,
+        value: object,
+        *,
+        unit: Unit | str | None = None,
+        confirm: bool = False,
+        timeout: float | None = None,
+    ) -> WriteResult:
+        """Blocking :meth:`Analyzer.write_parameter`."""
+        return self._portal.call(
+            self._anz.write_parameter, name, value, unit=unit, confirm=confirm, timeout=timeout
+        )
+
+    def set_response_time(
+        self,
+        target: ChannelId | str,
+        seconds: int,
+        *,
+        confirm: bool = False,
+        timeout: float | None = None,
+    ) -> WriteResult:
+        """Blocking :meth:`Analyzer.set_response_time`."""
+        return self._portal.call(
+            self._anz.set_response_time, target, seconds, confirm=confirm, timeout=timeout
+        )
+
+    def set_output_hold(
+        self, enabled: bool, *, confirm: bool = False, timeout: float | None = None
+    ) -> WriteResult:
+        """Blocking :meth:`Analyzer.set_output_hold`."""
+        return self._portal.call(
+            self._anz.set_output_hold, enabled, confirm=confirm, timeout=timeout
+        )
+
+    def set_hold_mode(
+        self, mode: HoldMode | str, *, confirm: bool = False, timeout: float | None = None
+    ) -> WriteResult:
+        """Blocking :meth:`Analyzer.set_hold_mode`."""
+        return self._portal.call(self._anz.set_hold_mode, mode, confirm=confirm, timeout=timeout)
+
+    def set_hold_value(
+        self,
+        channel: ChannelId | str,
+        percent_fs: int,
+        *,
+        confirm: bool = False,
+        timeout: float | None = None,
+    ) -> WriteResult:
+        """Blocking :meth:`Analyzer.set_hold_value`."""
+        return self._portal.call(
+            self._anz.set_hold_value, channel, percent_fs, confirm=confirm, timeout=timeout
+        )
+
+    def set_range(
+        self,
+        channel: ChannelId | str,
+        range_number: int,
+        *,
+        confirm: bool = False,
+        timeout: float | None = None,
+    ) -> WriteResult:
+        """Blocking :meth:`Analyzer.set_range`."""
+        return self._portal.call(
+            self._anz.set_range, channel, range_number, confirm=confirm, timeout=timeout
+        )
+
+    def set_range_method(
+        self,
+        channel: ChannelId | str,
+        method: RangeMethod | str,
+        *,
+        confirm: bool = False,
+        timeout: float | None = None,
+    ) -> WriteResult:
+        """Blocking :meth:`Analyzer.set_range_method`."""
+        return self._portal.call(
+            self._anz.set_range_method, channel, method, confirm=confirm, timeout=timeout
+        )
+
+    def set_calibration_gas(
+        self,
+        channel: ChannelId | str,
+        range_number: int,
+        kind: str,
+        value: float | str,
+        *,
+        unit: Unit | str,
+        confirm: bool = False,
+        timeout: float | None = None,
+    ) -> WriteResult:
+        """Blocking :meth:`Analyzer.set_calibration_gas`."""
+        return self._portal.call(
+            self._anz.set_calibration_gas,
+            channel,
+            range_number,
+            kind,
+            value,
+            unit=unit,
+            confirm=confirm,
+            timeout=timeout,
+        )
+
+    def diff_settings(
+        self,
+        document: SettingsDocument | Mapping[str, object],
+        *,
+        any_analyzer: bool = False,
+        timeout: float | None = None,
+    ) -> SettingsDiff:
+        """Blocking :meth:`Analyzer.diff_settings`."""
+        return self._portal.call(
+            self._anz.diff_settings, document, any_analyzer=any_analyzer, timeout=timeout
+        )
+
+    def apply_settings(
+        self,
+        document: SettingsDocument | Mapping[str, object],
+        *,
+        confirm: bool = False,
+        any_analyzer: bool = False,
+        max_tier: SafetyTier = SafetyTier.DANGEROUS,
+        timeout: float | None = None,
+    ) -> ApplyReport:
+        """Blocking :meth:`Analyzer.apply_settings`."""
+        return self._portal.call(
+            self._anz.apply_settings,
+            document,
+            confirm=confirm,
+            any_analyzer=any_analyzer,
+            max_tier=max_tier,
+            timeout=timeout,
+        )
+
+    # --- Operations ----------------------------------------------------------------------
+
+    def calibration_status(self, *, timeout: float | None = None) -> CalibrationStatus:
+        """Blocking :meth:`Analyzer.calibration_status`."""
+        return self._portal.call(self._anz.calibration_status, timeout=timeout)
+
+    def plan_auto_calibration(self, *, timeout: float | None = None) -> CalibrationPlan:
+        """Blocking :meth:`Analyzer.plan_auto_calibration`."""
+        return self._portal.call(self._anz.plan_auto_calibration, timeout=timeout)
+
+    def plan_auto_zero_calibration(self, *, timeout: float | None = None) -> CalibrationPlan:
+        """Blocking :meth:`Analyzer.plan_auto_zero_calibration`."""
+        return self._portal.call(self._anz.plan_auto_zero_calibration, timeout=timeout)
+
+    def start_auto_calibration(
+        self, *, confirm: bool = False, timeout: float | None = None
+    ) -> CommandResult:
+        """Blocking :meth:`Analyzer.start_auto_calibration`."""
+        return self._portal.call(self._anz.start_auto_calibration, confirm=confirm, timeout=timeout)
+
+    def start_auto_zero_calibration(
+        self, *, confirm: bool = False, timeout: float | None = None
+    ) -> CommandResult:
+        """Blocking :meth:`Analyzer.start_auto_zero_calibration`."""
+        return self._portal.call(
+            self._anz.start_auto_zero_calibration, confirm=confirm, timeout=timeout
+        )
+
+    def start_blowback(
+        self, *, confirm: bool = False, timeout: float | None = None
+    ) -> CommandResult:
+        """Blocking :meth:`Analyzer.start_blowback`."""
+        return self._portal.call(self._anz.start_blowback, confirm=confirm, timeout=timeout)
+
+    def return_to_measurement(
+        self, *, confirm: bool = False, timeout: float | None = None
+    ) -> CommandResult:
+        """Blocking :meth:`Analyzer.return_to_measurement`."""
+        return self._portal.call(self._anz.return_to_measurement, confirm=confirm, timeout=timeout)
+
+    def wait_for_calibration(
+        self,
+        *,
+        timeout: float,
+        interval: float = 2.0,
+        since: CalibrationStatus | None = None,
+    ) -> CalibrationWait:
+        """Blocking :meth:`Analyzer.wait_for_calibration`."""
+        return self._portal.call(
+            self._anz.wait_for_calibration, timeout=timeout, interval=interval, since=since
+        )
+
     def __repr__(self) -> str:
         return "<Sync" + repr(self._anz).removeprefix("<")
 
@@ -252,6 +456,8 @@ class Fuji:
         timeout: float = DEFAULTS.request_timeout_s,
         identify: bool = True,
         channel_map: Mapping[ChannelId | str, Gas | str] | None = None,
+        options: Capability = Capability.NONE,
+        write_warn_per_minute: int = DEFAULTS.write_warn_per_minute,
         portal: SyncPortal | None = None,
     ) -> Generator[SyncAnalyzer]:
         """Open an analyzer for the ``with`` block; the arguments are :func:`open_device`'s.
@@ -272,6 +478,8 @@ class Fuji:
                 timeout=timeout,
                 identify=identify,
                 channel_map=channel_map,
+                options=options,
+                write_warn_per_minute=write_warn_per_minute,
             )
             stack.callback(active.call, analyzer.close)
             yield SyncAnalyzer(analyzer, active)

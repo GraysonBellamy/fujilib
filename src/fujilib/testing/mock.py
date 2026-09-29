@@ -23,8 +23,36 @@ manual says in both.
 the ones fujilib must never make, **written out here independently of**
 :data:`fujilib.registry.write_policy.WRITE_ENVELOPE`. A write outside that
 list, above all to the key-simulation register 07D0h, raises
-:class:`MockWriteViolation`, which fails the test. What the analyzer does
-after an operation command is not simulated; a command is recorded.
+:class:`MockWriteViolation`, which fails the test. A write is stored as sent,
+as the bench analyzer stores a value outside a setting's range, neither
+refusing nor clamping it (protocol findings §13.6). A test that wants a
+refusal injects an exception reply, and one that wants a write acknowledged
+but not stored injects :attr:`FaultKind.IGNORE`.
+
+**Ranges.** A channel's selected range (40106-40110), written while its range
+method is manual, becomes its current range (30038-30042)
+:attr:`MockAnalyzerConfig.range_lag_s` later, since the bench analyzer
+switches some tens of milliseconds after the setting reads back (protocol
+findings §13.2). Under the auto or remote method the current range stays.
+
+**Operation commands** are recorded and act as the manuals describe (ZPA
+manual p.31, p.46-47, p.53-60), on the AnyIO clock, with every flow time
+shortened by :attr:`MockAnalyzerConfig.time_scale`:
+
+- *return to measurement* shows the measurement screen;
+- *auto calibration* zeroes the channels enabled for it (40021-40025)
+  together for flow time 1, then spans them one at a time from Ch1 for flow
+  times 2-6, then holds for flow time 7 if output hold is on;
+- *auto zero calibration* zeroes the same channels for its flow time, and
+  holds as long again if output hold is on.
+
+While either runs, input 30049 and the channels' auto-zero or auto-span and
+hold flags are set, and each enabled channel measures on its auto-calibration
+range, back to its own range at the end. Errors set in
+:attr:`MockAnalyzer.calibration_errors` appear at the end, as a failed
+calibration's would. A command that arrives while one runs changes nothing,
+and so does blowback, which has no status register. None of this is verified
+on hardware: the bench analyzer has no calibration valves to drive.
 
 The simulator validates library integration. It does not validate USB
 timing, UART behaviour on real hardware, or analyzer semantics it was
@@ -34,7 +62,7 @@ programmed to assume.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from enum import StrEnum
+from enum import IntEnum, StrEnum
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Final
 
@@ -66,6 +94,7 @@ __all__ = [
     "FaultKind",
     "MockAnalyzer",
     "MockAnalyzerConfig",
+    "MockCalibration",
     "MockExchange",
     "MockLine",
     "MockRegion",
@@ -100,6 +129,24 @@ _WRITABLE: Final[Mapping[int, tuple[tuple[int, int], ...]]] = MappingProxyType(
     }
 )
 _COMMANDS: Final = range(0x07D1, 0x07D5)
+
+
+class _Command(IntEnum):
+    RETURN_TO_MEASUREMENT = 0x07D1
+    AUTO_CALIBRATION = 0x07D2
+    AUTO_ZERO = 0x07D3
+    BLOWBACK = 0x07D4
+
+
+_ENABLED: Final = 0x14  # auto_calibration.ch1.included; Ch2-Ch5 follow
+_OUTPUT_HOLD: Final = 0x5C
+_AUTO_ZERO_FLOW: Final = 0x68
+_AUTO_CAL_RANGE: Final = 0x73  # auto_calibration.ch1.range; Ch2-Ch5 follow
+_FLOW_TIMES: Final = 0x84  # auto_calibration.flow_time1; 2-7 follow
+_CURRENT_RANGE: Final = 0x25  # range.ch1.current; Ch2-Ch5 follow
+_SELECTED_RANGE: Final = 0x69  # range.ch1.selected; Ch2-Ch5 follow
+_RANGE_METHOD: Final = 0x6E  # range.ch1.method; Ch2-Ch5 follow
+_CHANNELS: Final = range(1, 6)
 # A reply with another function code but the same length: 03/04 and 06/10.
 _OTHER_FUNCTION: Final = MappingProxyType(
     {
@@ -176,6 +223,10 @@ class MockAnalyzerConfig:
     """Holding-register words by address; unset addresses in a region read 0."""
     regions: tuple[MockRegion, ...] = field(default_factory=zp_readable_regions)
     description: str = ""
+    time_scale: float = 0.001
+    """Simulated seconds per second of a calibration's flow times."""
+    range_lag_s: float = 0.0
+    """Seconds after a range write before the channel measures on the range selected."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -238,6 +289,39 @@ class FaultKind(StrEnum):
     """Bytes that are not a reply: the station, then function code 0."""
     EXCEPTION = "exception"
     """An exception reply with :attr:`Fault.exception_code`."""
+    IGNORE = "ignore"
+    """A normal reply to a write or command that changes nothing, as a write
+    the analyzer acknowledges and then does not store."""
+
+
+@dataclass(frozen=True, slots=True)
+class MockCalibration:
+    """An auto calibration or auto zero calibration the simulator is running."""
+
+    kind: str
+    """``"auto_calibration"`` or ``"auto_zero"``."""
+    started_at: float
+    """On the AnyIO clock."""
+    channels: tuple[int, ...]
+    """The channels enabled for it, 1-5."""
+    phases: tuple[tuple[str, int | None, float], ...]
+    """``(phase, span channel or None, simulated seconds)``, in order."""
+    hold: bool
+    restore_ranges: tuple[tuple[int, int], ...]
+    """``(channel, current-range word)`` to put back at the end."""
+
+    @property
+    def duration_s(self) -> float:
+        """Simulated seconds from start to end."""
+        return sum(p[2] for p in self.phases)
+
+    def phase_at(self, elapsed: float) -> tuple[str, int | None] | None:
+        """The phase ``elapsed`` seconds after the start, or ``None`` once finished."""
+        for phase, channel, duration in self.phases:
+            if elapsed < duration:
+                return phase, channel
+            elapsed -= duration
+        return None
 
 
 @dataclass(slots=True)
@@ -273,11 +357,20 @@ class MockAnalyzer:
         self.exchanges: list[MockExchange] = []
         """Every request to this station, with its reply."""
         self.commands: list[tuple[int, int]] = []
-        """Operation commands received, as ``(address, value)``."""
+        """Operation commands carried out, as ``(address, value)``; refused or ignored ones
+        are not."""
         self.violations: list[MockRequest] = []
         """Writes refused with :class:`MockWriteViolation`."""
         self.on_request: Callable[[MockRequest], None] | None = None
         """Called with each request before it is answered, to change state mid-sequence."""
+        self.calibration: MockCalibration | None = None
+        """The auto calibration or auto zero calibration running, if any."""
+        self.calibration_errors: dict[int, int] = {}
+        """Errors 4-8 by channel, to raise when the next calibration ends."""
+        self.time_scale = self.config.time_scale
+        self.range_lag_s = self.config.range_lag_s
+        self.range_changes: dict[int, tuple[int, float]] = {}
+        """Range switches still to come, by channel: the current-range word and when."""
 
     # --- Test controls -------------------------------------------------------------------
 
@@ -334,6 +427,11 @@ class MockAnalyzer:
         self.set_register(f"reading.ch{n}.value", encode_int(raw, signed=True))
         self.set_register(f"reading.ch{n}.decimals", decimals)
         self.set_register(f"reading.ch{n}.unit", unit_code(unit))
+
+    def finish_calibration(self) -> None:
+        """End the running calibration now, as if its time had passed."""
+        if self.calibration is not None:
+            self._end_calibration(self.calibration)
 
     def inject(
         self,
@@ -416,8 +514,10 @@ class MockAnalyzer:
         if apply:
             if fc == FC_WRITE_SINGLE and address in _COMMANDS:
                 self.commands.append((address, values[0]))
+                self._command(_Command(address), values[0], request.arrived_at)
             else:
                 self.set_words(RegisterTable.HOLDING, address, values)
+                self._select_ranges(address, len(values), request.arrived_at)
         if fc == FC_WRITE_SINGLE:
             return bytes((fc,)) + _word_bytes((address, values[0]))
         return bytes((fc,)) + _word_bytes((address, len(values)))
@@ -431,11 +531,101 @@ class MockAnalyzer:
         """
         self.exchanges.append(exchange)
         request = exchange.request
+        self._switch_ranges(request.arrived_at)
+        self._advance(request.arrived_at)
         if self.on_request is not None:
             self.on_request(request)
         fault = self.take_fault(request)
-        refused = fault is not None and fault.kind is FaultKind.EXCEPTION
-        return self.handle(request, apply=not refused), fault
+        ignored = fault is not None and fault.kind in {FaultKind.EXCEPTION, FaultKind.IGNORE}
+        return self.handle(request, apply=not ignored), fault
+
+    # --- Ranges -------------------------------------------------------------------------------
+
+    def _select_ranges(self, address: int, count: int, now: float) -> None:
+        """Schedule the range switch of each channel whose selected range was just written."""
+        for channel in _CHANNELS:
+            selected = _SELECTED_RANGE + channel - 1
+            manual = self.holding.get(_RANGE_METHOD + channel - 1, 0) == 0
+            if address <= selected < address + count and manual:
+                self.range_changes[channel] = (self.holding[selected], now + self.range_lag_s)
+        self._switch_ranges(now)
+
+    def _switch_ranges(self, now: float) -> None:
+        for channel, (word, due) in list(self.range_changes.items()):
+            if due <= now:
+                self.input[_CURRENT_RANGE + channel - 1] = word
+                del self.range_changes[channel]
+
+    # --- Operation commands ------------------------------------------------------------------
+
+    def _command(self, command: _Command, value: int, now: float) -> None:
+        if value != 1:
+            return
+        if command is _Command.RETURN_TO_MEASUREMENT:
+            self.set_register("display.screen", 0)
+            self.set_register("display.calibration_step", 0)
+        elif command in {_Command.AUTO_CALIBRATION, _Command.AUTO_ZERO}:
+            if self.calibration is None:
+                self._start_calibration(command, now)
+
+    def _flow_s(self, address: int) -> float:
+        return self.holding.get(address, 0) * self.time_scale
+
+    def _start_calibration(self, command: _Command, now: float) -> None:
+        channels = tuple(c for c in range(1, 6) if self.holding.get(_ENABLED + c - 1, 0))
+        hold = bool(self.holding.get(_OUTPUT_HOLD, 0))
+        phases: list[tuple[str, int | None, float]]
+        if command is _Command.AUTO_CALIBRATION:
+            phases = [("zero", None, self._flow_s(_FLOW_TIMES))]
+            phases += [("span", c, self._flow_s(_FLOW_TIMES + c)) for c in channels]
+            if hold:
+                phases.append(("extension", None, self._flow_s(_FLOW_TIMES + 6)))
+            kind = "auto_calibration"
+        else:
+            phases = [("zero", None, self._flow_s(_AUTO_ZERO_FLOW))]
+            if hold:
+                phases.append(("extension", None, self._flow_s(_AUTO_ZERO_FLOW)))
+            kind = "auto_zero"
+        restore = tuple((c, self.input.get(_CURRENT_RANGE + c - 1, 0)) for c in channels)
+        for c in channels:
+            self.input[_CURRENT_RANGE + c - 1] = self.holding.get(_AUTO_CAL_RANGE + c - 1, 0)
+        self.set_register("display.screen", 0)
+        self.calibration = MockCalibration(kind, now, channels, tuple(phases), hold, restore)
+        self._advance(now)
+
+    def _advance(self, now: float) -> None:
+        calibration = self.calibration
+        if calibration is None:
+            return
+        phase = calibration.phase_at(now - calibration.started_at)
+        if phase is None:
+            self._end_calibration(calibration)
+            return
+        name, span_channel = phase
+        self.set_register("status.auto_calibration_running", 1)
+        for c in calibration.channels:
+            self.set_register(f"status.ch{c}.auto_zero_running", int(name == "zero"))
+            self.set_register(f"status.ch{c}.auto_span_running", int(span_channel == c))
+            self.set_register(f"status.ch{c}.hold", int(calibration.hold))
+
+    def _end_calibration(self, calibration: MockCalibration) -> None:
+        self.calibration = None
+        self.set_register("status.auto_calibration_running", 0)
+        for c in calibration.channels:
+            self.set_register(f"status.ch{c}.auto_zero_running", 0)
+            self.set_register(f"status.ch{c}.auto_span_running", 0)
+            self.set_register(f"status.ch{c}.hold", 0)
+        for c, word in calibration.restore_ranges:
+            self.input[_CURRENT_RANGE + c - 1] = word
+        failed = False
+        for c, code in self.calibration_errors.items():
+            self.set_register(f"error.ch{c}.e{code}.active", 1)
+            if calibration.kind == "auto_calibration":
+                self.set_register(f"error.ch{c}.e9.active", 1)
+            failed = True
+        self.calibration_errors = {}
+        if failed:
+            self.set_register("status.calibration_error", 1)
 
     async def send_reply(
         self,

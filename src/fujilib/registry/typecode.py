@@ -17,6 +17,12 @@ its digits are not in the current table. Labels that feed a calculation are
 asserted by the caller; everything here is a *suggestion* with a
 :class:`~fujilib.registry.channels.LabelSource`.
 
+**Options.** Digits 21 (O2-corrected outputs) and 22 (the DIO contacts,
+which carry the auto-calibration valve drive and the alarm outputs) say which
+options were ordered. :attr:`TypeCode.options` is that suggestion; like a
+label, it is a hint the caller can override by asserting the options.
+:data:`MODEL_OPTIONS` is what each model's manual describes at all.
+
 Only the ZPA code table ships. Other models' codes are kept raw.
 """
 
@@ -27,12 +33,14 @@ from enum import StrEnum
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Final, Protocol
 
+from fujilib.devices.capability import Capability
 from fujilib.registry.channels import ChannelId, ChannelRole, Gas, LabelSource
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping, Sequence
 
 __all__ = [
+    "MODEL_OPTIONS",
     "TYPECODE_DECODERS",
     "ZPA_DECODER",
     "ChannelLayout",
@@ -142,6 +150,8 @@ class TypeCode:
     o2_source: O2Source | None = None
     o2_correction: O2Correction | None = None
     layout: ChannelLayout | None = None
+    options: Capability | None = None
+    """The options the code lists, or ``None`` when its option digits do not decode."""
 
     @property
     def unknown_digits(self) -> tuple[int, ...]:
@@ -281,7 +291,10 @@ _O2_RANGES: Final = {
 }
 
 #: The DIO option digit lost its table marks in extraction; these meanings are
-#: reconstructed from the DO allocation table (ZPA manual p.29).
+#: reconstructed from the DO allocation table (ZPA manual p.29). The auto
+#: calibration contacts drive the external zero and span gas valves, which auto
+#: zero calibration uses too (ZPA manual p.29, p.59); the analyzer has no
+#: calibration valves of its own (TN5A1191b p.10).
 _DIO: Final = {
     "Y": "none",
     "A": "FAULT",
@@ -293,6 +306,50 @@ _DIO: Final = {
     "G": "FAULT, auto calibration, range ID / remote range",
     "H": "FAULT, auto calibration, H/L alarm, range ID / remote range",
 }
+
+_DIO_OPTIONS: Final[Mapping[str, Capability]] = MappingProxyType(
+    {
+        code: (
+            (
+                Capability.AUTO_CALIBRATION | Capability.AUTO_ZERO
+                if "auto calibration" in meaning
+                else Capability.NONE
+            )
+            | (Capability.ALARMS if "H/L alarm" in meaning else Capability.NONE)
+        )
+        for code, meaning in _DIO.items()
+    }
+)
+
+#: The options each model's manual describes. The ZPA manual has no blowback,
+#: measurement-point switching or reference gas, nor has its code table or its
+#: parts list (ZPA manual p.99-100; TN5A1191b p.10); those registers serve other
+#: models.
+MODEL_OPTIONS: Final[Mapping[str, Capability]] = MappingProxyType(
+    {
+        "ZPA": (
+            Capability.ALARMS
+            | Capability.AUTO_CALIBRATION
+            | Capability.AUTO_ZERO
+            | Capability.AVERAGING
+            | Capability.O2_CORRECTION
+        ),
+    }
+)
+
+
+def _options(d21: str, d22: str) -> Capability | None:
+    correction = _CORRECTION_BY_CODE.get(d21)
+    dio = _DIO_OPTIONS.get(d22)
+    if correction is None or dio is None:
+        return None
+    options = dio
+    if correction.has_corrected or correction.has_average:
+        options |= Capability.O2_CORRECTION
+    if correction.has_average:
+        options |= Capability.AVERAGING
+    return options
+
 
 _NDIR_ITEM: Final = {
     9: "NDIR range: component 1, range 1",
@@ -424,6 +481,7 @@ class _ZpaDecoder:
             o2_source=o2_source,
             o2_correction=correction,
             layout=layout,
+            options=_options(d21, _digit(raw, 22)),
         )
 
 

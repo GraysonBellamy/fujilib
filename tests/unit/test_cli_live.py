@@ -43,6 +43,7 @@ from fujilib.devices.decode import (
 from fujilib.devices.profile import ZP_PROFILE
 from fujilib.devices.reads import Identity
 from fujilib.devices.session import Session, describe_identity
+from fujilib.errors import FujiVerificationError
 from fujilib.protocol.modbus.port import ModbusPort
 from fujilib.registry.enums import CalibrationKind
 from fujilib.testing import BENCH_BANK_PATH
@@ -55,6 +56,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from fujilib.devices.models import DeviceInfo
+    from fujilib.devices.settings import ApplyReport
 
 BENCH = ["--fixture", "bench"]
 ASSERT = ["--gas", "CH1=co2", "--gas", "CH2=co", "--gas", "CH3=o2"]
@@ -222,6 +224,187 @@ def test_configure_usage_errors(capsys: pytest.CaptureFixture[str], argv: list[s
         configure.main(argv)
     assert caught.value.code == 2
     assert "error:" in capsys.readouterr().err
+
+
+def settings_file(tmp_path: Path, settings: dict[str, Any], **analyzer: str) -> str:
+    path = tmp_path / "settings.json"
+    document = {"format": SETTINGS_FORMAT, "analyzer": analyzer, "settings": settings}
+    path.write_text(json.dumps(document), encoding="utf-8")
+    return str(path)
+
+
+CHANGES: dict[str, Any] = {
+    "response_time.o2": 16,
+    "calibration_gas.ch3.range1.span": {"value": 20.9, "unit": "vol%"},
+}
+
+
+def test_diff_says_what_would_change(capsys: pytest.CaptureFixture[str], tmp_path: Path) -> None:
+    doc = settings_file(tmp_path, {**CHANGES, "key_lock": True, "hold.mode": "last_value"})
+    code, out, _err = run(capsys, configure.main, "diff", *BENCH, "--file", doc, "--format", "json")
+    assert code == 0
+    report = json.loads(out)
+    assert list(report["write"]) == ["response_time.o2", "calibration_gas.ch3.range1.span"]
+    assert report["write"]["response_time.o2"] == {
+        "action": "write",
+        "current": "15 s",
+        "wanted": "16",
+        "safety": "persistent",
+    }
+    assert report["refused"]["key_lock"]["reason"].startswith("read-only")
+    assert report["unchanged"] == 1
+    assert report["tier"] == "dangerous"
+
+
+def test_diff_of_another_analyzers_document(
+    capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    doc = settings_file(tmp_path, {"response_time.o2": 16}, serial_number="Q1234567")
+    code, out, _err = run(capsys, configure.main, "diff", *BENCH, "--file", doc)
+    assert code == 0
+    assert "analyzer: the document describes the analyzer with serial number" in out
+    code, out, _err = run(capsys, configure.main, "diff", *BENCH, "--file", doc, "--any-analyzer")
+    assert "analyzer:" not in out
+
+
+def test_apply_writes_and_reads_back(capsys: pytest.CaptureFixture[str], tmp_path: Path) -> None:
+    doc = settings_file(tmp_path, CHANGES)
+    code, out, err = run(
+        capsys,
+        configure.main,
+        "apply",
+        *BENCH,
+        "--file",
+        doc,
+        "--confirm",
+        "--i-understand-this-is-destructive",
+        "--format",
+        "json",
+    )
+    assert (code, err) == (0, "")
+    report = json.loads(out)
+    assert report["status"] == "ok"
+    assert report["written"]["response_time.o2"] == {
+        "before": "15 s",
+        "written": "16 s",
+        "read_back": "16 s",
+        "state": "verified",
+        "acknowledged": True,
+    }
+    assert "recovery" not in report
+
+
+def test_apply_needs_confirm_before_anything_opens(
+    capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    doc = settings_file(tmp_path, CHANGES)
+    with pytest.raises(SystemExit) as caught:
+        configure.main(["apply", *BENCH, "--file", doc])
+    assert caught.value.code == 2
+    assert "pass --confirm" in capsys.readouterr().err
+
+
+def test_a_dangerous_apply_needs_the_destructive_flag(
+    capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    doc = settings_file(tmp_path, CHANGES)
+    code, out, err = run(capsys, configure.main, "apply", *BENCH, "--file", doc, "--confirm")
+    assert code == 2
+    assert "--i-understand-this-is-destructive" in err
+    assert "calibration_gas.ch3.range1.span" in out
+    code, _out, err = run(
+        capsys,
+        configure.main,
+        "apply",
+        *BENCH,
+        "--file",
+        settings_file(tmp_path, {"response_time.o2": 16}),
+        "--confirm",
+    )
+    assert (code, err) == (0, "")
+
+
+def test_apply_dry_run_and_nothing_to_do(
+    capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    doc = settings_file(tmp_path, CHANGES)
+    code, out, _err = run(capsys, configure.main, "apply", *BENCH, "--file", doc, "--dry-run")
+    assert code == 0
+    assert "status: dry_run" in out
+    same = settings_file(tmp_path, {"response_time.o2": 15})
+    code, out, _err = run(capsys, configure.main, "apply", *BENCH, "--file", same, "--confirm")
+    assert code == 0
+    assert out.rstrip().endswith("status: ok")
+
+
+def test_a_refused_document_writes_nothing(
+    capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    doc = settings_file(tmp_path, {"response_time.o2": 16, "start_auto_calibration": 1})
+    code, out, _err = run(capsys, configure.main, "apply", *BENCH, "--file", doc, "--confirm")
+    assert code == 1
+    assert "status: refused" in out
+    assert "operation command" in out
+    assert "recovery: nothing was written" in out
+
+
+def test_an_apply_that_fails_says_what_to_do(
+    capsys: pytest.CaptureFixture[str], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real = Analyzer.apply_settings
+
+    async def failing(self: Analyzer, *args: Any, **kwargs: Any) -> ApplyReport:
+        report = await real(self, *args, **kwargs)
+        error = FujiVerificationError("response_time.o2: wrote 16 s, but it reads back as 15 s")
+        return replace(report, completed=(), failed="response_time.o2", error=error)
+
+    monkeypatch.setattr(Analyzer, "apply_settings", failing)
+    doc = settings_file(tmp_path, {"response_time.o2": 16})
+    code, out, _err = run(capsys, configure.main, "apply", *BENCH, "--file", doc, "--confirm")
+    assert code == 1
+    assert "status: verify_failed" in out
+    assert "recovery: the setting reads back otherwise" in out
+    assert "not_attempted" in out
+
+
+@pytest.mark.parametrize(("flag", "ceiling"), [(False, "PERSISTENT"), (True, "DANGEROUS")])
+def test_apply_checks_the_ceiling_on_its_own_comparison(
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    flag: bool,
+    ceiling: str,
+) -> None:
+    seen: list[str] = []
+    real = Analyzer.apply_settings
+
+    async def recording(self: Analyzer, *args: Any, **kwargs: Any) -> ApplyReport:
+        seen.append(kwargs["max_tier"].name)
+        return await real(self, *args, **kwargs)
+
+    monkeypatch.setattr(Analyzer, "apply_settings", recording)
+    doc = settings_file(tmp_path, {"response_time.o2": 16})
+    extra = ["--i-understand-this-is-destructive"] if flag else []
+    code, _out, _err = run(
+        capsys, configure.main, "apply", *BENCH, "--file", doc, "--confirm", *extra
+    )
+    assert code == 0
+    assert seen == [ceiling]
+
+
+@pytest.mark.parametrize(
+    "content", ["not json", json.dumps({"format": "other", "settings": {}}), None]
+)
+def test_an_unreadable_document_is_a_usage_error(
+    capsys: pytest.CaptureFixture[str], tmp_path: Path, content: str | None
+) -> None:
+    path = tmp_path / "doc.json"
+    if content is not None:
+        path.write_text(content, encoding="utf-8")
+    with pytest.raises(SystemExit) as caught:
+        configure.main(["diff", *BENCH, "--file", str(path)])
+    assert caught.value.code == 2
+    assert "cannot read the settings document" in capsys.readouterr().err
 
 
 # --- fuji-discover ---------------------------------------------------------------------------
