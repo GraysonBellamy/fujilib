@@ -406,9 +406,12 @@ async def test_a_write_on_a_closed_transport_is_a_connection_error() -> None:
 async def test_a_read_deadline_covers_the_retries() -> None:
     async with fast_pair(request_timeout=0.05, read_retries=10) as (client, mock):
         mock.inject(FaultKind.DROP, times=None)
+        # Attempts run 0-0.05 and 0.06-0.11 s, each followed by the 0.01 s quiet
+        # window; the deadline falls in the middle of the third (0.12-0.17 s), so
+        # a late timer cannot move it into a quiet window, where nothing is cancelled.
         with pytest.raises(FujiTimeoutError) as info:
             await client.read(
-                BlockRead(FC04, 0, 1), deadline=Deadline.after(0.12, operation="poll")
+                BlockRead(FC04, 0, 1), deadline=Deadline.after(0.145, operation="poll")
             )
     assert type(info.value) is FujiTimeoutError
     assert info.value.context.command_name == "poll"
