@@ -11,7 +11,8 @@ models, the read procedures that join a read plan to a decoder, safety tiers
 and capability flags, and the unified-API snapshots; and the write side:
 encoding a setting, writing it and reading it back, settings documents, and
 the operation commands (design §6.1-§6.4, [Safety](../safety.md)); and the
-front panel's manual calibrations, planned and watched (design §6.5).
+front panel's manual calibrations, planned, watched and driven from the host
+(design §6.5).
 
 ## Opening and using an analyzer
 
@@ -52,3 +53,7 @@ front panel's manual calibrations, planned and watched (design §6.5).
 ## The front panel
 
 ::: fujilib.devices.panel
+
+::: fujilib.devices.keys
+
+::: fujilib.devices.steadiness

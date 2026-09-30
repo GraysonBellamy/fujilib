@@ -85,9 +85,11 @@ Everything else is read-only, including settings the manuals document:
 
 Whatever the registry says, the Modbus client refuses any write outside a
 frozen envelope of documented addresses, as the last step before the wire, so
-a forged register or an address in a file cannot reach the analyzer. Key
-simulation (42001), which also reaches the factory menu, is outside it for
-now.
+a forged register or an address in a file cannot reach the analyzer. At the
+key-simulation register (42001), which also reaches the factory menu, it lets
+through only the six keys of a manual zero or span, UP, DOWN, ESC, ENT, ZERO
+and SPAN: the value is checked as well as the address, so MODE and SIDE never
+reach the panel.
 
 Limits are the narrower of the two manuals' where they disagree: the MODBUS
 manual defers setting ranges to the instruction manual. A response time is
@@ -213,8 +215,8 @@ and auto zero calibration have been exercised only on the simulator.
 
 A manual zero or span is made at the panel: ZERO or SPAN, the cursor to the
 channel, ENT to select it, and ENT again once the reading has settled on the
-gas. **fujilib presses no key.** It watches from the status registers, and
-records what happened:
+gas. fujilib can watch one made at the panel, reading only, or drive one from
+the host with the same keys (below). Watching, it records what happened:
 
 - `plan_manual_calibration(channel, "zero")` says, without changing anything,
   which channels and ranges a zero or span of `channel` would calibrate, and
@@ -241,10 +243,54 @@ channel's wait step again and pressed ESC (protocol findings §18.4). So:
   panel meanwhile, raises `FujiVerificationError`.
 - Cancel a manual calibration with ESC on its wait step.
 
-Pressing keys over Modbus, to start a zero or span from the host, is planned
-only for the calibration keys, never the keys that open the menus (design
-§6.5). A prototype on the bench showed that a key written over Modbus acts as
-the same key at the panel, and that key lock stops it (protocol findings §18).
+## A manual zero or span from the host
+
+`manual_calibration(plan, gas=..., confirm=True)` (and `fuji-calibrate`)
+presses the calibration keys over Modbus while the operator switches the gas
+valves. A key written over Modbus acts as the same key at the panel, and key
+lock stops it (protocol findings §18). It sends only ZERO, SPAN, UP, DOWN, ENT
+and ESC, never the keys that open the menus, and each only where it belongs:
+
+- **Before the first key** it refuses, with nothing sent, unless the panel is
+  on the measurement screen with no calibration or hold flag set, key lock and
+  output hold are off, no instrument error is active, the plan reads the same
+  as when it was made, and no channel would be calibrated on both ranges.
+- **The gas named must be the calibration-gas setting** of every range the
+  calibration touches, in its unit: the analyzer calibrates against the
+  setting, not against what is flowing. Change the setting first if it differs.
+- **Each key is confirmed** by what the panel shows next: the step, the cursor
+  and the flags. A key the panel does not take stops the run. Keep your hands
+  off the panel meanwhile; a key pressed there stops the run too.
+- **It waits for the gas.** The reading of every channel calibrated must stay
+  within 0.5 %FS for at least 30 s (or twice the response time), near the gas
+  named and read at least every 5 s, before the key that calibrates.
+- **The key that calibrates is `DANGEROUS`** and needs its own
+  `confirm=True` (`--i-understand-this-is-destructive` on the command line).
+  Everything above is checked again, with a fresh read of the panel last, in
+  the same operation as that key: the wait step and its flags, no hold flag,
+  each reading in the unit of its range, the gas still steady, no instrument
+  error. A key the panel does not take ends the run, so a swallowed calibrating
+  key is never followed by another. On the error display it sends ESC, never
+  ENT, which would force the calibration.
+- **However the run ends**, an error or Ctrl-C included, the panel is returned
+  to measurement for the step it is on: ESC on channel selection, the wait step
+  and the error display, a wait while a calibration runs, and return to
+  measurement on any other screen. It then checks the flags, not only the
+  screen.
+
+If a calibration flag is still set on the measurement screen afterwards, the
+run raises and names the channel: the analyzer still counts it as being
+calibrated. Recover at the panel: ZERO or SPAN, the channel, ENT once (the wait
+step), then ESC.
+
+While a run holds the panel, the same session refuses setting writes,
+commands and another run. A recording on the same analyzer goes on, its rows
+marked `calibrating`.
+
+**Not on the bench yet.** The run has been exercised on the simulator, whose
+panel follows what the bench analyzer showed. A remote zero and span on the
+bench analyzer, with the owner at the gases, is the next step (design §13.2
+#43).
 
 ## On the command line
 
@@ -254,6 +300,11 @@ the port is opened (exit 2). When a write would be `DANGEROUS`, it also needs
 2 before writing anything. `--dry-run` compares and stops. The command ends
 with `status:` and exits 1 unless the status is `ok` or `dry_run`. There is no
 command for the operation commands; they are for programs.
+
+`fuji-calibrate` needs `--confirm` for the keys and
+`--i-understand-this-is-destructive` for the calibration, both before the port
+is opened; `--plan` only says what a zero or span would calibrate. It asks
+before the key that calibrates unless `--auto`.
 
 ## Hardware tests
 

@@ -17,7 +17,8 @@ models that share its MODBUS map. It is built on
     the [`fuji-*` commands](cli.md). A reviewed subset of settings writes,
     settings documents and return to measurement work on the development
     analyzer too; auto calibration and auto zero have run only on the
-    simulated analyzer. See [Safety](safety.md). Start with the
+    simulated analyzer, as has a manual zero or span driven from the host
+    (`fuji-calibrate`). See [Safety](safety.md). Start with the
     [async quickstart](quickstart-async.md).
 
 The authoritative architectural document is the [Design](design.md). What the

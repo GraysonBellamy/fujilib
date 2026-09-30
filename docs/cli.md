@@ -4,8 +4,9 @@ description: The fuji-* command-line tools — read, discover, decode, compare a
 
 # Commands
 
-Every command but `fuji-configure apply` is read-only: it sends read requests
-and nothing else. `fuji-configure apply` writes settings, behind `--confirm`
+Every command but `fuji-configure apply` and `fuji-calibrate` is read-only: it
+sends read requests and nothing else. `fuji-configure apply` writes settings,
+and `fuji-calibrate` presses the calibration keys, each behind `--confirm`
 (see [Safety](safety.md)). Each command is also a function,
 `main(argv) -> int`, in `fujilib.cli`.
 
@@ -20,11 +21,14 @@ and nothing else. `fuji-configure apply` writes settings, behind `--confirm`
 | `fuji-stream` | poll at a fixed rate and print each poll |
 | `fuji-capture` | record to a CSV or Parquet file, with the analyzer's metadata beside it |
 | `fuji-diag timing` | measure the gap the analyzer needs between requests |
+| `fuji-calibrate` | make a manual zero or span from the host, the operator at the gas valves |
 
 **Exit codes.** 0 on success, 1 for a library error (printed as `error: ...`),
 2 for bad arguments. `fuji-discover` also exits 2 when it finds nothing;
 `fuji-configure apply` exits 1 when the document is refused or a write fails,
-and 2 when a write would be DANGEROUS without its flag.
+and 2 when a write would be DANGEROUS without its flag. `fuji-calibrate`
+exits 0 only when the calibration completed (or with `--plan`), and 1 when it
+was refused, cancelled, failed or ambiguous.
 `fuji-stream` and `fuji-capture` exit 0 when stopped with Ctrl-C, after
 writing and closing what they recorded. On Windows, Ctrl-Break stops them (and
 `fuji-diag timing`) the same way, and it works in a window whose processes
@@ -169,3 +173,52 @@ per pairing and gap; `--out` writes every trial as JSON
 40 s. A trial whose first read did not get its answer is not judged
 (`first-bad`). What was measured is written also when the run fails or is
 stopped with Ctrl-C, and `--out` is replaced only with `--force`.
+
+## fuji-calibrate
+
+A manual zero or span, driven from the host with the analyzer's calibration
+keys while the operator switches the gas valves (design §6.5). **It changes the
+analyzer's calibration.**
+
+```bash
+fuji-calibrate COM8 --channel CH3 --kind zero --plan
+fuji-calibrate COM8 --gas CH3=o2 --channel CH3 --kind zero --gas-value 0 --gas-label "N2" --confirm --i-understand-this-is-destructive
+fuji-calibrate COM8 --gas CH3=o2 --channel CH3 --kind span --gas-value 20.95 --gas-unit vol% --confirm --i-understand-this-is-destructive
+```
+
+1. It prints what the zero or span calibrates: a zero of a channel set to "at
+   once" zeroes every channel so set. `--plan` stops here.
+2. It checks the panel, key lock, output hold, the instrument errors, and that
+   `--gas-value` (in `--gas-unit`) is the channel's calibration-gas setting.
+   Anything wrong stops it before the first key.
+3. It presses ZERO or SPAN, moves the cursor to the channel and selects it,
+   and asks you to switch the inlet to the gas.
+4. It prints the reading as it settles, and when it is steady asks
+   `Calibrate CH3 now? [y/N]` (`--auto` does not ask), reading the panel on
+   while it waits for the answer. If the reading moves again before the key,
+   it waits again.
+5. It sends the key that calibrates, follows the calibration to its end, and
+   prints the readings before and after, the deviation from the gas and the
+   detector counts.
+6. It writes the run to `--out`, by default
+   `fuji-calibration_<serial>_<channel>_<kind>_<time>.json`, a
+   `fujilib-calibration/1` document, and ends with `status:`.
+
+Answering `n`, Ctrl-C or any error cancels: the panel is returned to
+measurement. Switch the inlet back to the sample afterwards. The `status:` line
+says how it ended: `completed`, `failed`, `ambiguous`, `cancelled`, `refused`
+(nothing sent), `stopped` (an error after the first key), `not_clean` (the
+panel was not left clean; the message says what to do) or `plan`.
+
+| Option | Meaning |
+|---|---|
+| `--gas-value`, `--gas-unit`, `--gas-label` | the gas at the inlet; the label is kept in the record |
+| `--confirm`, `--i-understand-this-is-destructive` | needed for the keys and for the calibration |
+| `--auto` | calibrate once steady, without asking |
+| `--window`, `--response-factor`, `--band`, `--tolerance`, `--settle-timeout`, `--max-gap` | the steadiness rule: 30 s or twice the response time, 0.5 %FS, 10 %FS, 600 s, reads at most 5 s apart, by default |
+| `--interval` | seconds between reads while the gas settles (0.5) |
+| `--out`, `--force`, `--operator`, `--notes` | the record |
+| `--no-adc` | do not read the detectors' raw counts |
+
+With `--fixture bench` it runs against the simulated analyzer, where the gas
+named flows into the inlet as soon as the wait step opens.

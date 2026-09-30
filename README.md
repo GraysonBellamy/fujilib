@@ -59,6 +59,11 @@ The first release, **0.1.0**, covers:
 - a record of every manual zero and span made at the front panel while it is
   connected, since the analyzer keeps no calibration log on older firmware.
 
+The next release adds a manual zero or span driven from the host
+(`fuji-calibrate`): fujilib presses the calibration keys while the operator
+switches the gas valves, waits for the reading to settle on the gas named, and
+records the run.
+
 ## Design points
 
 - **Validity and provenance travel with every value.** Hold, calibration and
@@ -68,7 +73,8 @@ The first release, **0.1.0**, covers:
   analyzer's type code is treated as a hint, not an authority.
 - **Writes are hard to get wrong.** Everything fujilib may ever write is a
   frozen envelope of documented user settings and operation commands. Factory
-  parameters are out of scope, and fujilib presses no front-panel key.
+  parameters are out of scope, and the only front-panel keys fujilib presses
+  are the six of a manual zero or span, never the keys into the menus.
 - **No hardware needed to develop or test.** A simulated analyzer runs the full
   stack in CI.
 

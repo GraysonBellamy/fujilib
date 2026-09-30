@@ -1,5 +1,5 @@
 ---
-description: What the bench Fuji ZPA analyzer actually does on the wire, measured read-only from 2026-09-28, with writes on 2026-09-29 and with front-panel keys on 2026-09-30, and where it differs from the MODBUS manual.
+description: What the bench Fuji ZPA analyzer actually does on the wire, measured read-only from 2026-09-28, with writes on 2026-09-29 and with front-panel keys and remote calibrations on 2026-09-30, and where it differs from the MODBUS manual.
 ---
 
 # Protocol findings — bench ZPA, 2026-09-28
@@ -13,7 +13,8 @@ records a calibration the owner made at the front panel, watched read-only, and 
 read-only session on what the registers still left unexplained. §16 is fujilib's own
 watch of a panel calibration, and §17 what the factory-mode screens showed. §18
 records the first front-panel keys written over Modbus, in a session the owner
-authorized and attended.
+authorized and attended, and §19 the first calibrations driven from the host with
+them, the owner at the gas valves.
 
 This document records what was **observed**. The manual is INZ-TN5A1190a-E unless noted.
 Addresses are relative (on-the-wire) hexadecimal. Raw results are in `probe_out/`
@@ -1433,3 +1434,55 @@ In passing: O2 read 21.08–21.09 vol% on air, at 3,367–3,369 counts. The span
 2026-09-29 at 18:30 (§16) set 20.95 at 3,349 counts, so the detector count had risen
 by about 19 counts (0.14 vol%) in 19 hours. Whether that was pressure or drift is not
 known.
+
+## 19. A zero and a span driven from the host (2026-09-30)
+
+The bench session of design §12 Phase 7C, 15:32–15:36 UTC. The owner authorized it,
+switched the gas valves and watched the panel; `fuji-calibrate` pressed the keys
+(design §6.5). The code was `phase-7c` after the independent review's fixes, with
+2,985 unit tests passing. The answer at each `Calibrate CH3 now?` was passed on from
+the owner: no for the cancel, yes for the zero and the span, once the owner had said
+the gas was flowing. The records are `probe_out/remote_zero_1.json`,
+`remote_zero_2.json` and `remote_span_1.json`, and the settings before the session
+`probe_out/settings_before_remote_cal.json` (all git-ignored).
+
+Before the first key, and read-only: nothing else had `COM8` open; Ch3 was set to
+zero "each" and calibration range "current", with range-1 calibration gases 0.00 and
+20.95 vol%; key lock and output hold were off; the plan of a zero of CH3 listed CH3
+range 1 alone; O2 read 20.62 vol% on air, with no error.
+
+| UTC | Run | Gas | Keys | O2 before → after | Deviation | O2 count | Status |
+|---|---|---|---|---|---|---|---|
+| 15:32:14 | zero, answered no | N2 | ZERO, DOWN, ENT, ESC | 0.04 → 0.04 vol% | — | 640 | `cancelled` |
+| 15:33:07 | zero | N2 | ZERO, ENT, ENT | 0.05 → 0.00 vol% | +0.05 | 641 | `completed` |
+| 15:35:30 | span | air, 20.95 vol% | SPAN, ENT, ENT | 20.89 → 20.95 vol% | −0.06 | 3,369 | `completed` |
+
+- **Every key was taken as it was on the 30th's prototype** (§18.1): the panel showed
+  it by the first read, 0.15–0.33 s after the write was sent, and each was
+  acknowledged. The two calibrating ENTs showed running 0.16 s after they were sent.
+- **The cursor.** The first ZERO opened on the "at once" pair (Ch1), and one DOWN took
+  it to Ch3. The next ZERO, and the SPAN, opened on Ch3, where the run before had
+  left it, so no DOWN was sent.
+- **The gas was steady from the first read** of each wait step, since the owner had
+  switched it before the run: O2 moved 0.00–0.05 %FS over the 30-second window,
+  0.2–0.3 %FS from the gas named. The rule called it steady 30.4–30.9 s after the wait
+  step opened, its shortest. How long a gas takes to settle after the valves change
+  is therefore not in these records; §14.4 has one such curve (O2 within 0.01 vol%
+  about 36 s after the change, response time 15 s).
+- **The calibrations.** Each ran between two reads 0.2 s apart (the zero at
+  15:33:39.66–.87, the span at 15:36:02.03–.24) and was back on measurement 1.1 and
+  2.4 s later. As on 2026-09-29 (§14.3), the analyzer did not answer one read while
+  it stored each, the zero and this time the span too; the retry answered. No
+  calibration error followed.
+- **The cancel** reached the wait step, then ESC returned to measurement with the zero
+  flag clear, and 00B9h stayed 0: nothing ran. The cleanup of each run found the
+  panel clean and did nothing.
+- **At the close** every one of the 162 settings read as before the session, and the
+  panel was on measurement with no calibration or hold flag set and 00B9h at 6.
+
+The O2 counts fit §17.3's span coefficient, 800 × gas / (span count − zero count):
+800 × 20.95 / (3,369 − 641) = 6.1437, where the calibrations of 2026-09-29 gave
+6.1731. The factory Coefficient screen was not read this time, so whether the
+analyzer now shows 6.1437 is not known.
+
+Design §12 Phase 7C's hardware exit is met.

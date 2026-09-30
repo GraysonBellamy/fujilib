@@ -127,6 +127,21 @@ print(event.outcome, event.channels, event.calibrated_at, event.deviations)
 The event says whether it completed, failed or was cancelled, and why. See
 [Safety](safety.md#manual-calibration-at-the-front-panel).
 
+A zero or span can also be driven from the host, with the operator at the gas
+valves. fujilib presses the calibration keys, waits for the reading to settle
+on the gas named, and returns the panel to measurement however the block ends:
+
+```python
+from fujilib.devices.keys import CalibrationGas
+
+plan = await anz.plan_manual_calibration("CH3", "zero")
+async with anz.manual_calibration(plan, gas=CalibrationGas(0, label="N2"), confirm=True) as run:
+    await run.wait_steady()  # switch the inlet to zero gas now
+    event = await run.calibrate(confirm=True)  # changes the analyzer's calibration
+```
+
+See [Safety](safety.md#a-manual-zero-or-span-from-the-host) and `fuji-calibrate`.
+
 ## Finding analyzers
 
 ```python

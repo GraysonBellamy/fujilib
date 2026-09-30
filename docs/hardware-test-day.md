@@ -427,6 +427,115 @@ calibrated. At the close all 162 settings matched the saved ones. Only
 `return-wait` did not end clean: its 42002 left Ch3's zero flag set, and the owner
 cleared it at the panel.
 
+## Remote zero and span
+
+This session makes a manual zero and a span of O2 from the host (design §6.5,
+§12 Phase 7C): `fuji-calibrate` presses the calibration keys, the owner
+switches the gas valves. **It changes the analyzer's calibration.** It needs
+the owner's authorization for the session, with the owner at the gases and
+the panel throughout (design §13.1 #79), zero gas (nitrogen) and span gas.
+
+| Allowed | Not allowed |
+|---|---|
+| `fuji-calibrate`, one run at a time, on Ch3 (O2) | MODE, SIDE, or any key but the six of a manual zero or span (the write envelope refuses them anyway) |
+| A zero of Ch3 on zero gas, a span of Ch3 on span gas, and a cancel | A zero of the "at once" pair (CO2 and CO) unless the owner asks for it: it calibrates both |
+| Reading the factory Coefficient screen after the zero, at the panel | Changing a calibration-gas setting in the session, unless the owner decides to |
+
+`fuji-calibrate` enforces its part itself: it refuses before the first key
+while key lock or output hold is on, a flag is set or the gas named is not the
+calibration-gas setting; it asks before the key that calibrates; and it
+returns the panel to measurement however the run ends.
+
+### Before the first key
+
+1. Pre-flight as for the read-only session. Check the process list: no
+   recording, soak monitor or probe has `COM8` open.
+2. Run it on the simulator. It opens no port:
+
+   ```bash
+   fuji-calibrate --fixture bench --channel CH3 --kind span --gas-value 20.95 --gas-unit vol% --confirm --i-understand-this-is-destructive --auto --window 2 --response-factor 0 --out probe_out/fixture_span.json
+   ```
+
+   Expected: `status: completed`.
+3. Save the settings, and note Ch3's range-1 calibration gases (0.00 and
+   20.95 vol% on 2026-09-29):
+
+   ```bash
+   fuji-configure dump COM8 --out probe_out/settings_before_remote_cal.json
+   ```
+
+4. The plan, which reads only:
+
+   ```bash
+   fuji-calibrate COM8 --gas CH1=co2 --gas CH2=co --gas CH3=o2 --channel CH3 --kind zero --plan
+   ```
+
+   Expected: `CH3: range 1 against 0 vol%`, no other channel, no "at once" note.
+5. Optional, before the calibrations: the output-hold step of the key
+   prototype (`probe_panel.py hold`, design §13.1 #86 (a)) and its backlight
+   step (§13.2 #39), as that session describes them.
+
+### The runs
+
+`fuji-calibrate` prints the reading as it settles, asks before it calibrates,
+and ends with `status:`. Each run writes `probe_out/remote_<kind>_<n>.json`
+with `--out`.
+
+1. **A cancel.** Zero gas at the inlet, then:
+
+   ```bash
+   fuji-calibrate COM8 --gas CH1=co2 --gas CH2=co --gas CH3=o2 --channel CH3 --kind zero --gas-value 0 --gas-label "N2" --confirm --i-understand-this-is-destructive --out probe_out/remote_zero_1.json
+   ```
+
+   When it asks, answer `n`. Expected: `status: cancelled`, the panel on
+   measurement, and nothing calibrated (00B9h stays 0).
+2. **A zero.** The same command with `--out probe_out/remote_zero_2.json`.
+   Keep zero gas flowing; answer `y` once it says steady. Expected: `status:
+   completed`, O2 at 0.00 after, a deviation of a few hundredths, the O2
+   detector near 634 counts (findings §16).
+3. **Optional:** read the factory Coefficient screen for Ch3 range 1 at the
+   panel (findings §17.3), and note the zero coefficient with the zero's
+   count from the record.
+4. **A span.** Switch to span gas, then:
+
+   ```bash
+   fuji-calibrate COM8 --gas CH1=co2 --gas CH2=co --gas CH3=o2 --channel CH3 --kind span --gas-value 20.95 --gas-unit vol% --gas-label "span gas" --confirm --i-understand-this-is-destructive --out probe_out/remote_span_1.json
+   ```
+
+   Answer `y` once steady. Expected: `status: completed`, O2 at 20.95 after.
+5. Switch the inlet back to the sample.
+
+### Closing
+
+```bash
+fuji-configure diff COM8 --file probe_out/settings_before_remote_cal.json
+fuji-read COM8 --include status
+```
+
+Every setting must be unchanged, and the panel on measurement with no flag set.
+
+### When something is unexpected
+
+- A run that ends `not_clean`, or raises that a flag is still set, stops the
+  session. The message names the channel; recover at the panel: ZERO or SPAN,
+  the channel, ENT once, then ESC.
+- A run that ends `refused` sent nothing; its message says why (key lock,
+  output hold, a flag, the gas named).
+- If the reading never settles within 10 minutes, the run ends `cancelled`.
+  The records keep every read on the wait step (`wait_series`), from which the
+  steadiness rule's defaults are to be tuned (design §13.1 #78).
+
+The results go to protocol findings §19, and the tuned defaults to design
+§13.1 #78.
+
+**The session of 2026-09-30** (15:32–15:36 UTC, findings §19) ran the cancel, the zero
+and the span, with the owner's answers passed on at the prompt. The zero took O2 from
+0.05 to 0.00 vol% on N2 and the span from 20.89 to 20.95 vol% on air; the cancel ran
+nothing. Every cleanup found the panel clean and every setting matched the saved ones.
+The gases were already steady when each run began; a run started before the gas is
+switched would record how long it takes to settle. Neither optional step (output
+hold, the backlight) was run, and the Coefficient screen was not read.
+
 ## Deliverables
 
 - The test run's summary, with any failures and whether they reproduce.

@@ -24,7 +24,9 @@ description: Architecture, design decisions, and phased implementation plan for 
 > the simulator and on the bench analyzer, and goes into 0.1.0 too (§13.1 #59). Phase 7
 > (the front panel) was reopened by the owner on 2026-09-29 (§13.1 #71). Its first part, watching manual calibrations
 > made at the panel, is done on the simulator and on the bench analyzer, and goes into
-> 0.1.0. The key prototype ran on the bench on 2026-09-30 (findings §18).
+> 0.1.0. The key prototype ran on the bench on 2026-09-30 (findings §18). Its third
+> part, a manual zero or span driven from the host with the calibration keys, is done on
+> the simulator and on the bench analyzer (findings §19; branch `phase-7c`, after 0.1.0).
 >
 > - **Where statements come from.** Statements about the device come from the three
 >   manuals in `docs/manuals/` (§14) and are marked **[manual]**. The bench analyzer was
@@ -54,7 +56,7 @@ description: Architecture, design decisions, and phased implementation plan for 
 | Values are **scaled integers** whose decimal point and unit live in *other* registers | The registry stores a scaling *rule*, not a constant. A concentration is decoded as a (value, decimal point, unit) triple read in one transaction. |
 | **Twelve display channels**: up to 5 measured components, then O2-corrected values, corrected averages and an O2 average | The core object is the channel and the central artifact is a `Frame`, as in `servomexlib`. Which gas each channel carries is **asserted by the caller**. The type code and live data only suggest it (§2.9). |
 | A **large writable settings surface** (about 170 holding registers) plus five operation commands | There is a real parameter registry, as in `watlowlib`, with read coalescing. Writes are governed by an **immutable write policy**, not by the registry alone (§5.4). |
-| Manual zero/span calibration is reachable **only by simulating front-panel keys**, and the same keys reach the factory menu | A manual calibration made at the panel is **watched** from the status registers. Key simulation is limited to the calibration keys, never MODE or SIDE, and comes after a prototype (§6.5, Phase 7). |
+| Manual zero/span calibration is reachable **only by simulating front-panel keys**, and the same keys reach the factory menu | A manual calibration made at the panel is **watched** from the status registers, and one can be **driven** from the host with the calibration keys only, never MODE or SIDE; the write envelope checks the key's value (§5.4, §6.5, Phase 7). |
 | The front panel stays live; an operator can change ranges and settings at any time | Cached metadata must be refreshable, and scaled writes re-read their scaling immediately before writing. Host locks cannot serialize the operator. |
 | Up to 31 stations on one RS-485 line | One `anymodbus.Bus` per port, owned by one `ModbusPort`. Multi-drop management comes after 0.1.0 (§7.4). |
 | Firmware 2.24 added the calibration log and type-code digits 27–29; the firmware version itself is **not readable** over Modbus | Capabilities are probed, not assumed (`Availability`). Only a well-formed probe answered with illegal-address counts as "unsupported". |
@@ -450,8 +452,8 @@ There is **no register to stop** a running auto calibration, and no register tha
 a manual zero or span calibration; both exist only as key sequences on the panel. The
 panel's forced stop of an auto calibration or auto zero calibration works only while
 key lock is off (ZPA manual p.55–57, p.62). The key register also reaches maintenance
-and factory mode (§6.5), so fujilib will write it only for the calibration keys
-(Phase 7C), and until then does not write it at all.
+and factory mode (§6.5), so fujilib writes it only with the six calibration keys, and
+only from the front-panel driver of a manual zero or span (`devices/keys.py`).
 
 **[bench]** A key written to 42001 acts as the same key at the panel, within a tenth
 of a second, unless key lock is on, which swallows it (findings §18). 42002 returns
@@ -640,7 +642,9 @@ devices/       profile.py    DeviceProfile (ZP_PROFILE): registry + regions + li
                analyzer.py   Analyzer — the public facade
                settings.py   settings documents: diff and apply
                operations.py auto-cal / auto-zero / blowback / return-to-measure; plans, status
-               panel.py      manual calibration at the front panel: plans, watching, events
+               panel.py      manual calibration at the front panel: plans, watching, events, records
+               keys.py       front-panel keys over Modbus: a manual zero or span driven from the host
+               steadiness.py whether a calibration gas has settled (pure)
                factory.py    async open_device(...)  <- THE entry point
                discovery.py  find_devices, DiscoveryResult, DiscoverySummary
                snapshot.py   DeviceSnapshot, FujiDeviceSnapshot
@@ -649,14 +653,15 @@ devices/       profile.py    DeviceProfile (ZP_PROFILE): registry + regions + li
 streaming/  sample.py poll_source.py recorder.py      samples, poll sources, record()
 sinks/      base.py (rows, SchemaLock, pipe) memory.py csv.py parquet.py
 sync/       analyzer.py discovery.py recording.py sinks.py portal.py
-cli/        decode read discover configure stream capture diag
+cli/        decode read discover configure stream capture diag calibrate
 manager.py                                 after 0.1.0 (§7.4)
 testing/    arrow.py (fixtures)  mock.py (MockAnalyzer, MockLine)  pair.py (wiring, bank)
 errors.py  config.py  units.py  version.py  _logging.py  _lock.py  _deadline.py  py.typed
 ```
 
-`devices/panel.py` watches manual calibrations made at the front panel. The key driver
-of Phase 7C will join it there (§6.5).
+`devices/panel.py` watches manual calibrations made at the front panel and records
+them. `devices/keys.py` drives one from the host, and is the only module that writes the
+key register (§6.5); it records the run with the same tracker.
 
 ### What is deliberately different from the siblings
 
@@ -1115,13 +1120,17 @@ changes, but a profile never widens `WRITE_ENVELOPE`.
 WRITE_ENVELOPE: Final = (  # frozen; not derived from the registry or probing
     WriteRange(fc=0x06, first=0x0000, last=0x009D),
     WriteRange(fc=0x10, first=0x0000, last=0x00A3),
+    WriteRange(fc=0x06, first=0x07D0, last=0x07D0, values=CALIBRATION_KEYS),  # 42001
     WriteRange(fc=0x06, first=0x07D1, last=0x07D4),  # operation commands 42002-42005
 )
 ```
 
 - **00A4h–00ABh are excluded:** inferred coefficients (§2.6).
-- **07D0h (key simulation) is excluded** until Phase 7C adds it for the calibration
-  keys, with the value checked as well as the address (§6.5).
+- **07D0h (key simulation) takes only the six calibration keys**, UP, DOWN, ESC, ENT,
+  ZERO and SPAN (`CALIBRATION_KEYS`, written out apart from `KeyCode`). The envelope
+  checks the *value* there as well as the address: an address alone no longer passes,
+  and MODE, SIDE, 0 or two keys at once are refused before the wire. The simulator's
+  own write list checks the same six independently (§10).
 - **009Eh–00A3h belong to ZPB/ZPG**, and FC10 is the only function that reaches them.
 
 **The reviewed subset.** Inside the envelope, a register is writable only when its
@@ -1212,9 +1221,9 @@ operation, not merely whether it persists. Unlike `sartoriuslib`, fujilib requir
 | Tier | Operations |
 |---|---|
 | `READ_ONLY` | every read |
-| `STATEFUL` | `return_to_measurement()`, `start_blowback()` |
+| `STATEFUL` | `return_to_measurement()`, `start_blowback()`; the keys of a remote manual calibration that open channel selection, move the cursor, select the channel and cancel (`manual_calibration()`) |
 | `PERSISTENT` | settings writes that change only configuration: response times, output hold, hold mode and hold values, a channel's range and range method |
-| `DANGEROUS` | `start_auto_calibration()` and `start_auto_zero_calibration()`; changing calibration-gas values or the calibration-scope settings (40026–40035) |
+| `DANGEROUS` | `start_auto_calibration()` and `start_auto_zero_calibration()`; the ENT that starts a manual calibration (`RemoteCalibration.calibrate()`); changing calibration-gas values or the calibration-scope settings (40026–40035) |
 
 Calibration is `DANGEROUS` because it overwrites the calibration coefficients and is only
 correct if the right gas is flowing. A calibration-gas value is equally dangerous, because
@@ -1326,49 +1335,94 @@ The work is staged (§12, Phase 7). **Watching** manual calibrations made at the
 needs no key (7A). The step, the flags, 00B9h and 00BDh show the whole sequence
 (§2.6, findings §14). **The key prototype** (7B) showed on the bench that a key written
 to 42001 acts as the same key at the panel (findings §18). **Driving** a calibration
-(7C) answers the first design's four reasons as follows:
+(7C, `devices/keys.py`) answers the first design's four reasons as follows:
 
 1. **The same keys reach factory mode.** Maintenance mode is behind MODE, a menu and a
    password entered with SIDE; its default is 0000, and it can change the station
    number. Factory mode is behind a second password, printed in the service manual
-   (TN5A1191b-E §3.1). fujilib will send only ZERO, SPAN, UP, DOWN, ENT and ESC, never
-   MODE or SIDE, and the client will check the *value* of every write to 42001, not
-   only its address (§5.4). By the manual, no sequence of those keys opens a menu.
+   (TN5A1191b-E §3.1). fujilib sends only ZERO, SPAN, UP, DOWN, ENT and ESC, never
+   MODE or SIDE, and the client checks the *value* of every write to 42001, not only
+   its address (§5.4). By the manual, no sequence of those keys opens a menu.
 2. **A single key can force a calibration.** On errors 5 and 7, ENT forces the
-   calibration (§2.8). ENT is sent only on the channel-selection and wait steps. On the
-   error display, fujilib sends only ESC, then 42002.
+   calibration (§2.8). ENT is sent only on the channel-selection and wait steps, and
+   on the wait step only by `calibrate()`. On the error display fujilib sends only ESC.
 3. **Gas stability can't be judged over Modbus while output hold is on.** The
    concentrations are held during a calibration then (ZPA p.64). With hold off they are
-   live (findings §14), and a steadiness rule (§13.1 #78) watches them. Where hold is
-   on, the rule would fall back to the raw A/D counts, if those stay live. The
-   prototype's hold step was not run (findings §18.7), so that is still open (#86).
-   The operator names the gas; fujilib compares it with the calibration-gas
-   setting, and the reading with the gas, before the calibrating key.
+   live (findings §14), and a steadiness rule (§13.1 #78, `devices/steadiness.py`)
+   watches them. Whether the A/D counts stay live under hold is still open (§13.2
+   #38), so a remote calibration is refused while output hold is on (#86). The
+   operator names the gas; it must be the calibration-gas setting of every range the
+   calibration touches (#89), and the reading must settle within a tolerance of it.
 4. **The scope is wider than the call.** "At once" zeroes every channel set to it
    together, and "both" calibrates both ranges (§2.6). `plan_manual_calibration()`
-   reports every channel and range. The plan is read again before the calibrating key,
-   and the run stops if it has changed.
+   reports every channel and range. The plan is read again before the first key and
+   again before the calibrating key, and the run is refused if it has changed. A plan
+   that widens any channel to both ranges is refused until the bench has shown what
+   "both" does (#88).
 
-**How keys are sent.** Every key is one locked operation:
+**The run.** `Analyzer.manual_calibration(plan, gas=..., confirm=True)` is an async
+context manager (`RemoteCalibration`; a blocking twin in `fujilib.sync`):
+
+```python
+plan = await anz.plan_manual_calibration("CH3", "span")
+gas = CalibrationGas(20.95, "vol%", label="20.95 % O2 in N2")
+async with anz.manual_calibration(plan, gas=gas, confirm=True, adc=True) as run:
+    await run.wait_steady()  # the operator switches the valves; fujilib watches
+    event = await run.calibrate(confirm=True)  # DANGEROUS: the ENT that calibrates
+```
+
+- **Entering it** refuses, with nothing sent, unless the panel is on the measurement
+  screen with no step, no calibration or hold flag is set, key lock (#85) and output
+  hold (#86) are off, no instrument error is active, the plan reads the same again,
+  no channel is widened to both ranges (#88), and the gas named is each channel's
+  calibration-gas setting (#89). It then presses ZERO or SPAN, moves the cursor and
+  selects the channel, each key `STATEFUL`: the analyzer is on the wait step.
+- **`wait_steady()`** reads the panel every `interval` (0.5 s), with the A/D block
+  when `adc`, until every channel calibrated is steady on its gas (#78), or times out.
+  The port is free between reads, so a recording goes on, its rows marked
+  `calibrating`. A panel that leaves the wait step (a key at the panel, a 42002 from
+  elsewhere) stops the run.
+- **`calibrate(confirm=True)`** checks everything again in the same operation as the
+  key: the settings and the plan, then the panel once more, so that it is the last
+  thing read: the wait step with the plan's flags, no hold flag, each reading in its
+  range's unit, the gas still steady with this read, no instrument error. Only then
+  does it send the ENT, which is `DANGEROUS`, and it follows the calibration to its
+  end. On the error display it sends ESC, never ENT. `cancel()` leaves the wait step
+  with ESC.
+- **One run per session** (#91). While one holds the panel, the same session refuses
+  setting writes and commands, and another run.
+
+**How keys are sent** (#92). Every key is one locked operation:
 1. read the screen, the step, the cursor and the flags, and refuse unless the step
-   allows the key;
+   allows the key (`key_refusal()`);
 2. write the key once, never retried;
-3. read until the step, the cursor and the flags show that it took.
+3. read until the step, the cursor and the flags show that it took, for at most
+   `key_timeout` (2 s), shielded; any screen but measurement is unexpected.
 
 On the bench the change was there by the first read after the reply, and a flag at
 most one read later (findings §18.1). 00BDh shows only keys pressed at the panel, so it
-cannot confirm fujilib's own keys.
+cannot confirm fujilib's own keys. A key not seen taken, whether acknowledged or not,
+stops the run, and the run then sends no key but the cleanup's: a calibrating ENT the
+panel swallowed is never followed by another. A key whose reply was lost is settled by
+the reads. A key is recorded before it is written, so the cleanup reads the panel after
+it however its write and reads end, cancellation included; only a definite refusal (an
+exception reply) takes it off the record. Keys go only on the plan's own steps: DOWN
+and the selecting ENT on its kind's channel selection, the calibrating ENT on its wait
+step.
 
 - **Key lock** swallows a key written over Modbus, although the analyzer acknowledges
   it, and the analyzer then answers nothing for about two seconds (findings §18.6).
-  fujilib reads key lock (40074) before the first key and refuses while it is on
-  (#85).
+  fujilib reads key lock (40074) before the first key and before the calibrating key,
+  and refuses while it is on (#85).
 - **The cursor** wraps round at both ends. ZERO or SPAN may open it where it was left,
   or on Ch1: that happened after a 42002 and after a long pause (findings §18.2).
-  fujilib reads the cursor after every key and moves it towards the planned position.
   Channels zeroed "at once" share a position, which reads as its first channel when
-  approached going down and its last going up. fujilib approaches it going down, as on
-  the bench, and sends ENT only when the cursor is on the planned position.
+  reached going down and its last going up. fujilib moves the cursor with DOWN only,
+  one confirmed key at a time, until it reads the planned channel, or the first of the
+  "at once" channels; if it comes round to a channel already passed, the panel does
+  not offer the channel and the run stops. ENT then needs the cursor on it.
+- **The calibrating key** is followed for up to `run_timeout` (30 s): the analyzer did
+  not answer for about a second while it stored a zero (findings §14.3).
 
 Anything unexpected stops the run, and the cleanup depends on the step it stopped on:
 
@@ -1380,11 +1434,17 @@ Anything unexpected stops the run, and the cleanup depends on the step it stoppe
 | error display | ESC |
 | any other screen | 42002 only |
 
-Cleanup runs shielded, with its own deadline, as the read-back does. It checks that the
-flags have cleared as well as the screen: returning the display to measurement is not
-proof that a calibration stopped (findings §18.4). A flag still set on the measurement
-screen raises and names the channel. The recovery the bench showed is to enter that
-channel's wait step and press ESC. fujilib leaves that recovery to the operator (#84).
+Cleanup runs however the block is left, cancellation included, shielded and within its
+own deadline (`cleanup_timeout`, 30 s), as the read-back does; its keys and 42002 wait
+for the port within it too. Each cleanup key is sent once, and not again on a step
+where it was just sent; a key whose own read failed before it was written may be tried
+again. The result is kept however the cleanup ends, and an error leaving the block
+carries a note when the panel was not left clean. It checks that the flags have
+cleared as well as the screen: returning the display to measurement is not proof that
+a calibration stopped (findings §18.4). A flag still set on the measurement screen
+raises `FujiAnalyzerStateError`, names the channel and gives the recovery the bench
+showed: enter that channel's wait step at the panel and press ESC. fujilib leaves that
+recovery to the operator (#84).
 
 **Records.** A calibration, watched or driven, is recorded as a `ManualCalibrationEvent`
 (§8):
@@ -1395,7 +1455,11 @@ channel's wait step and press ESC. fujilib leaves that recovery to the operator 
 
 That is what firmware 2.24's calibration log keeps: a detector count and a deviation
 (§13.1 #75). The A/D counts are no finer than the reading (findings §14.4), so they are
-kept as evidence, never as a measurement.
+kept as evidence, never as a measurement. A driven run's `RemoteCalibrationResult` adds
+the plan, the gas named, the steadiness verdict and rule, every read on the wait step,
+the keys and the cleanup. Both are written as a `fujilib-calibration/1` document
+(`calibration_record()`, `RemoteCalibrationResult.as_record()`, #90), from which capa's
+`AnalyzerCalibration` zero and span times can be taken.
 
 ### 6.6 Probed capabilities
 
@@ -1488,7 +1552,7 @@ async with await open_device(
 | Recording | `record()` over a `PollSource`; `reopen()` after a connection failure | 5 |
 | Parameters (write) | `write_parameter(name, value, *, unit=None, confirm=False)`; `set_response_time`, `set_output_hold`, `set_hold_mode`, `set_hold_value`, `set_range`, `set_range_method`, `set_calibration_gas`; `diff_settings`, `apply_settings` | 6 |
 | Operations | `start_auto_calibration`, `start_auto_zero_calibration`, `start_blowback`, `return_to_measurement`, `plan_auto_calibration()`, `plan_auto_zero_calibration()`, `calibration_status()`, `wait_for_calibration(timeout=...)` | 6 |
-| Front panel | `plan_manual_calibration(channel, kind)`, `wait_for_manual_calibration(timeout=...)`; `ManualCalibrationTracker` over recorded frames | 7 |
+| Front panel | `plan_manual_calibration(channel, kind)`, `wait_for_manual_calibration(timeout=...)`; `ManualCalibrationTracker` over recorded frames; `manual_calibration(plan, gas=..., confirm=...)`, a `RemoteCalibration` with `wait_steady()`, `read()`, `calibrate(confirm=...)` and `cancel()` | 7 |
 
 Every I/O method takes keyword-only `timeout: float | None = None`. Everything above
 `READ_ONLY` takes `confirm: bool = False`. Channel arguments accept `ChannelId` or `str`.
@@ -1702,6 +1766,7 @@ Plain `argparse`, each `main(argv=None) -> int`, each drivable with `--fixture`.
 | `fuji-capture` | record to CSV or Parquet, with a `fujilib-capture/1` metadata document beside it | 5 |
 | `fuji-diag timing` | read-only link timing, busy-wait gaps measured from the reply | 5 |
 | `fuji-configure` | `dump` / `diff` / `apply` (`apply`: `--confirm`, `--i-understand-this-is-destructive` for a DANGEROUS write, `--dry-run`, settings names only) | 4 / 6 |
+| `fuji-calibrate` | a manual zero or span from the host, the operator at the gas valves (`--plan`; `--confirm` and `--i-understand-this-is-destructive`; `--auto`) | 7 |
 
 The CLI uses the same session and write policy as the facade; it has no private write
 path.
@@ -1736,6 +1801,14 @@ path.
   recording (#57). A Parquet file carries the starting document in its metadata.
   Existing files are not replaced without `--force`, and a missing `pyarrow` is reported
   before the port is opened (#52).
+- **`fuji-calibrate`** plans a zero or span of `--channel` (`--kind zero|span`) and,
+  with `--confirm` and `--i-understand-this-is-destructive`, drives it (§6.5): it
+  presses the keys, tells the operator to switch the inlet to the gas named
+  (`--gas-value`, `--gas-unit`, `--gas-label`), prints the steadiness as it settles,
+  asks before the key that calibrates unless `--auto`, and waits again if the gas
+  moves before the key. It writes a `fujilib-calibration/1` record (`--out`) and ends
+  with a `status:` line; 0 when the calibration completed, 1 otherwise (#93). With
+  `--fixture` the named gas flows into the simulated inlet when the wait step opens.
 - **`fuji-diag timing`** is `scripts/probe_link.py --mode pairs` on fujilib's own port and
   client: no library idle, no retries, busy-waited gaps, a random order (`--seed`), every
   trial kept (`fujilib-diag-timing/1`), and only FC04 reads (#54).
@@ -1941,6 +2014,29 @@ class ManualCalibrationEvent:               # a zero or span made at the panel (
     evidence: tuple[str, ...]               # why the outcome is what it is
 
 @dataclass(frozen=True, slots=True)
+class CalibrationGas:                       # the gas the operator names (#89)
+    value: float; unit: Unit | None; label: str | None
+
+@dataclass(frozen=True, slots=True)
+class SteadinessRule:                       # #78; defaults to tune on the bench
+    window_s: float = 30.0; response_factor: float = 2.0
+    band_percent_fs: float = 0.5; tolerance_percent_fs: float = 10.0; timeout_s: float = 600.0
+    max_gap_s: float = 5.0
+
+@dataclass(frozen=True, slots=True)
+class RemoteCalibrationResult:              # a driven run (§6.5)
+    plan: ManualCalibrationPlan
+    gases: Mapping[ChannelId, CalibrationGas]
+    rule: SteadinessRule
+    event: ManualCalibrationEvent | None    # None when no key opened a pass
+    steadiness: SteadinessVerdict | None
+    calibrating_key_sent: bool
+    keys: tuple[KeyPress, ...]              # key, step, cursor, acknowledged, taken, after_s
+    cleanup: CleanupReport                  # clean, actions, flags_left, error
+    samples: tuple[WaitSample, ...]         # every read on the wait step
+    started_at: datetime; ended_at: datetime; error: str | None
+
+@dataclass(frozen=True, slots=True)
 class Sample:                               # one per analyzer per tick, unified API §C
     device: str
     address: int
@@ -2043,7 +2139,7 @@ the write list and the per-request faults. The line is `anymodbus`'s `MockServer
   03E8h–0479h replaces the documented 0425h–0469h by default; a firmware-2.24 variant
   adds 047Ah and the calibration log.
 - **Writes against an independent list.** The simulator accepts only the documented
-  writes minus 00A4h–00ABh and 07D0h. The list is written out in `testing/mock.py`, not
+  writes minus 00A4h–00ABh, and at 07D0h only the six calibration keys. The list is written out in `testing/mock.py`, not
   imported from `WRITE_ENVELOPE`, so a widened envelope fails the tests. Any other write
   raises `MockWriteViolation`, which fails the test. A write is stored as sent; a
   test that wants the analyzer to refuse a value injects an exception reply, and
@@ -2062,7 +2158,13 @@ the write list and the per-request faults. The line is `anymodbus`'s `MockServer
   with "at once" channels sharing a position, the zero and span flags, 00B9h and
   00BDh. The calibrating ENT sets the channels' readings to their calibration gases.
   What the bench has not shown is written from the manuals and marked so in the
-  simulator: the error display, and hold.
+  simulator: the error display, and hold. A key written to 07D0h acts as a key at the
+  panel but never shows in 30190; key lock swallows it and the analyzer then falls
+  silent; the cursor wraps round, an "at once" position reading by direction; ZERO
+  opens on the first position after a 42002; and optionally a flag lags ESC, the
+  analyzer falls silent while it stores, and the cursor resets after a pause
+  (findings §18). `MockAnalyzer.flow(channel, value, tau_s=...)` changes the gas at
+  a channel's inlet, so a steadiness rule can be exercised.
 - **Reply faults per request:** drop, delay (a late reply), bad CRC, wrong word count,
   wrong function code, garbage, or an exception. Each fault applies once or every time, to
   every request or to the ones a predicate selects.
@@ -2103,6 +2205,7 @@ coherent block capture (findings §4.3).
 | Recording | on a manual clock, exact tick, late, drift and drop counts for every overflow policy; error-first recording keeps a fixed schema; every name in every batch; a disconnect ends the recording after its batch, and a reconnect policy rides it out (over a simulated cable pulled and put back); a channel established later stays out of the rows; cancellation and early exit |
 | Sinks | CSV and Parquet read back exactly what was written (hypothesis); `pipe()` flushes on time while idle and writes what it holds when cancelled; a failed sink is not retried |
 | Commands | `fuji-stream`, `fuji-capture` and `fuji-diag` on the simulator, including a real SIGINT mid-recording (the files are closed and readable, exit 0) |
+| Remote calibration | every key only where it belongs; every refusal leaves no write in the request log; a zero, a span and an "at once" zero on the simulator; keys swallowed, lost, refused or landing elsewhere; a key or a menu at the panel meanwhile; the cleanup from every step, a flag left set, a port that fails, cancellation; the steadiness rule, property-tested; `fuji-calibrate` end to end on `--fixture bench` |
 | Faults | `FaultPlan` CRC corruption and dropped responses: reads retry and are counted, writes do not retry |
 | Multi-drop | several stations behind the dispatcher; one absent station does not stall others unboundedly |
 | Unified API | `test_unified_api.py`, import symmetry, sync parity |
@@ -2119,7 +2222,7 @@ from the owner before it is ever run:
 |---|---|---|
 | `hardware` | `FUJILIB_ENABLE_HARDWARE_TESTS` | reads, identify, metadata, logs, discovery, link timing |
 | `hardware_stateful` | `FUJILIB_ENABLE_STATEFUL_TESTS` | settings writes with restore, a settings document and its baseline, return-to-measurement; the owner-attended steps (key lock, power cycle, values out of range) are `scripts/probe_write.py` |
-| `hardware_destructive` | `FUJILIB_ENABLE_DESTRUCTIVE_TESTS` | auto calibration and auto zero, with calibration gas; none written: the bench analyzer cannot auto-calibrate |
+| `hardware_destructive` | `FUJILIB_ENABLE_DESTRUCTIVE_TESTS` | auto calibration and auto zero, with calibration gas; none written: the bench analyzer cannot auto-calibrate. A remote zero or span is no pytest: the operator switches the valves, so it is an attended session with `fuji-calibrate` (#94) |
 
 Bench configuration comes from `FUJILIB_HARDWARE_PORT` and `FUJILIB_HARDWARE_ADDRESS`.
 `docs/hardware-test-day.md` is the written procedure. Timing probes must busy-wait,
@@ -2738,34 +2841,68 @@ Left open, and not in the session:
   and not run, at the owner's choice;
 - the error display and a "both" channel, which need a real calibration.
 
-**7C — Remote manual zero and span** (after 0.1.0):
+**7C — Remote manual zero and span** (after 0.1.0; software and hardware **done
+2026-09-30**, on the branch `phase-7c`):
 
-- The key driver of §6.5 in `devices/panel.py`: `manual_calibration(plan,
-  confirm=True)`, an async context manager that cleans up for the step it stops on.
-  The key that starts the calibration is `DANGEROUS`; the other keys are `STATEFUL`.
-  From 7B (findings §18):
+- The key driver of §6.5 in `devices/keys.py`: `Analyzer.manual_calibration(plan, gas=...,
+  confirm=True)`, an async context manager (`RemoteCalibration`) that cleans up for the
+  step it stops on, with `wait_steady()`, `read()`, `calibrate(confirm=True)` and
+  `cancel()`, and its blocking twin `SyncRemoteCalibration`. The key that starts the
+  calibration is `DANGEROUS`; the other keys are `STATEFUL`. From 7B (findings §18):
   - a key is confirmed by the step, the cursor and the flags, never by 00BDh;
-  - the cursor is read after every key and moved with the wrap-round, approaching an
-    "at once" position going down;
-  - key lock is read first and refused (#85);
+  - the cursor is read after every key and moved with DOWN only, so an "at once"
+    position is approached going down (#92);
+  - key lock is read first and refused (#85), and output hold (#86);
   - a wait step is cancelled only with ESC;
   - a flag still set after the cleanup raises (#84).
-- The write envelope gains 07D0h for the six calibration keys, with the value checked
+- The write envelope takes 07D0h for the six calibration keys, with the value checked
   in the client and, independently, in the simulator (§5.4, §10).
-- The simulator's panel brought in line with findings §18:
-  - the cursor wraps round, and the "at once" position reads by direction;
-  - a key written to 07D0h acts but does not show in 30190;
-  - key lock swallows keys;
-  - 42002 on a wait step leaves the flags set;
-  - ZERO opens on Ch1 after a 42002.
-
-  `MockAnalyzer.press()` stays the operator at the panel.
-- A steadiness rule (#78) and the gas the operator names, checked against the
-  calibration-gas setting and the reading. Output hold is refused until §13.2 #38 is
-  answered (#86).
+- The simulator's panel brought in line with findings §18: the cursor wraps round and
+  the "at once" position reads by direction; a key written to 07D0h acts but does not
+  show in 30190; key lock swallows keys and the analyzer falls silent; 42002 on a wait
+  step leaves the flags set; ZERO opens on Ch1 after a 42002. `MockAnalyzer.press()`
+  stays the operator at the panel, and `MockAnalyzer.flow()` puts a gas at the inlet.
+- A steadiness rule (#78, `devices/steadiness.py`), and the gas the operator names,
+  checked against the calibration-gas setting (#89) and the reading.
 - `fuji-calibrate`, an interactive command that walks the operator through the valves
-  (#76, #77).
-- A calibration record (#75) written beside each run.
+  (#76, #77, #93).
+- A calibration record, `fujilib-calibration/1` (#75, #90), written beside each run and
+  the same for a calibration watched at the panel.
+
+*Software exit met* on 2026-09-30, locally on Windows and Python 3.13: lint, both type
+checkers, the unit tests at 100 % branch coverage under asyncio and trio, the docs
+build, and `probe_panel.py check` on the changed simulator. What differs from the plan:
+
+- **The driver has a module of its own**, `devices/keys.py`, the only one that writes
+  42001; `devices/panel.py` stays the read-only watcher, and records both (#92).
+- **The cursor moves with DOWN only.** The plan had it move towards the channel. Down
+  only needs no direction logic, always approaches an "at once" position as the bench
+  did, and comes round to a channel already passed when the panel does not offer the
+  one wanted (#92).
+- **Refused as well, before any key:** a plan widened to both ranges (#88), a hold
+  flag set, and a second run on the same session (#91).
+- **A key that may have reached the panel is recorded however its reads end**, a
+  failed port included, so the cleanup reads the panel after it. A first draft lost
+  such a key and skipped the cleanup; a test of a port failing mid-confirmation found
+  it.
+- **The gas is checked twice before the key that calibrates.** A gas judged steady
+  can move out of the band by the next read; `calibrate()` then refuses, and
+  `fuji-calibrate` waits for it to settle again (#93). The simulator's gas showed it.
+- **An independent review of the change**, before the bench session, found and had
+  fixed: a calibrating ENT that the panel swallowed left the run on the wait step, so
+  a second `calibrate()` could send another (a key not seen taken now ends the run); a
+  key write cancelled while it waited for its reply went unrecorded, and the cleanup
+  then skipped a panel left on channel selection (keys are now recorded before they
+  are written); the driver's key write was public, with no step check (now private);
+  Ctrl-C in the blocking twin left the coroutine running on the loop while the
+  cleanup ran (`SyncPortal.call_interruptible`); a steadiness verdict could rest on two
+  reads either side of a long pause (`max_gap_s`, and `fuji-calibrate` reads on while
+  it asks); `fuji-calibrate`'s prompt ran in a thread that could hold up the exit after
+  Ctrl-C. Smaller ones: the cleanup's keys were not bounded by its deadline, a failed
+  read before a cleanup ESC ended the cleanup, the result was lost if the cleanup was
+  interrupted, the calibrating ENT's re-check read the panel before the settings and
+  did not look at the hold flags or the reading's unit, and Ctrl-C always reported
+  `cancelled`.
 
 *Estimate:* about 7–10 working days, plus one attended bench session of an hour or two
 with both gases:
@@ -2784,9 +2921,18 @@ panel, before the session.
 *Exit:*
 - the software exit as for 7A;
 - on the bench, with the owner at the gases, a remote zero and span of O2 that each
-  complete;
+  complete (`docs/hardware-test-day.md`, "Remote zero and span");
 - every cleanup path, driven by the simulator and, where it is safe to, by the
   prototype.
+
+*Hardware exit met* on 2026-09-30, 15:32–15:36 UTC (findings §19), with the owner at
+the gas valves: `fuji-calibrate` made a zero of O2 on N2 (0.05 → 0.00 vol%) and a span
+on air (20.89 → 20.95 vol%), each `completed`, and a zero answered no was `cancelled`
+with nothing run. Every key was taken by the first read after it; each cleanup found
+the panel clean; every setting read as before. The gases were already steady when each
+run began, so the steadiness rule's defaults stand (#78): the settling time after a
+change of gas is still to be recorded with them. The cleanup paths were driven on the
+simulator only: the bench session gave none of them cause to run.
 
 ### Phase 8 — Family and downstream (as hardware, manuals and need allow)
 
@@ -2801,7 +2947,7 @@ panel, before the session.
 ### Sequencing
 
 ```
-decisions ─► Phase 0 ─► Phase 1 ─► Phase 3 ─► Phase 4 ─► Phase 5 ─► Phase 6 ─► 7A ─► 7B ─► 0.1.0 ─► 7C
+decisions ─► Phase 0 ─► Phase 1 ─► Phase 3 ─► Phase 4 ─► Phase 5 ─► Phase 6 ─► 7A ─► 7B ─► 0.1.0 ─► 7C (bench)
                             ▲         ▲           ▲
 anymodbus 0.2.1 ────────────┼─────────┘           │
 Phase 2 (bench) ────────────┴─────────────────────┘   (findings feed registry, defaults, O2 scope)
@@ -2896,16 +3042,23 @@ engineer-weeks) plus the hardware session and the soak, and the writes at anothe
 | 75 | What a calibration record keeps | **Adopted 2026-09-29**, at the owner's request to log the A/D values: the readings before and after, the deviation from the calibration gas, and the raw A/D values at the last read before it ran. That is what firmware 2.24's calibration log keeps; the counts are no finer than the reading (findings §14.4) |
 | 76 | A command-line tool for manual calibration | **Adopted 2026-09-29** on the owner's "proceed"; not separately confirmed: `fuji-calibrate`, interactive, in 7C. #66 stands for the operation commands |
 | 77 | Who starts a remote calibration once the gas is steady | **Adopted 2026-09-29** on the owner's "proceed"; not separately confirmed: fujilib judges the gas steady; it asks before the calibrating key unless told not to (`--auto`) |
-| 78 | The steadiness rule | *(awaiting, 7C)* Defaults to tune on the bench: steady within about 0.5 %FS over the longer of 30 s and twice the response time; the reading within about 10 %FS of the named gas; give up after 10 minutes. The A/D counts where the reading is held. On 2026-09-29 O2 settled within 0.01 vol% about 36 s after the gas changed (findings §14.4) |
+| 78 | The steadiness rule | **Decided 2026-09-30 by the owner** (first adopted on the owner's \"proceed\"): `SteadinessRule`, with the recommended defaults, to be tuned from the wait-step reads the bench session records: the reading moves no more than 0.5 %FS over the longer of 30 s and twice the channel's response time, and the window's mean lies within 10 %FS of the named gas, with no two reads in it more than 5 s apart; every channel of the calibration at once; give up after 10 minutes. The response time is the channel's slot where the asserted gases say which, else the longest of the five. The read before the calibrating key must still be steady. On the bench on 2026-09-30 (findings §19) steady gases met it with a wide margin, 0.00–0.05 %FS of movement and 0.2–0.3 %FS from the gas; the defaults stand until a session records the settling after a change of gas. On 2026-09-29 O2 settled within 0.01 vol% about 36 s after the gas changed (findings §14.4). The A/D counts are recorded, not judged: output hold is refused (#86) |
 | 79 | Calibrations and keys on the bench analyzer | **Decided 2026-09-29 by the owner:** calibrations at the panel by the owner are allowed (an O2 zero and span were made, findings §14). Each session in which fujilib sends a key needs its own authorization |
 | 80 | The step register on a menu screen | **Adopted 2026-09-29 at the owner's request** ("fix the calibration tracker"), after findings §15.2. The menus put page numbers in 30182, some equal to calibration steps, and the tracker had turned a menu walk into five calibration events. 30182 is now a step only while 30181 shows measurement, as the manual defines it (TN5A1190a p.46). `PanelObservation.step` is `NONE` on any other screen, so a menu page neither starts a pass nor continues one. The decoder keeps the raw page number there. An event whose first read after it shows a menu says so in its evidence. The write refusal already checked the screen first (#63) |
 | 81 | Readings while the analyzer warms up after a power cycle | *(awaiting)* For about a minute after power-on the readings are far off, CO2 up to 220 %FS, and no flag says so (findings §15.5). A recording with `--reconnect` rides out the outage and keeps these rows with state `ok`. Options: (a) leave them, and document it; (b) give the polls of a settling period after a reconnect, about 90 s, a state that is not `ok`; (c) detect the warm-up from the analyzer, but nothing found so far marks it. The only trace of a power cycle is that 00B9h and the cursor read 0, which they may do anyway. Recommendation: (b), since a USB unplug and a power cut look the same from the host |
 | 82 | The key prototype's session | **Decided 2026-09-30 by the owner:** authorized, with the owner at the panel (#79). Experiments 1-8 of `docs/hardware-test-day.md` ran, key lock included; the backlight and output-hold steps did not. Zero gas was at the inlet for the zero experiments and air for the span one. When 42002 left Ch3's zero flag set, the owner chose to clear it at the panel (ZERO, O2, ENT, ESC) rather than by a power cycle (findings §18.4) |
 | 83 | `return_to_measurement()` during a manual calibration | **Decided 2026-09-30 by the owner:** (b) with (c) as a backstop, in 0.1.0. 42002 on a manual calibration's wait step returns the display to measurement but leaves the channel's flag set, and nothing at the panel shows it (findings §18.4); #63 let the command through in every state, and it reported `done` on the measurement screen. It now reads the status first and is refused, nothing sent, while any calibration flag is set, automatic or manual (`FujiAnalyzerStateError`, saying that ESC on the wait step cancels). It still closes menus and a manual calibration's channel selection. It is `done` only when the panel shows the measurement screen with no flag set; a flag set after it, from a calibration begun at the panel meanwhile, raises `FujiVerificationError`. (The other options were (a) documenting it only, and (c) alone: keep sending it, but not `done` while a flag is set) |
-| 84 | How a remote calibration cancels and recovers (7C) | *(awaiting, 7C)* Recommendation: ESC is the only cancel on a wait step, never 42002 (findings §18.4). A flag still set on the measurement screen after the cleanup raises `FujiAnalyzerStateError`, naming the channel and the recovery: enter its wait step and press ESC. fujilib does not attempt that recovery itself; it would need ZERO or SPAN while a flag is set, which the driver otherwise refuses |
-| 85 | Key lock and remote keys (7C) | *(awaiting, 7C)* Recommendation: read key lock (40074) before the first key, and refuse while it is on. Its keys are acknowledged and swallowed, and the analyzer is then silent for about two seconds (findings §18.6) |
-| 86 | Output hold and remote calibration (7C) | *(awaiting, 7C)* Whether the readings and the A/D values freeze under hold is still open (§13.2 #38). Options: (a) run `probe_panel.py hold` before 7C's bench session, and design the steadiness rule under hold from it; (b) refuse a remote calibration while output hold is on. Recommendation: (b) until (a) has run |
+| 84 | How a remote calibration cancels and recovers (7C) | **Decided 2026-09-30 by the owner** (first adopted on the owner's \"proceed\"): as recommended. ESC is the only cancel on a wait step, never 42002 (findings §18.4). A flag still set on the measurement screen after the cleanup raises `FujiAnalyzerStateError`, naming the channel and the recovery: enter its wait step and press ESC. fujilib does not attempt that recovery itself; it would need ZERO or SPAN while a flag is set, which the driver otherwise refuses |
+| 85 | Key lock and remote keys (7C) | **Decided 2026-09-30 by the owner** (first adopted on the owner's \"proceed\"): as recommended, and read again before the calibrating key. Key lock (40074) on refuses the run, nothing sent. Its keys are acknowledged and swallowed, and the analyzer is then silent for about two seconds (findings §18.6); a key swallowed anyway is not seen taken and stops the run |
+| 86 | Output hold and remote calibration (7C) | **Decided 2026-09-30 by the owner** (first adopted on the owner's \"proceed\"): (b), until (a) has run. A remote calibration is refused while output hold (40093) is on, or any channel's hold flag is set. Whether the readings and the A/D values freeze under hold is still open (§13.2 #38); (a), `probe_panel.py hold` before a bench session, would let the rule use the A/D counts under hold |
 | 87 | How the Parquet sink holds the rows waiting for their row group | **Decided 2026-09-30 by the owner**, after the 12-hour recording (findings §12.3): its private memory rose 1.47 MB/h, within the bound, because each write, a row a second, became its own Arrow table, and the native memory those tables used was never given back, with mimalloc or the system allocator. The waiting rows are now kept as rows and made into one Arrow table per row group: on the simulated analyzer, 46 B a poll instead of 1,459. Closing writes the footer even when the last rows cannot be written. A row Arrow cannot convert now fails the write of its group rather than its own write; rows come from `sample_to_row()`, so that would be a fujilib bug. The owner accepted the recording as Phase 5's hardware exit with the fix shown offline, without a second recording on the bench |
+| 88 | A remote calibration that "both" widens to both ranges (7C) | **Decided 2026-09-30 by the owner** (first adopted on the owner's \"proceed\"): refused, nothing sent, until the bench has shown which ranges such a calibration changes (§13.2 #37). The operator sets the channel's calibration range to "current" first |
+| 89 | The gas the operator names (7C) | **Decided 2026-09-30 by the owner** (first adopted on the owner's \"proceed\"): `CalibrationGas(value, unit, label)`, one for every established channel of the plan, or one for all. It must equal the calibration-gas setting of every range the calibration touches, at that range's resolution and in its unit, since the analyzer calibrates against the setting; otherwise the run is refused and the setting is changed first (`set_calibration_gas`, DANGEROUS). A zero gas of 0 needs no unit. The label (a cylinder, a lot) is kept in the record |
+| 90 | The calibration record (7C) | **Decided 2026-09-30 by the owner** (first adopted on the owner's \"proceed\"): a `fujilib-calibration/1` JSON document, the same for a calibration watched at the panel (`source` "panel") and one driven from the host ("remote"): the analyzer's identity; the kind, outcome and evidence; the channels, their gases and ranges; when it started, was selected, ran and ended, and `calibrated_at`; the calibration-gas settings, the readings before and after, the deviations, new errors and detector counts. A driven run adds the plan, the gas named, the steadiness and its rule, every read on the wait step, the keys, the cleanup, the operator and notes. `fuji-calibrate` writes one per run. capa's `AnalyzerCalibration` (analyzer, serial, zero and span times, span gas as text; no other fields) is filled from the latest completed zero and span per channel, with the gas's label: the capa adapter's work (Phase 8) |
+| 91 | Concurrency during a remote calibration (7C) | **Decided 2026-09-30 by the owner** (first adopted on the owner's \"proceed\"): one run per session holds the panel (`Session.claim_panel`); meanwhile that session refuses setting writes, commands and another run. The port is free between keys and between reads on the wait step, so a recording goes on, its rows `calibrating`. Each key holds the port for its read, write and confirming reads |
+| 92 | Where the key driver lives and how it moves (7C) | **Decided 2026-09-30 by the owner** (first adopted on the owner's \"proceed\"): `devices/keys.py`, the only module that writes 42001, rather than `devices/panel.py` (§3). The cursor moves with DOWN only, each key confirmed by the cursor moving, until it reads the planned channel or the first "at once" channel; round to a channel already passed, the run stops. A key not seen taken within 2 s (`key_timeout`) stops the run; a lost reply is settled by the reads; the calibrating key is followed for up to 30 s (`run_timeout`), riding out the silence while the analyzer stores |
+| 93 | `fuji-calibrate` (7C) | **Decided 2026-09-30 by the owner** (first adopted on the owner's \"proceed\"): `--plan` only reads; otherwise `--confirm` and `--i-understand-this-is-destructive` are needed before the port opens, and the gas named with `--gas-value`, `--gas-unit` and `--gas-label`. It asks before the calibrating key unless `--auto` (#77), and waits again when the gas moves between steady and the key. Ctrl-C cancels, with the cleanup, and exits 1. It ends with `status:` (`completed`, `failed`, `ambiguous`, `cancelled`, `refused`, `stopped`, `not_clean` or `plan`) and exits 0 only for `completed` and `plan` |
+| 94 | Hardware checks for 7C | **Decided 2026-09-30 by the owner** (first adopted on the owner's \"proceed\"): no pytest; the operator switches the valves by hand, so the exit is an attended session with `fuji-calibrate` (`docs/hardware-test-day.md`), authorized as every key session is (#79) |
 
 ### 13.2 Hardware verification
 
@@ -2936,6 +3089,7 @@ of 2026-09-30. Details and data are in [protocol-findings.md](protocol-findings.
 | 35 | What a manual calibration at the panel leaves in the registers | Done 2026-09-29 (findings §14), watched read-only while the owner zeroed and spanned O2 and cancelled a zero. No holding word changes, the factory blocks included. The step register, the per-channel zero and span flags, 00B9h (the last calibration) and 00BDh (the key being pressed) follow it; the detector's A/D count is not changed by it. fujilib's own watcher then recorded a zero, a span and a cancel as they happened (findings §16) |
 | 40 | What the undocumented registers hold | Done 2026-09-29 (findings §15), read-only, while the owner walked the menus and power-cycled the analyzer. 30182 numbers menu pages off the measurement screen (#80). 046Ah–0471h are the unsmoothed detector counts. The factory blocks hold the "other parameters" at 0C2Dh–0C34h, but no calibration coefficients, and they did not change across a power cycle. The readings are wrong for about a minute after power-on, with no flag set (#81). The register capture of 2026-09-28 has one bad word, 0440h |
 | 39 | Whether a key written to 42001 acts, and shows in 00BDh, as a key pressed at the panel; whether key lock swallows it | Done 2026-09-30 (findings §18), with `scripts/probe_panel.py` and the owner at the panel. It acts, by the first read after the reply (within about 0.1 s). It never shows in 00BDh. Key lock swallows it, and the analyzer is then silent for about 2 s. 42002 on a wait step leaves the flag set. The cursor wraps round. The backlight was not tested |
+| 43 | A remote zero and span of O2 with `fuji-calibrate` | Done 2026-09-30 (findings §19), the owner at the gases. A zero on N2 (0.05 → 0.00 vol%) and a span on air (20.89 → 20.95 vol%) each completed, and a zero answered no was cancelled with nothing run. Every key was taken by the first read after it; each cleanup found the panel clean; all 162 settings read as before |
 | 34 | Setting writes and commands on the analyzer | Done 2026-09-29 (findings §13). The current range lags a verified range write by tens of milliseconds (findings §13.2), so a range write now waits for it (#70); with that, 10 of 10 stateful tests pass (findings §13.8). A menu at the panel refuses writes, and return to measurement closes it. Every setting matched the saved ones at the end |
 
 Still open:
@@ -2987,6 +3141,9 @@ Still open:
     (findings §15.7). *No plan: nothing depends on them.*
 42. Why ZERO sometimes opens with the cursor on Ch1: after a 42002, and after a long
     pause (findings §18.2). *No plan: the key driver reads the cursor instead.*
+43. ~~A remote zero and span of O2 with `fuji-calibrate`~~: done (table above).
+    *Still open:* the settling of a gas after the valves change, recorded by the
+    steadiness rule, from a run started before the gas is switched (#78).
 29. ~~Trio with a real Windows COM port (§4.7 item 14)~~ — fixed in `anyserial` 0.2.0;
     the hardware tests pass on trio on the bench (findings §10.4). *Linux and macOS
     untested.*

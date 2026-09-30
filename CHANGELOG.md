@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The write envelope takes the key-simulation register 42001 (07D0h), for the six
+  calibration keys only: UP, DOWN, ESC, ENT, ZERO and SPAN
+  (`write_policy.CALIBRATION_KEYS`). There the value is checked as well as the
+  address (`WriteRange.values`; `envelope_allows()` and `check_envelope()` take
+  `values=`), so MODE, SIDE, no key or two keys at once never reach the wire, and an
+  address alone is not enough. The simulator's own write list accepts the same six.
+  `docs/registers.md` lists them.
+
 - `DisplayState.calibration_step` is a `ManualCalibrationStep` only on the
   measurement screen. On a menu screen it is the raw word, which there numbers the
   menu's pages (30182 reads 1, 2, 5, 22, 26, 78 and more in the maintenance and
@@ -53,6 +61,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- A manual zero or span driven from the host with the front panel's calibration
+  keys, the operator at the gas valves (`fujilib.devices.keys`).
+  `Analyzer.manual_calibration(plan, gas=CalibrationGas(...), confirm=True)` is an
+  async context manager, `RemoteCalibration`:
+  - entering it refuses, with nothing sent, unless the panel is on the measurement
+    screen with no calibration or hold flag set, key lock and output hold are off,
+    no instrument error is active, the plan reads the same again and widens no
+    channel to both ranges, and the gas named is each channel's calibration-gas
+    setting; it then presses ZERO or SPAN, moves the cursor (DOWN only) and selects
+    the channel;
+  - `wait_steady()` reads the panel until the reading of every channel calibrated
+    is steady on the gas named; `read()` reads it once;
+  - `calibrate(confirm=True)`, DANGEROUS, checks everything again and sends the ENT
+    that calibrates, then follows the calibration to its end (ESC on the error
+    display, never ENT); `cancel()` leaves the wait step with ESC;
+  - however the block is left, the panel is returned to measurement for the step it
+    is on, shielded; a calibration flag still set afterwards raises, naming the
+    channel and the recovery.
+
+  Each key is read before, written once and confirmed by the reads after it, never
+  by 30190. `RemoteCalibrationResult` keeps the plan, the gas named, the steadiness,
+  every read on the wait step, the keys, the cleanup and the event. The blocking
+  twin is `SyncRemoteCalibration`. While a run holds the panel, its session refuses
+  setting writes, commands and another run (`Session.claim_panel()`).
+- `fujilib.devices.steadiness`: `SteadinessRule` (by default within 0.5 %FS over the
+  longer of 30 s and twice the response time, within 10 %FS of the gas named, reads at
+  most 5 s apart, for at most 10 minutes) and `SteadinessJudge`, which applies it to
+  successive reads.
+- `SyncPortal.call_interruptible()`: a blocking call that Ctrl-C cancels on the loop,
+  and waits for, before `KeyboardInterrupt` is raised. `SyncRemoteCalibration` makes
+  every call this way.
+- `fuji-calibrate`: a manual zero or span from the command line. `--plan` only says
+  what it would calibrate; otherwise it needs `--confirm` and
+  `--i-understand-this-is-destructive`, asks before the key that calibrates unless
+  `--auto`, waits again if the gas moves before the key, writes a record and ends
+  with `status:`.
+- Calibration records, `fujilib-calibration/1`: `calibration_record(event)` for a
+  calibration watched at the panel and `RemoteCalibrationResult.as_record()` for one
+  driven from the host. `examples/watch_manual_calibration.py` prints them;
+  `examples/remote_zero.py` makes a remote zero.
+- `PollRead.status()`: the status in a poll's words.
 - Manual calibrations made at the front panel are watched and recorded
   (`fujilib.devices.panel`). `Analyzer.wait_for_manual_calibration(timeout=...,
   interval=0.5, adc=False)` polls until a manual zero or span ends and returns a
@@ -65,7 +114,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ManualCalibrationTracker` does the same over any series of frames, a
   recording's included. `Analyzer.plan_manual_calibration(channel, kind)` says
   which channels and ranges a zero or span at the panel would calibrate: "at once"
-  and "both" widen it. Both have blocking twins. fujilib sends no key.
+  and "both" widen it. Both have blocking twins. Watching sends no key.
 - Two undocumented input registers the bench analyzer showed during a manual
   calibration: `display.calibration_result` (30186: 0 once a channel is selected,
   4 while it runs, 6 when it has finished) and `display.key` (30190: the key being
@@ -73,6 +122,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `MockAnalyzer.press(key)`: an operator at the simulated front panel, whose
   manual zero and span follow the bench analyzer. `MockAnalyzerConfig` gains
   `manual_calibration_s`, `key_hold_s` and `panel_channels`.
+- The simulated panel also takes the six calibration keys written to 42001, as the
+  bench analyzer did (protocol findings §18): they act as at the panel but never show
+  in 30190 (`MockAnalyzer.remote_keys`); key lock swallows them and the analyzer then
+  answers nothing for `key_lock_silence_s` (`swallowed_keys`); the cursor wraps round,
+  an "at once" position reading as its first channel reached going down and its last
+  going up; ZERO opens on the first position after a return to measurement, and after
+  `cursor_reset_idle_s`. `flag_lag_s` and `storing_silence_s` model a flag clearing a
+  moment after ESC and the silence while a calibration is stored.
+  `MockAnalyzer.flow(channel, value, tau_s=...)` puts a gas at a channel's inlet, and
+  `MockAnalyzer.silent(at)` says whether it answers.
 - `scripts/probe_calibration.py`: a read-only probe that snapshots every readable
   register before and after a calibration made at the panel, and watches the panel
   meanwhile; `scripts/probe_unknowns.py`, which sends the read-only diagnostic
