@@ -26,7 +26,8 @@ description: Architecture, design decisions, and phased implementation plan for 
 > made at the panel, is done on the simulator and on the bench analyzer, and goes into
 > 0.1.0. The key prototype ran on the bench on 2026-09-30 (findings §18). Its third
 > part, a manual zero or span driven from the host with the calibration keys, is done on
-> the simulator and on the bench analyzer (findings §19; branch `phase-7c`, after 0.1.0).
+> the simulator and on the bench analyzer (findings §19), and goes into 0.1.0 as well
+> (§13.1 #95).
 >
 > - **Where statements come from.** Statements about the device come from the three
 >   manuals in `docs/manuals/` (§14) and are marked **[manual]**. The bench analyzer was
@@ -2841,8 +2842,8 @@ Left open, and not in the session:
   and not run, at the owner's choice;
 - the error display and a "both" channel, which need a real calibration.
 
-**7C — Remote manual zero and span** (after 0.1.0; software and hardware **done
-2026-09-30**, on the branch `phase-7c`):
+**7C — Remote manual zero and span** (software and hardware **done 2026-09-30**; into
+0.1.0, #95):
 
 - The key driver of §6.5 in `devices/keys.py`: `Analyzer.manual_calibration(plan, gas=...,
   confirm=True)`, an async context manager (`RemoteCalibration`) that cleans up for the
@@ -2947,7 +2948,7 @@ simulator only: the bench session gave none of them cause to run.
 ### Sequencing
 
 ```
-decisions ─► Phase 0 ─► Phase 1 ─► Phase 3 ─► Phase 4 ─► Phase 5 ─► Phase 6 ─► 7A ─► 7B ─► 0.1.0 ─► 7C (bench)
+decisions ─► Phase 0 ─► Phase 1 ─► Phase 3 ─► Phase 4 ─► Phase 5 ─► Phase 6 ─► 7A ─► 7B ─► 7C ─► 0.1.0
                             ▲         ▲           ▲
 anymodbus 0.2.1 ────────────┼─────────┘           │
 Phase 2 (bench) ────────────┴─────────────────────┘   (findings feed registry, defaults, O2 scope)
@@ -2955,7 +2956,7 @@ Phase 2 (bench) ────────────┴────────�
 
 The read-and-record slice was estimated at about 18–23 working days (3.5–4.5
 engineer-weeks) plus the hardware session and the soak, and the writes at another
-1–1.5 weeks. Both are in 0.1.0 (§13.1 #59).
+1–1.5 weeks. Both are in 0.1.0 (§13.1 #59), and so is all of Phase 7 (#71, #95).
 
 ---
 
@@ -3059,6 +3060,7 @@ engineer-weeks) plus the hardware session and the soak, and the writes at anothe
 | 92 | Where the key driver lives and how it moves (7C) | **Decided 2026-09-30 by the owner** (first adopted on the owner's \"proceed\"): `devices/keys.py`, the only module that writes 42001, rather than `devices/panel.py` (§3). The cursor moves with DOWN only, each key confirmed by the cursor moving, until it reads the planned channel or the first "at once" channel; round to a channel already passed, the run stops. A key not seen taken within 2 s (`key_timeout`) stops the run; a lost reply is settled by the reads; the calibrating key is followed for up to 30 s (`run_timeout`), riding out the silence while the analyzer stores |
 | 93 | `fuji-calibrate` (7C) | **Decided 2026-09-30 by the owner** (first adopted on the owner's \"proceed\"): `--plan` only reads; otherwise `--confirm` and `--i-understand-this-is-destructive` are needed before the port opens, and the gas named with `--gas-value`, `--gas-unit` and `--gas-label`. It asks before the calibrating key unless `--auto` (#77), and waits again when the gas moves between steady and the key. Ctrl-C cancels, with the cleanup, and exits 1. It ends with `status:` (`completed`, `failed`, `ambiguous`, `cancelled`, `refused`, `stopped`, `not_clean` or `plan`) and exits 0 only for `completed` and `plan` |
 | 94 | Hardware checks for 7C | **Decided 2026-09-30 by the owner** (first adopted on the owner's \"proceed\"): no pytest; the operator switches the valves by hand, so the exit is an attended session with `fuji-calibrate` (`docs/hardware-test-day.md`), authorized as every key session is (#79) |
+| 95 | How Phase 7C is sequenced against 0.1.0 | **Decided 2026-09-30 by the owner:** all of Phase 7 merges into `main` once 7C's bench session has passed, before 0.1.0 is tagged, so 0.1.0 includes the remote zero and span and the write envelope's key register. (First: 7C after 0.1.0, so that 0.1.0 wrote no key) |
 
 ### 13.2 Hardware verification
 

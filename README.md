@@ -57,12 +57,10 @@ The first release, **0.1.0**, covers:
   (auto calibration, auto zero, blowback, return to measurement), behind
   `confirm=True`, pre-I/O validation and read-back verification;
 - a record of every manual zero and span made at the front panel while it is
-  connected, since the analyzer keeps no calibration log on older firmware.
-
-The next release adds a manual zero or span driven from the host
-(`fuji-calibrate`): fujilib presses the calibration keys while the operator
-switches the gas valves, waits for the reading to settle on the gas named, and
-records the run.
+  connected, since the analyzer keeps no calibration log on older firmware;
+- a manual zero or span driven from the host (`fuji-calibrate`): fujilib presses
+  the calibration keys while the operator switches the gas valves, waits for the
+  reading to settle on the gas named, and records the run.
 
 ## Design points
 
