@@ -52,6 +52,10 @@ __all__ = [
     "SteadinessVerdict",
 ]
 
+# Reads exactly one window apart cover it, but on a millisecond clock (uvloop's) they
+# are common, and their difference can come out a hair under the window.
+_COVERAGE_SLACK_S = 1e-6
+
 
 @dataclass(frozen=True, slots=True)
 class SteadinessRule:
@@ -238,7 +242,8 @@ class SteadinessJudge:
         inside = [(t, v) for t, v in kept if t >= start]
         before = [(t, v) for t, v in kept if t < start]
         span = [before[-1], *inside] if before else inside
-        covered = min(window, now - span[0][0])
+        covered = now - span[0][0]
+        covered = window if covered >= window - _COVERAGE_SLACK_S else covered
         values = [v for _, v in span]
         last = values[-1]
         rule = self._rule

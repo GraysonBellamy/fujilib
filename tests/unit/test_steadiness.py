@@ -157,6 +157,28 @@ def test_old_reads_leave_the_window_but_one_covers_its_start() -> None:
     assert verdict.steady
 
 
+def test_a_read_exactly_one_window_back_covers_it() -> None:
+    # On a millisecond clock (uvloop's), 1.23 - 1.08 comes out as 0.1499999999999999.
+    j = judge(SteadinessRule(window_s=0.15, response_factor=0))
+    reads = (1.0, 1.02, 1.04, 1.06, 1.08, 1.1, 1.12, 1.14, 1.23)
+    verdict = last(j, ((t, {CH3: 20.95}) for t in reads))
+    assert verdict.channels[CH3].covered_s == 0.15
+    assert verdict.steady
+
+
+@given(
+    first_ms=st.integers(min_value=0, max_value=10**7),
+    steps_ms=st.lists(st.integers(min_value=1, max_value=100), min_size=1, max_size=20),
+)
+def test_coverage_on_a_millisecond_clock_is_exact(first_ms: int, steps_ms: list[int]) -> None:
+    j = judge(SteadinessRule(window_s=0.15, response_factor=0))
+    times_ms = [first_ms]
+    for step in steps_ms:
+        times_ms.append(times_ms[-1] + step)
+    verdict = last(j, ((t / 1000, {CH3: 20.95}) for t in times_ms))
+    assert verdict.steady == (times_ms[-1] - times_ms[0] >= 150)
+
+
 @given(
     start=st.floats(min_value=0.0, max_value=21.0),
     tau=st.floats(min_value=1.0, max_value=60.0),
