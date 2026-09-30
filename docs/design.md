@@ -2246,7 +2246,7 @@ file is used.
 | `.editorconfig`, `.python-version`, `.github/dependabot.yml`, `LICENSE` | `servomexlib` | none |
 | `.gitattributes` | `servomexlib` | add `*.pdf binary` |
 | `.github/workflows/ci.yml` | `servomexlib` | bump `actions/checkout` to `watlowlib`'s pin; add a core-only import job (no extras) |
-| `.github/workflows/docs.yml`, `release.yml` | `servomexlib` | package name, PyPI URL; make publishing depend on the same revision having passed lint, type, test and docs |
+| `.github/workflows/docs.yml`, `release.yml` | `servomexlib` | package name, PyPI URL; make publishing depend on the same revision having passed lint, type, test and docs. The docs deploy to Cloudflare Pages, project `fujilib-docs`, served at `fujilib.graysonbellamy.dev`, as the siblings' do (#96) |
 | PR and issue templates | **`watlowlib`** | reword for the analyzer |
 | `.gitignore`, `.pre-commit-config.yaml` | `servomexlib` | package name; codespell word list |
 | `pyproject.toml` | `servomexlib` | rename. Make `anymodbus>=0.2.1,<0.3` a **core** dependency and remove both `modbus` and `modbus-ascii` extras. Declare only CLI scripts that exist. Exclude `docs/manuals/` and raw captures from the sdist |
@@ -2273,7 +2273,7 @@ package), and its `SECURITY.md` has Servomex-specific wording.
   (2026-09-28).
 - **Manuals.** The three PDFs live in `docs/manuals/`, which is git-ignored (done
   2026-09-28, following the family precedent). Left directly in `docs/` they would have
-  been published to GitHub Pages, included in the sdist, and rejected by the pre-commit
+  been published with the docs site, included in the sdist, and rejected by the pre-commit
   large-file limit. A plain-text extract of each manual sits beside its PDF so the
   contents can be searched; page markers in the extracts match the PDF page numbers.
   - Some spans in the manuals use embedded subset fonts with no Unicode mapping, so a
@@ -2285,8 +2285,8 @@ package), and its `SECURITY.md` has Servomex-specific wording.
     characters in the ZPA manual and about 900 in the service manual's screen-shot fonts,
     whose subsets renumber their glyphs.
   - zensical has no option to exclude files, so a **local** docs build copies
-    `docs/manuals/` into `site/`. Pages is deployed only from CI, where the manuals do not
-    exist; never deploy a local build.
+    `docs/manuals/` into `site/`. The site is deployed only from CI, where the manuals do
+    not exist; never deploy a local build.
 - **Evidence.** Future captures record exact probe arguments, timeout, idle and retry
   settings, package versions, individual failures and file hashes. They distinguish a
   coherent block capture from a bank assembled one word at a time over minutes.
@@ -3061,6 +3061,7 @@ engineer-weeks) plus the hardware session and the soak, and the writes at anothe
 | 93 | `fuji-calibrate` (7C) | **Decided 2026-09-30 by the owner** (first adopted on the owner's \"proceed\"): `--plan` only reads; otherwise `--confirm` and `--i-understand-this-is-destructive` are needed before the port opens, and the gas named with `--gas-value`, `--gas-unit` and `--gas-label`. It asks before the calibrating key unless `--auto` (#77), and waits again when the gas moves between steady and the key. Ctrl-C cancels, with the cleanup, and exits 1. It ends with `status:` (`completed`, `failed`, `ambiguous`, `cancelled`, `refused`, `stopped`, `not_clean` or `plan`) and exits 0 only for `completed` and `plan` |
 | 94 | Hardware checks for 7C | **Decided 2026-09-30 by the owner** (first adopted on the owner's \"proceed\"): no pytest; the operator switches the valves by hand, so the exit is an attended session with `fuji-calibrate` (`docs/hardware-test-day.md`), authorized as every key session is (#79) |
 | 95 | How Phase 7C is sequenced against 0.1.0 | **Decided 2026-09-30 by the owner:** all of Phase 7 merges into `main` once 7C's bench session has passed, before 0.1.0 is tagged, so 0.1.0 includes the remote zero and span and the write envelope's key register. (First: 7C after 0.1.0, so that 0.1.0 wrote no key) |
+| 96 | Where the documentation is hosted | **Decided 2026-09-30 by the owner:** Cloudflare Pages, like every sibling: project `fujilib-docs`, served at `https://fujilib.graysonbellamy.dev/`, deployed from CI by `cloudflare/wrangler-action` with the repository secrets `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`. `docs/_headers` sets the siblings' security headers, and the footer links to graysonbellamy.dev, GitHub and PyPI. Pushes to `main` and manual runs deploy; pull requests only build. (First: GitHub Pages, from a copy of `servomexlib`'s docs workflow older than its own move to Cloudflare) |
 
 ### 13.2 Hardware verification
 

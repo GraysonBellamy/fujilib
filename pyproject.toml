@@ -64,7 +64,7 @@ fuji-stream = "fujilib.cli.stream:main"
 [project.urls]
 Homepage = "https://github.com/GraysonBellamy/fujilib"
 Repository = "https://github.com/GraysonBellamy/fujilib"
-Documentation = "https://graysonbellamy.github.io/fujilib/"
+Documentation = "https://fujilib.graysonbellamy.dev/"
 Issues = "https://github.com/GraysonBellamy/fujilib/issues"
 Changelog = "https://github.com/GraysonBellamy/fujilib/blob/main/CHANGELOG.md"
 
