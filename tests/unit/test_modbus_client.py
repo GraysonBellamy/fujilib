@@ -616,8 +616,9 @@ async def test_a_deadline_inside_the_quiet_window_is_refused_without_io() -> Non
 IDLE = 0.02
 # uvloop's clock counts whole milliseconds and is read once per loop iteration,
 # so a time the simulator records can fall a tick after the host's own. Lower
-# bounds on gaps measured at the analyzer allow one tick.
-TICK = 0.001
+# bounds on gaps measured at the analyzer allow one tick, and a hair more for
+# differences of millisecond times (173.42 - 173.371 is 0.04899999999999238).
+TICK = 0.001 + 1e-9
 GAPPED: dict[str, Any] = {
     "inter_frame_idle": IDLE,
     "request_timeout": 0.05,
@@ -664,11 +665,14 @@ async def test_the_gap_runs_from_the_end_of_every_transaction(
 async def test_the_gap_holds_after_a_cancelled_read() -> None:
     async with gapped(request_timeout=0.5) as (client, mock):
         mock.inject(FaultKind.DROP)
+        # The read is cancelled 0.03 s after this, not after its request arrives,
+        # and the gap runs from the cancellation.
+        started = anyio.current_time()
         with anyio.move_on_after(0.03):
             await client.read(A)
         await client.read(B)
-    first, second = mock.exchanges
-    assert second.request.arrived_at - first.request.arrived_at >= 0.03 + IDLE - TICK
+    _first, second = mock.exchanges
+    assert second.request.arrived_at - started >= 0.03 + IDLE - TICK
 
 
 async def test_the_gap_holds_between_the_clients_own_retries() -> None:
