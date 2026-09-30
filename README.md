@@ -12,17 +12,19 @@ the unified device-library API; its internals are shaped to this analyzer.
 
 ## Status
 
-**Pre-alpha, unreleased.** The read-only API works against the development
-analyzer: `open_device()`, identification, polls with validity, metadata,
-settings, logs, discovery, recording at a fixed rate to memory, CSV or Parquet,
-a blocking facade, and the `fuji-read`, `fuji-discover`, `fuji-configure`,
-`fuji-decode`, `fuji-stream`, `fuji-capture` and `fuji-diag` commands. A
-reviewed subset of settings writes, settings documents and return to
-measurement work on the development analyzer too; auto calibration and auto
-zero have run only on the simulated analyzer, since the development analyzer
-has no calibration valves. See
-[`docs/design.md`](docs/design.md) for the architecture and the phased plan, and
-[`CHANGELOG.md`](CHANGELOG.md) for what has landed.
+**Alpha.** 0.1.0 is the first release. The read-only API works against the
+development analyzer: `open_device()`, identification, polls with validity,
+metadata, settings, logs, discovery, recording at a fixed rate to memory, CSV
+or Parquet, a blocking facade, and the `fuji-read`, `fuji-discover`,
+`fuji-configure`, `fuji-decode`, `fuji-stream`, `fuji-capture` and `fuji-diag`
+commands. A reviewed subset of settings writes, settings documents, return to
+measurement, and manual zeros and spans watched at the panel or driven from the
+host (`fuji-calibrate`) work on the development analyzer too; auto calibration
+and auto zero have run only on the simulated analyzer, since the development
+analyzer has no calibration valves. The documentation is at
+<https://fujilib.graysonbellamy.dev/>. See [`docs/design.md`](docs/design.md)
+for the architecture and the phased plan, and [`CHANGELOG.md`](CHANGELOG.md)
+for what has landed.
 
 ```python
 import anyio
@@ -84,7 +86,14 @@ oxygen-consumption calorimetry**. See design §2.11.
 
 ## Installation
 
-Not on PyPI yet. Requires Python 3.13+. From source:
+Requires Python 3.13+.
+
+```bash
+pip install fujilib
+pip install "fujilib[parquet]"  # with the Parquet sink
+```
+
+From source:
 
 ```bash
 git clone https://github.com/GraysonBellamy/fujilib

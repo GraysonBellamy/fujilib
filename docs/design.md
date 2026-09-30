@@ -27,7 +27,7 @@ description: Architecture, design decisions, and phased implementation plan for 
 > 0.1.0. The key prototype ran on the bench on 2026-09-30 (findings §18). Its third
 > part, a manual zero or span driven from the host with the calibration keys, is done on
 > the simulator and on the bench analyzer (findings §19), and goes into 0.1.0 as well
-> (§13.1 #95).
+> (§13.1 #95). **0.1.0 was released on 2026-09-30** (§12).
 >
 > - **Where statements come from.** Statements about the device come from the three
 >   manuals in `docs/manuals/` (§14) and are marked **[manual]**. The bench analyzer was
@@ -2305,9 +2305,10 @@ The capture policy (§13.1 #11) and the sample shape (#13) are settled; the benc
 channel map (#14) was adopted with Phase 4. The remaining items marked *(awaiting)* in
 §13.1 are each needed before the work that uses them:
 
-- the 0.1.0 acceptance criteria for O2 (#15), before the O2 comparison;
-- whether to run the capa adapter spike before 0.1.0 (#44). It matters more since
-  `Sample` gained `channels` (#45).
+- the acceptance criteria for O2 (#15), before the O2 comparison;
+- readings while the analyzer warms up after a power cycle (#81).
+
+The capa adapter spike comes after the release (#44).
 
 ### Phase 0 — Repository bootstrap (**done 2026-09-28**)
 
@@ -2494,7 +2495,7 @@ eight hardware tests pass under asyncio and trio (findings §10.4).
 - ~~`tests/hardware/test_hardware_reads.py`, `docs/hardware-test-day.md`, quickstarts~~.
 - **capa adapter spike** against `MockAnalyzer`, in a capa branch (1–2 days, separately
   authorized): the `FujiChannel` binding, the `wide_row` record, `ChannelSample` status
-  and expected-gas assertion. *Not started: awaiting the owner (#44).*
+  and expected-gas assertion. *Not started: after the release (#44).*
 - **O2 comparison, if the analog output is wired:** simultaneous Modbus and analog O2
   across relevant O2 changes, ranges, hold and response settings. Record the Premus
   variant and its specification. *Taken off the Phase 4 path (#43).*
@@ -2504,7 +2505,8 @@ eight hardware tests pass under asyncio and trio (findings §10.4).
 - ~~the read-only API passes against the bench analyzer~~ — 45 of 45 hardware tests,
   asyncio and trio (findings §11);
 - ~~the unified-API tests are green~~ — §A, §B, §C, §E, §G, §H, §J and §K;
-- the capa spike consumes real rows without adapter-side reshaping — *awaiting #44*.
+- the capa spike consumes real rows without adapter-side reshaping — *after the
+  release (#44)*.
 
 Locally (Windows, Python 3.13), lint, both type checkers, the docs build and 1586 tests
 at 100 % coverage pass, on asyncio and trio. An independent review found nine issues,
@@ -2621,14 +2623,16 @@ Differences from the plan above (decisions §13.1 #45–#56):
   their row group as rows and makes one Arrow table per group, and closing writes the
   footer even when the last rows cannot be written.
 
-**Release 0.1.0**: monitoring, metadata and acquisition, the settings writes and
-operation commands of Phase 6 (#59), and the watching of manual calibrations of
-Phase 7A (#71). Before it (#55):
+**Release 0.1.0** (**released 2026-09-30**): monitoring, metadata and acquisition, the
+settings writes and operation commands of Phase 6 (#59), and all of Phase 7: the
+watching of manual calibrations (7A, #71) and the remote zero and span (7C, #95).
+Before it (#55):
 - ~~the 12-hour recording~~ (#58; passed 2026-09-30);
 - ~~the unplug test~~ (passed 2026-09-29);
-- Phase 7A;
-- the owner's review of `docs/registers.md` (Phase 1's exit);
-- a decision on the capa spike (#44).
+- ~~Phase 7A~~ (and 7B and 7C, #95);
+- the owner's review of `docs/registers.md` (Phase 1's exit): *not done; the owner
+  released 0.1.0 without it* (#55);
+- ~~a decision on the capa spike~~ (#44: after the release).
 
 ### Phase 6 — Settings and operation commands (software and hardware **done 2026-09-29**)
 
@@ -3009,7 +3013,7 @@ engineer-weeks) plus the hardware session and the soak, and the writes at anothe
 | 41 | What the commands' `--fixture` is | **Adopted 2026-09-28** on the owner's "proceed"; not separately confirmed: a register bank on the simulated analyzer, or `bench`; not arrow replay |
 | 42 | Build the confirm gate before any operation above `READ_ONLY` exists | **Adopted 2026-09-28** on the owner's "proceed"; not separately confirmed: no; it comes with the first write (Phase 6) |
 | 43 | The O2 comparison in Phase 4 | **Adopted 2026-09-28** on the owner's "proceed"; not separately confirmed: off the Phase 4 path; it needs the analog output wired (§13.4 Q3) and acceptance limits (#15) |
-| 44 | The capa adapter spike before 0.1.0 | *(awaiting)* A first draft of the capa adapter on a capa branch, against fujilib as a local path dependency, so the sample shape can still change in fujilib. It can instead be written after release, as the other adapters were; `tests/unit/test_contract_capa.py` already builds capa's record shapes from fujilib's rows |
+| 44 | The capa adapter spike before 0.1.0 | **Decided 2026-09-30 by the owner**, by releasing 0.1.0 without it: the capa adapter is written after the release, as the other adapters were; `tests/unit/test_contract_capa.py` already builds capa's record shapes from fujilib's rows. (The alternative was a first draft on a capa branch before the release, against fujilib as a local path dependency, while the sample shape could still change) |
 | 45 | How a failed poll's row keeps the recording's columns | **Adopted 2026-09-28** on the owner's "proceed"; not separately confirmed: `Sample.channels`, set by the recorder on every sample; `sample_to_row(sample)` uses them. capa calls `sample_to_row(sample)` without channels and raises on schema drift |
 | 46 | How the recorder learns each analyzer's station, protocol and channels | **Adopted 2026-09-28** on the owner's "proceed"; not separately confirmed: `PollSource.layout()`, read once at the start; an analyzer with no established channel is refused |
 | 47 | What a disconnect does to a recording | **Adopted 2026-09-28** on the owner's "proceed"; not separately confirmed: it ends it after the tick's batch is delivered, raising at the block's exit; an opt-in `ReconnectPolicy` reopens the analyzer (`Analyzer.reopen()`, same serial number and type code required) on a back-off schedule |
@@ -3020,7 +3024,7 @@ engineer-weeks) plus the hardware session and the soak, and the writes at anothe
 | 52 | The recording commands | **Adopted 2026-09-28** on the owner's "proceed"; not separately confirmed: run until `--duration` or Ctrl-C, which exits 0; `fuji-capture` writes `<out>.meta.json`, refuses to replace files without `--force`, and checks for `pyarrow` before opening the port |
 | 53 | Testing the schedule | **Adopted 2026-09-28** on the owner's "proceed"; not separately confirmed: the recorder runs on an injectable clock; tests use a manual one |
 | 54 | `fuji-diag timing` | **Adopted 2026-09-28** on the owner's "proceed"; not separately confirmed: built, as the pairs probe on fujilib's own client |
-| 55 | What 0.1.0 waits for | **Adopted 2026-09-28** on the owner's "proceed"; not separately confirmed: the 24-hour recording and the unplug test, the owner's review of `docs/registers.md`, and a decision on #44 |
+| 55 | What 0.1.0 waits for | **Adopted 2026-09-28** on the owner's "proceed"; not separately confirmed: the 24-hour recording and the unplug test, the owner's review of `docs/registers.md`, and a decision on #44. **2026-09-30:** the owner released 0.1.0 once the recording (12 hours, #58), the unplug test and Phase 7 had passed and #44 was decided; the review of `docs/registers.md` is still outstanding |
 | 56 | The 24-hour recording | **Adopted 2026-09-28**: the owner left the analyzer connected and allowed any hardware test; read-only, 1 Hz, `fuji-capture` to Parquet with `--reconnect`, under `scripts/soak_monitor.py`. 12 hours rather than 24 since 2026-09-29 (#58) |
 | 57 | What a recording keeps when it cannot be stopped with Ctrl-C, or is killed | **Adopted 2026-09-29 at the owner's request**, after the first 24-hour attempt (findings §12.1): Ctrl-Break stops the recording commands as Ctrl-C does; `fuji-capture` rewrites its `.meta.json` every minute with the counters so far, each write replacing the file whole; its progress line is written from a worker thread; the soak tools gain `recover_parquet.py`, Ctrl-C for the command under `soak_monitor.py`, private memory in its log, and a memory check by fitted trend. Parquet stays the soak's format |
 | 58 | The length of the hardware exit's long recording | **Decided 2026-09-29 by the owner:** 12 hours at 1 Hz, run overnight, instead of 24; a day is not expected to show anything 12 hours would not. The first attempt's 10 h 17 min without a failure or a gap (findings §12.1) supports it |
