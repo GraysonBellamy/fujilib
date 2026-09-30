@@ -10,13 +10,15 @@
   group is written on close. ``pipe()`` writes about once a second, so one row
   group per write would make a day's recording at 1 Hz 86,400 row groups, whose
   metadata ``pyarrow`` keeps in memory until the file is closed. Rows waiting
-  for their group are held as Arrow data.
+  for their group are held as rows and made into one Arrow table per row
+  group: an Arrow table per write, of a row or two, would leave the process
+  memory it never gets back, over a megabyte an hour at 1 Hz.
 - The file's key-value metadata carries ``fujilib.version`` and whatever the
   caller passes as ``metadata``.
 - A Parquet file is only readable once its footer is written, by
   :meth:`~fujilib.sinks.base.BaseSink.close`. Closing runs on cancellation and
-  on Ctrl-C, but a process that is killed leaves an unreadable file; use the
-  CSV sink where that matters.
+  on Ctrl-C, even when the last rows cannot be written, but a process that is
+  killed leaves an unreadable file; use the CSV sink where that matters.
 - ``pyarrow`` is imported when the sink opens, so fujilib imports without it.
   All ``pyarrow`` work runs in a worker thread, never on the event loop.
 """
@@ -145,8 +147,7 @@ class ParquetSink(BaseSink):
         )
         self._writer: pq.ParquetWriter | None = None
         self._arrow_schema: pa.Schema | None = None
-        self._waiting: list[pa.Table] = []
-        self._waiting_rows = 0
+        self._waiting: list[dict[str, Scalar]] = []
 
     @property
     def path(self) -> Path:
@@ -184,37 +185,33 @@ class ParquetSink(BaseSink):
         await self._run(partial(self._write_rows, rows), "write to")
 
     def _write_rows(self, rows: list[dict[str, Scalar]]) -> None:
-        import pyarrow as pa  # noqa: PLC0415 - optional
-
         if self._writer is None:
             self._start()
-        writer, schema = self._writer, self._arrow_schema
-        assert writer is not None  # noqa: S101 - _start set it
-        assert schema is not None  # noqa: S101
-        self._waiting.append(pa.Table.from_pylist(rows, schema=schema))
-        self._waiting_rows += len(rows)
-        if self._waiting_rows >= self._row_group_size:
+        self._waiting.extend(rows)
+        if len(self._waiting) >= self._row_group_size:
             self._write_groups(final=False)
 
     def _write_groups(self, *, final: bool) -> None:
-        """Write the whole row groups waiting, and on ``final`` the rest too."""
+        """Write the whole row groups waiting, and on ``final`` the rest too, as one table."""
         import pyarrow as pa  # noqa: PLC0415 - optional
 
-        writer = self._writer
+        writer, schema = self._writer, self._arrow_schema
         assert writer is not None  # noqa: S101 - rows wait only once it exists
-        table = pa.concat_tables(self._waiting)
-        size = self._row_group_size
+        assert schema is not None  # noqa: S101
+        waiting, size = self._waiting, self._row_group_size
         # Called with at least one whole group waiting, or at the end with some rows.
-        whole = table.num_rows if final else table.num_rows - table.num_rows % size
-        writer.write_table(table.slice(0, whole), row_group_size=size)
-        rest = table.slice(whole)
-        self._waiting = [rest] if rest.num_rows else []
-        self._waiting_rows = rest.num_rows
+        whole = len(waiting) if final else len(waiting) - len(waiting) % size
+        table = pa.Table.from_pylist(waiting[:whole], schema=schema)
+        writer.write_table(table, row_group_size=size)
+        del waiting[:whole]
 
     def _finish(self, writer: pq.ParquetWriter) -> None:
-        if self._waiting:
-            self._write_groups(final=True)
-        writer.close()
+        """Write the rows still waiting and the footer; the footer even when the rows fail."""
+        try:
+            if self._waiting:
+                self._write_groups(final=True)
+        finally:
+            writer.close()
 
     async def _close(self) -> None:
         writer = self._writer

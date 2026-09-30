@@ -24,7 +24,7 @@ from fujilib import (
     sample_to_row,
 )
 from fujilib.registry.channels import ChannelId, Gas
-from fujilib.sinks import row_columns
+from fujilib.sinks import base, row_columns
 from fujilib.sinks.parquet import require_pyarrow
 from fujilib.version import __version__
 from tests.factories import (
@@ -37,7 +37,10 @@ from tests.factories import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
     from pathlib import Path
+
+    from fujilib.devices.models import Scalar
 
 pytestmark = pytest.mark.anyio
 
@@ -93,6 +96,33 @@ async def test_rows_are_gathered_into_row_groups(tmp_path: Path) -> None:
     sizes = [groups.metadata.row_group(i).num_rows for i in range(groups.num_row_groups)]
     assert sizes == [4, 4, 2]
     assert len(read_parquet(path)) == 10
+
+
+async def test_rows_waiting_for_their_group_hold_no_arrow_memory(tmp_path: Path) -> None:
+    async with ParquetSink(tmp_path / "held.parquet", channels=CHANNELS, row_group_size=4) as sink:
+        before = pa.total_allocated_bytes()
+        for _ in range(3):  # one row per write, as pipe() makes them at 1 Hz
+            await sink.write_many([ok()])
+        assert pa.total_allocated_bytes() <= before
+
+
+async def test_the_footer_is_written_when_the_last_rows_cannot_be(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def unconvertible(
+        sample: Sample, channels: Iterable[ChannelId] | None = None
+    ) -> dict[str, Scalar]:
+        return {**sample_to_row(sample, channels), "ch3_value": "not a number"}
+
+    path = tmp_path / "last.parquet"
+    sink = ParquetSink(path, row_group_size=2)
+    await sink.open()
+    await sink.write_many([ok(), ok()])
+    monkeypatch.setattr(base, "sample_to_row", unconvertible)
+    await sink.write_many([ok()])  # waits for its group
+    with pytest.raises(FujiSinkWriteError, match="cannot finish"):
+        await sink.close()
+    assert read_parquet(path) == [sample_to_row(ok())] * 2  # the complete group
 
 
 async def test_a_large_write_is_split_into_row_groups(tmp_path: Path) -> None:
