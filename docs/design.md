@@ -15,15 +15,14 @@ description: Architecture, design decisions, and phased implementation plan for 
 > and the *unified device-library API* that `capa` consumes all match the siblings. The
 > internals are shaped to this device.
 >
-> Status: **proposal, revised 2026-09-29.** Phase 0 (repository bootstrap), Phase 1
+> Status: **proposal, revised 2026-09-30.** Phase 0 (repository bootstrap), Phase 1
 > (registry, codecs, models and the sample shape), Phase 3 (transport, Modbus client,
 > simulated analyzer and read procedures), Phase 4 (session, facade, discovery, sync
-> and the read-only commands) and the software of Phase 5 (recorder, sinks and the
-> recording commands) are done, and its unplug test passed. Phase 6 (settings writes,
-> settings documents and the operation commands) is done on the simulator and on the
-> bench analyzer, and goes into 0.1.0 too (§13.1 #59). Phase 5's 12-hour bench
-> recording is outstanding; 0.1.0 follows it. Phase 7 (the front panel) was reopened by
-> the owner on 2026-09-29 (§13.1 #71). Its first part, watching manual calibrations
+> and the read-only commands) and Phase 5 (recorder, sinks and the recording
+> commands) are done; Phase 5's unplug test and 12-hour bench recording passed.
+> Phase 6 (settings writes, settings documents and the operation commands) is done on
+> the simulator and on the bench analyzer, and goes into 0.1.0 too (§13.1 #59). Phase 7
+> (the front panel) was reopened by the owner on 2026-09-29 (§13.1 #71). Its first part, watching manual calibrations
 > made at the panel, is done on the simulator and on the bench analyzer, and goes into
 > 0.1.0. The key prototype ran on the bench on 2026-09-30 (findings §18).
 >
@@ -1667,11 +1666,14 @@ async def record(
   - **Parquet** needs the `parquet` extra (`pyarrow`), imported when the sink opens.
     Rows are gathered into row groups of 1,000: `pipe()` writes about once a second,
     and a row group per write would make a day at 1 Hz 86,400 groups whose metadata
-    `pyarrow` holds in memory until the file closes. zstd by default, key-value
-    metadata with `fujilib.version` and the caller's. A Parquet file is readable only once closed; closing runs on
-    cancellation and Ctrl-C, but a killed process leaves a file without its footer, so
-    CSV is the safer format unattended. `scripts/recover_parquet.py` recovers the
-    complete row groups of such a file (#57).
+    `pyarrow` holds in memory until the file closes. The rows waiting for their group
+    are kept as rows and made into one Arrow table per row group; an Arrow table per
+    write grew the process's memory by 1.5 MB an hour at 1 Hz (#87). zstd by default,
+    key-value metadata with `fujilib.version` and the caller's. A Parquet file is
+    readable only once closed; closing runs on cancellation and Ctrl-C, and writes the
+    footer even when the last rows cannot be written, but a killed process leaves a
+    file without its footer, so CSV is the safer format unattended.
+    `scripts/recover_parquet.py` recovers the complete row groups of such a file (#57).
 - **`pipe(recording, sink, batch_size=64, flush_interval=1.0)`** writes batches in
   groups, at the latest `flush_interval` after the first of a group arrived, even while
   the stream is idle. When it stops, by the stream ending, an error or cancellation, it
@@ -2443,7 +2445,7 @@ Differences from the plan above (decisions §13.1 #32–#44):
   `timeout=` is the family's; a test that the write policy imports nothing of the
   register map now loads the package without its `__init__`, which imports the facade.
 
-### Phase 5 — Streaming, sinks, CLI (software **done 2026-09-28**; unplug test passed 2026-09-29; the 12-hour recording outstanding)
+### Phase 5 — Streaming, sinks, CLI (software **done 2026-09-28**, hardware **done 2026-09-30**)
 
 - ~~Port `streaming/` (the `sartoriuslib`-shaped recorder), `sinks/` (memory, CSV,
   Parquet) and their sync wrappers~~.
@@ -2476,7 +2478,12 @@ ignored Ctrl-C and was closed, which killed it; 37,000 rows were recovered from 
 Parquet file (findings §12.1). The unplug test passed on 2026-09-29 (findings §12.2):
 with `--reconnect`, two pulls became two outages of error rows on an unbroken 1 Hz
 schedule, each ended by reopening the analyzer on `COM8`; without it, the first pull
-ended the capture with its files complete. *The 12-hour recording is outstanding.*
+ended the capture with its files complete. The 12-hour recording (2026-09-29/30,
+findings §12.3) passed every check: 43,200 polls of 43,200, none late, dropped or
+failed, and memory within its bound. Its memory trend, +1.47 MB/h, came from the
+Parquet sink's Arrow table per write; runs on the simulated analyzer showed it gone with
+one table per row group, which the sink now makes (#87). *Hardware exit met* on
+2026-09-30, by the owner's acceptance of this recording with the fix shown offline.
 
 Differences from the plan above (decisions §13.1 #45–#56):
 
@@ -2506,11 +2513,14 @@ Differences from the plan above (decisions §13.1 #45–#56):
   progress line from a worker thread; `scripts/soak_monitor.py` turns Ctrl-C back on
   for the command and logs private memory; `scripts/check_soak.py` judges memory by
   its fitted trend; `scripts/recover_parquet.py` recovers a killed Parquet file.
+- **After the 12-hour recording** (#87): the Parquet sink keeps the rows waiting for
+  their row group as rows and makes one Arrow table per group, and closing writes the
+  footer even when the last rows cannot be written.
 
 **Release 0.1.0**: monitoring, metadata and acquisition, the settings writes and
 operation commands of Phase 6 (#59), and the watching of manual calibrations of
 Phase 7A (#71). Before it (#55):
-- the 12-hour recording (#58);
+- ~~the 12-hour recording~~ (#58; passed 2026-09-30);
 - ~~the unplug test~~ (passed 2026-09-29);
 - Phase 7A;
 - the owner's review of `docs/registers.md` (Phase 1's exit);
@@ -2895,6 +2905,7 @@ engineer-weeks) plus the hardware session and the soak, and the writes at anothe
 | 84 | How a remote calibration cancels and recovers (7C) | *(awaiting, 7C)* Recommendation: ESC is the only cancel on a wait step, never 42002 (findings §18.4). A flag still set on the measurement screen after the cleanup raises `FujiAnalyzerStateError`, naming the channel and the recovery: enter its wait step and press ESC. fujilib does not attempt that recovery itself; it would need ZERO or SPAN while a flag is set, which the driver otherwise refuses |
 | 85 | Key lock and remote keys (7C) | *(awaiting, 7C)* Recommendation: read key lock (40074) before the first key, and refuse while it is on. Its keys are acknowledged and swallowed, and the analyzer is then silent for about two seconds (findings §18.6) |
 | 86 | Output hold and remote calibration (7C) | *(awaiting, 7C)* Whether the readings and the A/D values freeze under hold is still open (§13.2 #38). Options: (a) run `probe_panel.py hold` before 7C's bench session, and design the steadiness rule under hold from it; (b) refuse a remote calibration while output hold is on. Recommendation: (b) until (a) has run |
+| 87 | How the Parquet sink holds the rows waiting for their row group | **Decided 2026-09-30 by the owner**, after the 12-hour recording (findings §12.3): its private memory rose 1.47 MB/h, within the bound, because each write, a row a second, became its own Arrow table, and the native memory those tables used was never given back, with mimalloc or the system allocator. The waiting rows are now kept as rows and made into one Arrow table per row group: on the simulated analyzer, 46 B a poll instead of 1,459. Closing writes the footer even when the last rows cannot be written. A row Arrow cannot convert now fails the write of its group rather than its own write; rows come from `sample_to_row()`, so that would be a fujilib bug. The owner accepted the recording as Phase 5's hardware exit with the fix shown offline, without a second recording on the bench |
 
 ### 13.2 Hardware verification
 
@@ -2918,7 +2929,7 @@ of 2026-09-30. Details and data are in [protocol-findings.md](protocol-findings.
 | 20 | The scan's 43 malformed replies | all re-read as exception 02 (3 of 3 each); link artifacts |
 | 28 | fujilib's client, read procedures and quiet window on the analyzer | Done 2026-09-28 (findings §10). Every read procedure works; 300 polls at 7.78 Hz with no failure; with no quiet window a read after a cancelled one was lost in 23 of 30 trials, with the window never; stale data was never accepted |
 | 30 | The facade, discovery, the blocking facade and the commands on the analyzer | Done 2026-09-28 (findings §11). 45 of 45 hardware tests under asyncio and trio; open and identify in 0.3 s; an empty station times out and releases the port |
-| 31 | Recording, the sinks and the recording commands on the analyzer | Done 2026-09-28 (findings §12). 52 of 52 hardware tests under asyncio and trio; a 60-second capture at 1 Hz passed every soak check. The first 24-hour attempt was killed after 10 h 17 min without a failed poll (findings §12.1); a 12-hour run replaces it (#58); the unplug test passed 2026-09-29 (findings §12.2) |
+| 31 | Recording, the sinks and the recording commands on the analyzer | Done 2026-09-28 (findings §12). 52 of 52 hardware tests under asyncio and trio; a 60-second capture at 1 Hz passed every soak check. The first 24-hour attempt was killed after 10 h 17 min without a failed poll (findings §12.1); a 12-hour run replaces it (#58); the unplug test passed 2026-09-29 (findings §12.2); the 12-hour recording passed every check 2026-09-29/30, its memory trend traced to the Parquet sink (findings §12.3, #87) |
 | 12 | Whether key lock (40074) blocks Modbus writes or commands | **It does not block writes** (2026-09-29, findings §13.3). With key lock on, a setting write was acknowledged and verified, and return to measurement was acknowledged. The panel was already on the measurement screen, so whether the command would close a menu under key lock is not shown |
 | 14 | Whether settings survive a power cycle without an explicit save | **They do** (2026-09-29, findings §13.5). A value written over Modbus read back unchanged after the analyzer was off for 10 s; there is no save step |
 | 32 | Whether the analyzer refuses, clamps or stores a value outside a setting's documented range | **It stores it** (2026-09-29, findings §13.6). 61 and 0 written to the response time of NDIR component 4 were acknowledged without an exception and read back as written; fujilib's limits are the only guard. One register tried, of an absent component |

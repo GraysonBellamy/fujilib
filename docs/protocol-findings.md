@@ -605,7 +605,7 @@ design §13.3. The wall clock gained 0.2 s on the monotonic clock over the run.
 **Whether the memory trend is a leak is open.** The monitor logged only resident
 memory, which on Windows is the working set that the system trims and refills.
 It now logs private memory too, and `check_soak.py` judges that by the fitted
-trend over the whole run. The rerun decides it.
+trend over the whole run. The rerun decides it: see §12.3.
 
 **What changed because of it** (design §12, §13.1 #57): `soak_monitor.py` turns
 Ctrl-C back on for the command it starts; the recording commands stop cleanly on
@@ -655,6 +655,70 @@ rides out. It now counts the failure that ends a recording too (design §13.1 #4
 Both runs' `.meta.json` record fujilib as `0.1.0.dev33+g7a99f2771.d20260929`: the
 editable install's version was built before the day's commits. The code was that of
 `47e9dfa`.
+
+### 12.3 The 12-hour recording (2026-09-29/30)
+
+The long recording of design §12 Phase 5 (#58), read-only, on `COM8`: `fuji-capture COM8
+--gas CH1=co2 --gas CH2=co --gas CH3=o2 --rate 1 --duration 43200 --reconnect` to
+Parquet, under `scripts/soak_monitor.py --every 600`, started by double-clicking its
+`.cmd`. It ran from 18:56:48 UTC on 2026-09-29 to 06:56:48 UTC on 2026-09-30 and ended
+on its duration, exit 0. The code was `a16ea77` (`0.1.0.dev47+ga16ea770f`), with
+`anymodbus` 0.3.0, `anyserial` 0.2.0, `anyio` 4.15.1, `pyarrow` 25.0.1, Python 3.13.13
+and Windows 11; the files are `probe_out/soak_20260929c.*` (git-ignored).
+`scripts/check_soak.py` passed every check:
+
+| Check | Result |
+|---|---|
+| Readable output | 54 columns; 43,200 rows in 44 row groups (43 of 1,000, and the last 200 written at close); 1.9 MB |
+| Clean shutdown | `finished`, no error, the final counters in the `.meta.json` |
+| Tick and row counts | 43,200 polls of 43,200 ticks; none late, dropped or failed; no disconnect or reconnect |
+| Error accounting | no error rows. 86,411 requests (two a poll and 11 at the start), no retries; the two failed attempts are identification's probes (§12) |
+| Timing | no gaps: every interval 0.939–1.059 s (median 1.0013 s); no poll started more than 22.5 ms after its slot |
+| Round trip of the concentration block | median 48.8 ms, 99.9th percentile 53.9 ms, worst 62 ms; the median of each hour 48.8–48.9 ms |
+| Status and provenance | every row CO2 / CO / O2, `asserted`, state `ok`, valid, with no hold, calibration, alarm or analyzer error |
+| Process | 226 s of CPU in 11.8 h (0.5 % of one core); 309–314 handles |
+| Memory | private memory: a sawtooth of about 25 MB, one tooth per row group; the fitted trend after the first hour +1.47 MB/h, +15.9 MB over 10.8 h, within the 20 MB bound |
+
+**Nine rows have a round trip shorter than a reply takes** (0.1–31 ms). `anymodbus`
+stamps a request as sent when its `send` and `drain` return, and in those nine polls
+the host held the task there for 20–75 ms: part or all of the reply had arrived by the
+time the request was stamped. Their `requested_at` is late, their `latency_s` short,
+and their `t_utc`, the midpoint, up to about 55 ms late; every row's `t_utc` still lies
+between the request going out and the reply ending. §12.1 showed the same stalls from
+the other side: five round trips over 100 ms (the worst 0.19 s) and none short, where
+the host held the task while the reply was read. The recorder's drift, taken as a poll
+starts, is not affected.
+
+**The readings** barely moved: CO2 −0.10 and −0.09 vol%, CO −0.009 to −0.005 vol%, and
+O2 20.80 vol% at the start, then 20.67–20.70 from the first hour on, above §12.1's
+20.22–20.28 since the O2 zeros and spans of §14 and §16. The wall clock gained 0.24 s on the
+monotonic clock, steadily, as in §12.1. The analyzer's clock was 6 min 37 s behind the
+host's; it has read 6 min 27 s to 6 min 37 s behind since 2026-09-28.
+
+**The memory trend was the Parquet sink.** The low point of each 2 hours rose
+steadily, 44, 48, 52, 55, 56 and 58 MB, so the growth was real, not the sawtooth: about
+400 B per poll, more than §12.1's +0.92 MB/h of resident memory. `fuji-capture`, run
+in-process on the bundled register bank at about 30 polls a second for 25 minutes,
+found where. Private memory, fitted after the first 5,000 polls of each run:
+
+| Run | Private memory |
+|---|---|
+| A write per poll, as `pipe()` makes them at 1 Hz, with the sink as recorded | +1,459 B a poll |
+| The same with Arrow's system allocator instead of mimalloc (28,000 polls) | +1,510 B a poll |
+| Writes of about 30 rows, with `tracemalloc` | +521 B a poll, of which Python objects +5 B |
+| A write per poll, the waiting rows kept as rows and made into one Arrow table per row group | +46 B a poll |
+
+The simulated analyzer keeps every exchange it answers, about 0.75 KB a poll, which hid
+everything else at first; it was capped at 64 exchanges for these runs. Python objects
+did not grow, and Arrow's own pool never held more than 5 MB: what grew was native
+memory, never given back, from making each write's row or two into its own Arrow table,
+with either allocator. The sink now keeps the rows waiting for their group as rows and
+makes one Arrow table per row group, and closing writes the footer even when the last
+rows cannot be written (design §13.1 #87). The fixed sink itself, a write per poll for
+15 minutes, grew +26 B a poll over 28,000 polls. The owner accepted this recording as the
+hardware exit with the fix shown offline, not rerun on the bench.
+
+Phase 5's hardware exit is met.
 
 ## 13. Writes on the bench (2026-09-29)
 

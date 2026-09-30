@@ -161,9 +161,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from `row_columns()` (`SchemaLock`), never inferred from values, and a sample
   with a channel the columns lack is refused. File I/O runs in worker threads. CSV
   quotes text, so an empty field is `None` and `""` is empty text. Parquet gathers
-  rows into row groups of 1,000, so a long recording keeps its memory flat. `pipe()` writes
-  in groups, flushes on a timer while the stream is idle, and writes what it holds
-  when stopped or cancelled.
+  rows into row groups of 1,000 and makes one Arrow table per row group, so a long
+  recording keeps its memory flat, and closing writes the footer even when the last
+  rows cannot be written. `pipe()` writes in groups, flushes on a timer while the
+  stream is idle, and writes what it holds when stopped or cancelled.
 - Blocking recording: `fujilib.sync.record()`, `pipe()`, `PollSourceAdapter`,
   `SyncRecording`, `SyncAnalyzer.reopen()` and the `SyncInMemorySink`,
   `SyncCsvSink` and `SyncParquetSink` sinks.
