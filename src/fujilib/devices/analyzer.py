@@ -44,6 +44,7 @@ from fujilib.devices.capability import (
     SafetyTier,
 )
 from fujilib.devices.encode import prepare_value
+from fujilib.devices.keys import RemoteCalibration
 from fujilib.devices.operations import CalibrationRun, CalibrationWait
 from fujilib.devices.panel import ManualCalibrationKind, ManualCalibrationTracker, PanelObservation
 from fujilib.devices.settings import ApplyReport, SettingsDocument, diff_settings
@@ -66,6 +67,7 @@ if TYPE_CHECKING:
     from types import TracebackType
 
     from fujilib.devices.decode import RegisterValue
+    from fujilib.devices.keys import CalibrationGas
     from fujilib.devices.models import (
         AdcValues,
         AnalyzerMetadata,
@@ -85,6 +87,7 @@ if TYPE_CHECKING:
     from fujilib.devices.session import Session
     from fujilib.devices.settings import SettingsDiff
     from fujilib.devices.snapshot import FujiDeviceSnapshot
+    from fujilib.devices.steadiness import SteadinessRule
     from fujilib.devices.writes import WriteResult
     from fujilib.protocol.base import ProtocolClient, ProtocolKind
     from fujilib.registry.enums import ErrorCode, HoldMode, RangeMethod
@@ -1096,6 +1099,62 @@ class Analyzer:
         except FujiTimeoutError as exc:
             raise exc.with_context(polls=polls, in_progress=tracker.active) from exc.__cause__
         return await self._with_gases(event)
+
+    def manual_calibration(
+        self,
+        plan: ManualCalibrationPlan,
+        *,
+        gas: CalibrationGas | Mapping[ChannelId | str, CalibrationGas],
+        confirm: bool = False,
+        rule: SteadinessRule | None = None,
+        adc: bool = False,
+        interval: float = 0.5,
+        key_timeout: float = 2.0,
+        run_timeout: float = 30.0,
+        cleanup_timeout: float = 30.0,
+    ) -> RemoteCalibration:
+        """A manual zero or span of ``plan``, driven from the host with the panel's keys.
+
+        Use it as an async context manager (design §6.5)::
+
+            plan = await anz.plan_manual_calibration("CH3", "span")
+            gas = CalibrationGas(20.95, "vol%", label="20.95 % O2 in N2")
+            async with anz.manual_calibration(plan, gas=gas, confirm=True) as run:
+                await run.wait_steady()  # the operator opens the span-gas valve
+                event = await run.calibrate(confirm=True)
+
+        Entering it checks, before any key, that the panel is on the
+        measurement screen with no calibration flag set, key lock and output
+        hold are off, the analyzer reports no instrument error, the plan reads
+        the same again and calibrates no channel on both ranges, and ``gas``
+        (one for every established channel of the plan, or one for all) is
+        each channel's calibration-gas setting. It then presses ZERO or SPAN,
+        moves the cursor and selects the channel: the wait step, where the
+        gas settles. These keys are ``STATEFUL``; ``calibrate(confirm=True)``
+        sends the ENT that calibrates, which is ``DANGEROUS``. Leaving the
+        block returns the panel to measurement for the step it is on (ESC on
+        the wait step), shielded from cancellation.
+
+        With ``adc`` the raw A/D values are read with each read on the wait
+        step and kept in the record. ``interval`` is the time between those
+        reads; the port is free between them, so a recording goes on.
+
+        Raises:
+            FujiValidationError: a gas is missing or malformed, or a time is
+                not positive; nothing was sent.
+        """
+        return RemoteCalibration(
+            self._session,
+            plan,
+            gas=gas,
+            confirm=confirm,
+            rule=rule,
+            adc=adc,
+            interval=interval,
+            key_timeout=key_timeout,
+            run_timeout=run_timeout,
+            cleanup_timeout=cleanup_timeout,
+        )
 
     async def _with_gases(self, event: ManualCalibrationEvent) -> ManualCalibrationEvent:
         """``event`` with the calibration gas of each channel's range, read now."""

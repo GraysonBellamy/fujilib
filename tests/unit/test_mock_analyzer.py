@@ -473,32 +473,39 @@ async def test_an_over_long_write_is_refused_by_the_analyzer() -> None:
 
 
 @pytest.mark.parametrize(
-    ("fc", "address", "count"),
+    ("fc", "address", "count", "value"),
     [
-        (FC06, 0x07D0, 1),  # key simulation
-        (FC06, 0x009E, 1),  # above the FC06 bound
-        (FC10, 0x00A4, 2),  # the inferred coefficients
-        (FC10, 0x00A0, 6),  # runs into them
-        (FC10, 0x07D1, 1),  # commands are FC06 only
-        (FC06, 0x03E8, 1),  # factory data
+        (FC06, 0x07D0, 1, 0x01),  # MODE, into the menus
+        (FC06, 0x07D0, 1, 0x02),  # SIDE, the passwords' digits
+        (FC06, 0x07D0, 1, 0x60),  # ZERO and ENT at once
+        (FC06, 0x07D0, 1, 0x00),  # no key
+        (FC10, 0x07D0, 1, 0x40),  # keys are FC06 only
+        (FC06, 0x009E, 1, 0x40),  # above the FC06 bound
+        (FC10, 0x00A4, 2, 0x00),  # the inferred coefficients
+        (FC10, 0x00A0, 6, 0x00),  # runs into them
+        (FC10, 0x07D1, 1, 0x00),  # commands are FC06 only
+        (FC06, 0x03E8, 1, 0x40),  # factory data
     ],
 )
-async def test_forbidden_writes_fail_the_test(fc: int, address: int, count: int) -> None:
+async def test_forbidden_writes_fail_the_test(
+    fc: int, address: int, count: int, value: int
+) -> None:
     mock = analyzer()
 
     async def write() -> None:
         async with raw_bus(mock) as bus:
             slave = bus.slave(1)
             if fc == FC06:
-                await slave.write_register(address, 0x40)
+                await slave.write_register(address, value)
             else:
-                await slave.write_registers(address, [0] * count)
+                await slave.write_registers(address, [value] * count)
 
     with pytest.raises(MockWriteViolation, match="outside what fujilib may ever write"):
         await write()
     assert len(mock.violations) == 1
     assert mock.violations[0].key == (fc, address, count)
     assert mock.commands == []
+    assert mock.remote_keys == []
 
 
 # --- Faults ---------------------------------------------------------------------------------

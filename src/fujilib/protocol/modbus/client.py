@@ -454,7 +454,7 @@ class ModbusClient:
         def before_send() -> None:
             nonlocal sent
             # The last check before anymodbus, independent of the registry (design §5.4).
-            check_envelope(fc, address, len(values))
+            check_envelope(fc, address, len(values), values=values)
             sent = True
 
         try:

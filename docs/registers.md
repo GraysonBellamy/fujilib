@@ -626,13 +626,27 @@ Firmware 2.24 or later, so never seen on the bench unit. The deviation's x10 sca
 
 ## Write envelope
 
-Everything fujilib may ever write. The envelope is frozen and independent of the registry; the Modbus client re-checks every write against it (design §5.4). 07D0h (key simulation) and 00A4h-00ABh are outside it.
+Everything fujilib may ever write. The envelope is frozen and independent of the registry; the Modbus client re-checks every write against it, its value too where the envelope limits it (design §5.4). 00A4h-00ABh are outside it.
 
-| FC | From | To |
+| FC | From | To | Values |
+|---|---|---|---|
+| 06 (write single) | 0000h | 009Dh | any |
+| 10 (write multiple) | 0000h | 00A3h | any |
+| 06 (write single) | 07D0h | 07D0h | UP (04h), DOWN (08h), ESC (10h), ENT (20h), ZERO (40h), SPAN (80h) |
+| 06 (write single) | 07D1h | 07D4h | any |
+
+### Front-panel keys
+
+Written with FC06 to 07D0h (42001), one key at a time, only by the front-panel driver of a manual zero or span (design §6.5): each is sent only on the steps where it belongs, and confirmed by the panel's reads. MODE and SIDE, which open the menus and enter their passwords, are outside the envelope.
+
+| Key | Code | Tier |
 |---|---|---|
-| 06 (write single) | 0000h | 009Dh |
-| 10 (write multiple) | 0000h | 00A3h |
-| 06 (write single) | 07D1h | 07D4h |
+| UP | 04h | STATEFUL |
+| DOWN | 08h | STATEFUL |
+| ESC | 10h | STATEFUL |
+| ENT | 20h | DANGEROUS on the wait step (it calibrates); STATEFUL elsewhere |
+| ZERO | 40h | STATEFUL |
+| SPAN | 80h | STATEFUL |
 
 ### Operation commands
 

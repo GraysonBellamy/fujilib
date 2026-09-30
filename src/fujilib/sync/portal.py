@@ -12,9 +12,11 @@ catch the :class:`~fujilib.errors.FujiError` subclass itself.
 
 from __future__ import annotations
 
+import contextlib
 from functools import partial
-from typing import TYPE_CHECKING, Self
+from typing import TYPE_CHECKING, Final, Self
 
+import anyio
 from anyio.from_thread import start_blocking_portal
 
 from fujilib._groups import unwrap
@@ -28,6 +30,10 @@ if TYPE_CHECKING:
     from anyio.from_thread import BlockingPortal
 
 __all__ = ["SyncPortal"]
+
+#: How often a blocking wait wakes, so Ctrl-C is not held up (Windows delivers
+#: it only between waits).
+_WAKE_S: Final = 0.2
 
 
 class SyncPortal:
@@ -100,6 +106,50 @@ class SyncPortal:
         # its own cause and context (errors.py).
         raise unwrapped
 
+    def call_interruptible[**P, T](
+        self, func: Callable[P, Awaitable[T]], *args: P.args, **kwargs: P.kwargs
+    ) -> T:
+        """As :meth:`call`, but Ctrl-C cancels ``func`` on the loop before it is raised here.
+
+        :meth:`call` leaves the coroutine running on the loop when Ctrl-C
+        interrupts the wait for it. Here Ctrl-C cancels it there and waits for
+        it to finish, whatever it does on its way out, before
+        ``KeyboardInterrupt`` is raised. So nothing it was about to do happens
+        afterwards.
+
+        Raises:
+            RuntimeError: the portal is not running.
+        """
+        portal = self._running()
+        scopes: list[anyio.CancelScope] = []
+
+        async def run() -> T | None:
+            with anyio.CancelScope() as scope:
+                scopes.append(scope)
+                return await func(*args, **kwargs)
+            return None  # cancelled by Ctrl-C
+
+        future = portal.start_task_soon(run)
+        try:
+            result = _wait(future)
+        except KeyboardInterrupt:
+
+            def stop() -> None:
+                for scope in scopes:
+                    scope.cancel()
+
+            portal.call(stop)
+            with contextlib.suppress(Exception):
+                _wait(future)
+            raise
+        except BaseExceptionGroup as group:
+            unwrapped = unwrap(group)
+            if unwrapped is group:
+                raise
+        else:
+            return result  # type: ignore[return-value]  # only a cancelled run returns None
+        raise unwrapped
+
     def start_task_soon[T](self, func: Callable[[], Awaitable[T]]) -> Future[T]:
         """Start ``func()`` on the portal's loop; its future cancels the task when cancelled.
 
@@ -125,3 +175,12 @@ class SyncPortal:
             RuntimeError: the portal is not running.
         """
         return self._running().wrap_async_context_manager(acm)
+
+
+def _wait[T](future: Future[T]) -> T:
+    """``future``'s result, waiting in short steps so Ctrl-C gets through."""
+    while True:
+        try:
+            return future.result(timeout=_WAKE_S)
+        except TimeoutError:
+            continue

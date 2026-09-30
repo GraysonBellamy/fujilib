@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
+import anyio
 import pytest
 from anyserial import SerialConfig
 from anyserial.testing import serial_port_pair
@@ -195,3 +196,51 @@ def test_find_devices(monkeypatch: pytest.MonkeyPatch, shared: bool) -> None:
         results = find_devices(ports=["COM9"])
     assert [r.ok for r in results] == [False] * len(results)
     assert all(isinstance(r.error, FujiConnectionError) for r in results)
+
+
+def test_ctrl_c_cancels_an_interruptible_call_on_the_loop_first(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import fujilib.sync.portal as portal_module
+
+    finished: list[str] = []
+
+    async def long_call() -> int:
+        try:
+            await anyio.sleep(30)
+        finally:
+            finished.append("left")
+        return 1
+
+    real_wait = portal_module._wait
+    interrupts = [KeyboardInterrupt()]
+
+    def wait_once_interrupted(future: Any) -> Any:
+        if interrupts:
+            raise interrupts.pop()
+        return real_wait(future)
+
+    monkeypatch.setattr(portal_module, "_wait", wait_once_interrupted)
+    with SyncPortal() as portal:
+        with pytest.raises(KeyboardInterrupt):
+            portal.call_interruptible(long_call)
+        assert finished == ["left"]  # cancelled and finished before Ctrl-C was raised here
+        monkeypatch.undo()
+        assert portal.call_interruptible(anyio.sleep, 0) is None
+
+
+def test_an_interruptible_call_unwraps_a_group_of_one() -> None:
+    async def one() -> None:
+        async with anyio.create_task_group() as tg:
+            _ = tg.start_soon(fail, FujiConnectionError("gone"))
+
+    async def two() -> None:
+        async with anyio.create_task_group() as tg:
+            _ = tg.start_soon(fail, FujiConnectionError("gone"))
+            _ = tg.start_soon(fail, FujiConnectionError("also gone"))
+
+    with SyncPortal() as portal:
+        with pytest.raises(FujiConnectionError, match="gone"):
+            portal.call_interruptible(one)
+        with pytest.raises(BaseExceptionGroup):
+            portal.call_interruptible(two)

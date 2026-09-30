@@ -11,6 +11,7 @@ import pytest
 import fujilib
 from fujilib.devices.capability import SafetyTier
 from fujilib.errors import FujiConfigurationError, FujiValidationError
+from fujilib.registry.enums import KeyCode
 from fujilib.registry.regions import (
     DOCUMENTED_REGIONS,
     FC_READ_HOLDING,
@@ -24,6 +25,7 @@ from fujilib.registry.regions import (
     RegisterTable,
 )
 from fujilib.registry.write_policy import (
+    CALIBRATION_KEYS,
     KEY_SIMULATION_ADDRESS,
     OPERATIONS,
     WRITE_ENVELOPE,
@@ -111,16 +113,46 @@ def test_register_tables() -> None:
 
 
 def test_envelope_is_exactly_the_design() -> None:
-    assert [(r.fc, r.first, r.last) for r in WRITE_ENVELOPE] == [
-        (FC_WRITE_SINGLE, 0x0000, 0x009D),
-        (FC_WRITE_MULTIPLE, 0x0000, 0x00A3),
-        (FC_WRITE_SINGLE, 0x07D1, 0x07D4),
+    keys = frozenset({0x04, 0x08, 0x10, 0x20, 0x40, 0x80})  # UP DOWN ESC ENT ZERO SPAN
+    assert [(r.fc, r.first, r.last, r.values) for r in WRITE_ENVELOPE] == [
+        (FC_WRITE_SINGLE, 0x0000, 0x009D, None),
+        (FC_WRITE_MULTIPLE, 0x0000, 0x00A3, None),
+        (FC_WRITE_SINGLE, 0x07D0, 0x07D0, keys),
+        (FC_WRITE_SINGLE, 0x07D1, 0x07D4, None),
     ]
+    assert keys == CALIBRATION_KEYS
 
 
 @pytest.mark.parametrize("fc", [0x03, 0x04, FC_WRITE_SINGLE, FC_WRITE_MULTIPLE])
-def test_key_simulation_is_never_writable(fc: int) -> None:
+def test_key_simulation_needs_a_calibration_key(fc: int) -> None:
+    # The address alone is never enough there: the value decides (design §6.5).
     assert not envelope_allows(fc, KEY_SIMULATION_ADDRESS)
+
+
+@pytest.mark.parametrize("value", range(0x0000, 0x0100))
+def test_only_the_six_calibration_keys_are_writable(value: int) -> None:
+    allowed = value in {
+        KeyCode.UP,
+        KeyCode.DOWN,
+        KeyCode.ESC,
+        KeyCode.ENT,
+        KeyCode.ZERO,
+        KeyCode.SPAN,
+    }
+    assert envelope_allows(FC_WRITE_SINGLE, KEY_SIMULATION_ADDRESS, values=(value,)) is allowed
+    assert not envelope_allows(FC_WRITE_MULTIPLE, KEY_SIMULATION_ADDRESS, values=(value,))
+
+
+def test_menu_keys_are_never_writable() -> None:
+    for key in (
+        KeyCode.MODE,
+        KeyCode.SIDE,
+        KeyCode.MODE | KeyCode.SIDE,
+        KeyCode.ZERO | KeyCode.ENT,
+    ):
+        assert not envelope_allows(FC_WRITE_SINGLE, KEY_SIMULATION_ADDRESS, values=(int(key),))
+    assert not envelope_allows(FC_WRITE_SINGLE, KEY_SIMULATION_ADDRESS, 2, values=(0x40, 0x10))
+    assert not envelope_allows(FC_WRITE_SINGLE, KEY_SIMULATION_ADDRESS, values=(0x40, 0x10))
 
 
 @pytest.mark.parametrize("address", range(0x00A4, 0x00AC))
@@ -151,10 +183,14 @@ def test_envelope_allows(fc: int, address: int, count: int, *, allowed: bool) ->
 
 def test_check_envelope_raises_with_context() -> None:
     check_envelope(FC_WRITE_SINGLE, 0x0000)
+    check_envelope(FC_WRITE_SINGLE, KEY_SIMULATION_ADDRESS, values=(0x40,))
     with pytest.raises(FujiValidationError) as info:
         check_envelope(FC_WRITE_SINGLE, KEY_SIMULATION_ADDRESS)
     assert info.value.context.function_code == FC_WRITE_SINGLE
     assert info.value.context.register_address == KEY_SIMULATION_ADDRESS
+    with pytest.raises(FujiValidationError, match="of 0x0001 at 0x07D0") as info:
+        check_envelope(FC_WRITE_SINGLE, KEY_SIMULATION_ADDRESS, values=(0x01,))
+    assert info.value.context.extra == {"count": 1, "values": (0x01,)}
 
 
 def test_operations() -> None:

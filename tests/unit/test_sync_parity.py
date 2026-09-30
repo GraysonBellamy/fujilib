@@ -126,3 +126,15 @@ def test_poll_source_adapter() -> None:
 def test_the_method_list_is_complete() -> None:
     # A guard on the guard: the coroutine scan finds the whole public surface.
     assert {"poll", "identify", "read_metadata", "snapshot", "close"} <= set(_coroutines(Analyzer))
+
+
+def test_the_remote_calibration_has_a_blocking_twin() -> None:
+    from fujilib.devices.keys import RemoteCalibration
+    from fujilib.sync import SyncRemoteCalibration
+
+    assert_parity(Analyzer.manual_calibration, SyncAnalyzer.manual_calibration)
+    for name in _coroutines(RemoteCalibration):
+        assert_parity(getattr(RemoteCalibration, name), getattr(SyncRemoteCalibration, name))
+        assert not inspect.iscoroutinefunction(getattr(SyncRemoteCalibration, name))
+    for name in _properties(RemoteCalibration):
+        assert isinstance(inspect.getattr_static(SyncRemoteCalibration, name, None), property)

@@ -19,9 +19,15 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from fujilib.protocol.modbus.codec import DataType
+from fujilib.registry.enums import KeyCode
 from fujilib.registry.regions import Evidence, RegisterTable
 from fujilib.registry.registers import REGISTRY, LogSpec, RegisterSpec, ScalingKind
-from fujilib.registry.write_policy import KEY_SIMULATION_ADDRESS, OPERATIONS, WRITE_ENVELOPE
+from fujilib.registry.write_policy import (
+    CALIBRATION_KEYS,
+    KEY_SIMULATION_ADDRESS,
+    OPERATIONS,
+    WRITE_ENVELOPE,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
@@ -257,16 +263,40 @@ def _summary() -> str:
     return _table(headers, rows)
 
 
+def _values(values: frozenset[int] | None) -> str:
+    if values is None:
+        return "any"
+    return ", ".join(f"{KeyCode(v).name} ({v:02X}h)" for v in sorted(values))
+
+
 def _envelope() -> str:
     out = [
         "Everything fujilib may ever write. The envelope is frozen and independent of the "
-        "registry; the Modbus client re-checks every write against it (design §5.4). "
-        f"{_hex(KEY_SIMULATION_ADDRESS)} (key simulation) and 00A4h-00ABh are outside it.\n\n",
+        "registry; the Modbus client re-checks every write against it, its value too where "
+        "the envelope limits it (design §5.4). 00A4h-00ABh are outside it.\n\n",
         _table(
-            ("FC", "From", "To"),
+            ("FC", "From", "To", "Values"),
             (
-                (f"{r.fc:02X} ({_FC_NAMES[r.fc]})", _hex(r.first), _hex(r.last))
+                (f"{r.fc:02X} ({_FC_NAMES[r.fc]})", _hex(r.first), _hex(r.last), _values(r.values))
                 for r in WRITE_ENVELOPE
+            ),
+        ),
+        "\n### Front-panel keys\n\n",
+        f"Written with FC06 to {_hex(KEY_SIMULATION_ADDRESS)} (42001), one key at a time, only "
+        "by the front-panel driver of a manual zero or span (design §6.5): each is sent only "
+        "on the steps where it belongs, and confirmed by the panel's reads. MODE and SIDE, "
+        "which open the menus and enter their passwords, are outside the envelope.\n\n",
+        _table(
+            ("Key", "Code", "Tier"),
+            (
+                (
+                    KeyCode(code).name,
+                    f"{code:02X}h",
+                    "DANGEROUS on the wait step (it calibrates); STATEFUL elsewhere"
+                    if code == KeyCode.ENT
+                    else "STATEFUL",
+                )
+                for code in sorted(CALIBRATION_KEYS)
             ),
         ),
         "\n### Operation commands\n\n",

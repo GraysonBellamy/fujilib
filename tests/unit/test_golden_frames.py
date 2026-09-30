@@ -85,7 +85,7 @@ def test_fc04_read_concentration() -> None:
     assert unit_from_code(unit) is Unit.VOL_PERCENT
 
 
-def test_fc06_key_command_is_outside_the_write_envelope() -> None:
+def test_fc06_zero_key_is_inside_the_write_envelope_only_as_a_calibration_key() -> None:
     request = encode_adu(
         slave_address=1, pdu=encode_write_single_register_request(KEY_SIMULATION_ADDRESS, 0x40)
     )
@@ -93,7 +93,9 @@ def test_fc06_key_command_is_outside_the_write_envelope() -> None:
     assert FC06.response == FC06.request  # the reply echoes
     assert FC06.response is not None
     assert decode_write_single_register_response(pdu(FC06.response)) == (0x07D0, 0x40)
-    assert not envelope_allows(FC_WRITE_SINGLE, KEY_SIMULATION_ADDRESS)
+    assert envelope_allows(FC_WRITE_SINGLE, KEY_SIMULATION_ADDRESS, values=(0x40,))
+    assert not envelope_allows(FC_WRITE_SINGLE, KEY_SIMULATION_ADDRESS)  # no value: refused
+    assert not envelope_allows(FC_WRITE_SINGLE, KEY_SIMULATION_ADDRESS, values=(0x01,))
 
 
 def test_fc10_write_alarm_limits() -> None:

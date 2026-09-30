@@ -173,9 +173,15 @@ def _bank_path(fixture: str) -> Path:
 
 @asynccontextmanager
 async def open_from_args(
-    args: argparse.Namespace, *, identify: bool = True
+    args: argparse.Namespace,
+    *,
+    identify: bool = True,
+    simulated: Callable[[MockAnalyzer], object] | None = None,
 ) -> AsyncGenerator[Analyzer]:
-    """Open the analyzer the arguments name, closing it on exit."""
+    """Open the analyzer the arguments name, closing it on exit.
+
+    With ``--fixture``, ``simulated`` is given the simulated analyzer first.
+    """
     channel_map = dict(args.gas) if args.gas else None
 
     async def open_on(port: str | Transport) -> Analyzer:
@@ -197,8 +203,11 @@ async def open_from_args(
     except (OSError, ValueError, TypeError) as exc:
         msg = f"cannot read the register bank {str(path)!r}: {exc}"
         raise FujiValidationError(msg) from exc
+    mock = MockAnalyzer(bank)
+    if simulated is not None:
+        simulated(mock)
     async with (
-        mock_transport(MockAnalyzer(bank), label=f"fixture:{path.name}") as (transport, _line),
+        mock_transport(mock, label=f"fixture:{path.name}") as (transport, _line),
         await open_on(transport) as analyzer,
     ):
         yield analyzer

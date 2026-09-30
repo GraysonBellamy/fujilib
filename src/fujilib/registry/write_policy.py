@@ -10,7 +10,10 @@ Deliberately excluded:
 
 - ``00A4h``–``00ABh``, whose meaning (interference compensation coefficients)
   is inferred, not documented (design §2.6);
-- ``07D0h``, key simulation, whose keys also reach the factory menu (design §6.5).
+- every key code at ``07D0h`` (key simulation) but the six calibration keys of
+  :data:`CALIBRATION_KEYS`. MODE and SIDE, which open the menus and enter their
+  passwords, reach maintenance and factory mode (design §6.5), so the envelope
+  checks the *value* written there as well as the address.
 
 Inside the envelope, only :data:`REVIEWED_SETTINGS` are ever written: the
 reviewed subset of design §5.4, by name and address, also written out here
@@ -34,9 +37,10 @@ from fujilib.errors import ErrorContext, FujiConfigurationError, FujiValidationE
 from fujilib.registry.regions import FC_WRITE_MULTIPLE, FC_WRITE_SINGLE
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Mapping, Sequence
 
 __all__ = [
+    "CALIBRATION_KEYS",
     "KEY_SIMULATION_ADDRESS",
     "OPERATIONS",
     "REVIEWED_SETTINGS",
@@ -47,8 +51,14 @@ __all__ = [
     "envelope_allows",
 ]
 
-#: The key-simulation register 42001. fujilib never writes it (design §6.5).
+#: The key-simulation register 42001 (TN5A1190a p.33).
 KEY_SIMULATION_ADDRESS: Final = 0x07D0
+
+#: The key codes fujilib may write to 42001: UP, DOWN, ESC, ENT, ZERO and SPAN,
+#: the keys of a manual zero or span (design §6.5). Written out here, apart from
+#: :class:`~fujilib.registry.enums.KeyCode`; MODE (01h) and SIDE (02h) are not
+#: among them, nor is any combination of keys.
+CALIBRATION_KEYS: Final[frozenset[int]] = frozenset({0x04, 0x08, 0x10, 0x20, 0x40, 0x80})
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,6 +68,8 @@ class WriteRange:
     fc: int
     first: int
     last: int
+    values: frozenset[int] | None = None
+    """The only words it may write, or ``None`` for any word."""
 
     def contains(self, fc: int, address: int, count: int = 1) -> bool:
         """Whether a write of ``count`` words at ``address`` with ``fc`` lies inside."""
@@ -67,11 +79,31 @@ class WriteRange:
             and self.first <= address <= address + count - 1 <= self.last
         )
 
+    def allows(
+        self, fc: int, address: int, count: int = 1, values: Sequence[int] | None = None
+    ) -> bool:
+        """Whether a write of ``count`` words at ``address`` with ``fc``, of ``values``, is allowed.
+
+        Where the range limits its values, the write is allowed only with
+        ``values`` given, ``count`` of them, each one of its values.
+        """
+        if not self.contains(fc, address, count):
+            return False
+        if self.values is None:
+            return True
+        return values is not None and len(values) == count and all(v in self.values for v in values)
+
 
 #: Everything fujilib may ever write. Frozen; see the module docstring.
 WRITE_ENVELOPE: Final[tuple[WriteRange, ...]] = (
     WriteRange(fc=FC_WRITE_SINGLE, first=0x0000, last=0x009D),
     WriteRange(fc=FC_WRITE_MULTIPLE, first=0x0000, last=0x00A3),
+    WriteRange(  # key simulation 42001: the calibration keys only
+        fc=FC_WRITE_SINGLE,
+        first=KEY_SIMULATION_ADDRESS,
+        last=KEY_SIMULATION_ADDRESS,
+        values=CALIBRATION_KEYS,
+    ),
     WriteRange(fc=FC_WRITE_SINGLE, first=0x07D1, last=0x07D4),  # operation commands 42002-42005
 )
 
@@ -100,26 +132,37 @@ REVIEWED_SETTINGS: Final[frozenset[tuple[str, int]]] = frozenset(
 )
 
 
-def envelope_allows(fc: int, address: int, count: int = 1) -> bool:
-    """Whether a ``count``-word write at ``address`` with ``fc`` lies inside one envelope range."""
-    return any(r.contains(fc, address, count) for r in WRITE_ENVELOPE)
+def envelope_allows(
+    fc: int, address: int, count: int = 1, *, values: Sequence[int] | None = None
+) -> bool:
+    """Whether a ``count``-word write at ``address`` with ``fc`` lies inside one envelope range.
+
+    Where a range limits the words written (key simulation), ``values`` must
+    be given and each be one of them: an address alone is not enough there.
+    """
+    return any(r.allows(fc, address, count, values) for r in WRITE_ENVELOPE)
 
 
-def check_envelope(fc: int, address: int, count: int = 1) -> None:
+def check_envelope(
+    fc: int, address: int, count: int = 1, *, values: Sequence[int] | None = None
+) -> None:
     """Refuse a write outside :data:`WRITE_ENVELOPE`.
 
     Raises:
         FujiValidationError: the write is outside the envelope.
     """
-    if not envelope_allows(fc, address, count):
+    if not envelope_allows(fc, address, count, values=values):
+        shown = "" if values is None else f" of {', '.join(f'0x{v:04X}' for v in values)}"
         msg = (
-            f"FC{fc:02X} write of {count} word(s) at 0x{address:04X} is outside the write envelope"
+            f"FC{fc:02X} write of {count} word(s){shown} at 0x{address:04X} is outside the "
+            "write envelope"
         )
+        extra: dict[str, object] = {"count": count}
+        if values is not None:
+            extra["values"] = tuple(values)
         raise FujiValidationError(
             msg,
-            context=ErrorContext(
-                function_code=fc, register_address=address, extra={"count": count}
-            ),
+            context=ErrorContext(function_code=fc, register_address=address, extra=extra),
         )
 
 
@@ -141,7 +184,8 @@ class OperationSpec:
         return 40_001 + self.address
 
 
-#: The documented operation commands, by facade name. Key simulation is not one.
+#: The documented operation commands, by facade name. Key simulation is not one:
+#: its keys are sent by the front-panel driver (:mod:`fujilib.devices.keys`).
 OPERATIONS: Final[Mapping[str, OperationSpec]] = MappingProxyType(
     {
         spec.name: spec

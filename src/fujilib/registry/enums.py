@@ -270,8 +270,10 @@ class KeyCode(IntFlag):
     The undocumented input 30190 (00BDh) shows the key being pressed at the
     panel in the same codes, and 0 otherwise (protocol findings §14.2).
 
-    **fujilib does not write these** (design §6.5): the same keys reach the
-    factory menu. They explain a captured frame and the key register.
+    fujilib writes only UP, DOWN, ESC, ENT, ZERO and SPAN, and only from the
+    front-panel driver of a manual zero or span (:mod:`fujilib.devices.keys`,
+    design §6.5). MODE and SIDE reach the menus and their passwords; the write
+    envelope refuses them.
     """
 
     MODE = 0x01

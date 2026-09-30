@@ -822,25 +822,29 @@ def flags(mock: MockAnalyzer, kind: str) -> tuple[int, ...]:
     return tuple(mock.register(f"status.ch{c}.{kind}_calibrating")[0] for c in range(1, 6))
 
 
-def test_the_cursor_moves_over_positions_and_at_once_channels_share_one() -> None:
+def test_the_cursor_wraps_round_and_at_once_channels_share_one_position() -> None:
+    # Protocol findings §18.2: the bench unit's cursor wraps at both ends, and the
+    # "at once" pair's position reads Ch1 reached going down and Ch2 going up.
     mock = panel()
     mock.press(ZERO, at=0.0)
     assert shown(mock) == (4, 1, 0, ZERO)
     mock.press(DOWN, at=1.0)
     assert shown(mock)[:2] == (4, 3)  # Ch1 and Ch2 are one position for a zero
     mock.press(DOWN, at=2.0)
-    assert shown(mock)[:2] == (4, 3)  # the last position
+    assert shown(mock)[:2] == (4, 1)  # round to the pair, going down
     mock.press(UP, at=3.0)
+    assert shown(mock)[:2] == (4, 3)  # round to the last position
     mock.press(UP, at=4.0)
-    assert shown(mock)[:2] == (4, 1)
+    assert shown(mock)[:2] == (4, 2)  # the pair, going up
     mock.press(ENT, at=5.0)
     assert flags(mock, "zero") == (1, 1, 0, 0, 0)
     mock.press(ESC, at=6.0)
     assert shown(mock)[0] == 0
     assert flags(mock, "zero") == (0,) * 5
     mock.press(SPAN, at=7.0)
+    assert shown(mock)[:2] == (7, 2)  # it opens where the cursor was
     mock.press(DOWN, at=8.0)
-    assert shown(mock)[:2] == (7, 2)  # a span has no shared position
+    assert shown(mock)[:2] == (7, 3)  # a span has no shared position
 
 
 def test_esc_leaves_channel_selection_and_other_keys_wait() -> None:
@@ -949,3 +953,97 @@ def test_the_error_display(
     assert mock.register("reading.ch3.value") == (reading,)
     if step == 0:
         assert flags(mock, "zero") == (0,) * 5
+
+
+# --- The simulated panel, keyed over Modbus (protocol findings §18) --------------------------
+
+
+def modbus(mock: MockAnalyzer, address: int, value: int, at: float) -> Any:
+    """Write ``value`` to ``address`` with FC06 at AnyIO time ``at``; the reply's fault."""
+    from fujilib.testing import MockExchange
+
+    request = MockRequest(1, 0x06, address, 1, (value,), b"", at)
+    return mock.answer(MockExchange(request))[1]
+
+
+def read_at(mock: MockAnalyzer, at: float) -> Any:
+    """A status read at AnyIO time ``at``; the reply's fault."""
+    from fujilib.testing import MockExchange
+
+    request = MockRequest(1, FC04, 0x0083, 60, (), b"", at)
+    return mock.answer(MockExchange(request))[1]
+
+
+def test_a_key_written_over_modbus_acts_but_never_shows_in_30190() -> None:
+    mock = panel()
+    mock.set_register("display.key", 0)
+    for t, key in enumerate((ZERO, DOWN, ENT)):
+        assert modbus(mock, 0x07D0, key, float(t)) is None
+    assert shown(mock) == (5, 3, 0, 0)
+    assert flags(mock, "zero") == (0, 0, 1, 0, 0)
+    assert [k for k, _ in mock.remote_keys] == [ZERO, DOWN, ENT]
+    assert mock.keys == []  # nothing pressed at the panel
+
+
+def test_key_lock_swallows_a_key_over_modbus_and_the_analyzer_falls_silent() -> None:
+    mock = panel(key_lock_silence_s=1.6)
+    mock.set_register("key_lock", 1)
+    assert modbus(mock, 0x07D0, ZERO, 10.0) is None  # acknowledged
+    assert shown(mock)[0] == 0
+    assert [k for k, _ in mock.swallowed_keys] == [ZERO]
+    assert read_at(mock, 11.0).kind is FaultKind.DROP  # nothing answers for 1.6 s
+    assert read_at(mock, 11.7) is None
+    assert not mock.silent(12.0)
+    mock.press(ZERO, at=13.0)  # key lock is not modelled at the panel
+    assert shown(mock)[0] == 4
+
+
+def test_zero_opens_on_the_first_position_after_42002_and_after_a_long_pause() -> None:
+    mock = panel(cursor_reset_idle_s=60.0)
+    mock.set_register("display.cursor_channel", 2)
+    modbus(mock, 0x07D1, 1, 0.0)  # return to measurement
+    mock.press(ZERO, at=1.0)
+    assert shown(mock)[:2] == (4, 1)
+    mock.press(DOWN, at=2.0)
+    mock.press(ESC, at=3.0)
+    mock.press(ZERO, at=4.0)
+    assert shown(mock)[:2] == (4, 3)  # where it was left
+    mock.press(ESC, at=5.0)
+    mock.press(SPAN, at=100.0)
+    assert shown(mock)[:2] == (7, 1)  # after a long pause
+
+
+def test_a_flag_can_clear_a_moment_after_esc_leaves_the_wait_step() -> None:
+    mock = panel(flag_lag_s=0.2)
+    for t, key in enumerate((SPAN, DOWN, DOWN, ENT, ESC)):
+        mock.press(key, at=float(t))
+    assert shown(mock)[0] == 0
+    assert flags(mock, "span") == (0, 0, 1, 0, 0)  # still set just after the step
+    read_at(mock, 4.3)
+    assert flags(mock, "span") == (0,) * 5
+
+
+def test_the_analyzer_falls_silent_while_it_stores_a_calibration() -> None:
+    mock = panel(manual_calibration_s=2.0, storing_silence_s=1.0)
+    for t, key in enumerate((ZERO, DOWN, ENT, ENT)):
+        mock.press(key, at=float(t))
+    assert read_at(mock, 3.5) is None  # running, answering
+    assert read_at(mock, 4.5).kind is FaultKind.DROP  # storing
+    assert read_at(mock, 5.1) is None
+    assert shown(mock)[:3] == (0, 3, 6)
+
+
+def test_a_gas_at_the_inlet_approaches_its_value() -> None:
+    mock = panel()
+    mock.set_reading("CH3", 2095, 2)
+    mock.flow("CH3", 0.0, tau_s=10.0, at=0.0)
+    read_at(mock, 10.0)
+    assert mock.register("reading.ch3.value") == (round(2095 * 0.36788),)  # e**-1
+    mock.flow("CH1", 1.5, at=10.0)
+    assert mock.register("reading.ch1.value") == (150,)
+    for t, key in enumerate((ZERO, DOWN, ENT, ENT), start=11):
+        mock.press(key, at=float(t))
+    read_at(mock, 20.0)
+    assert mock.register("reading.ch3.value") == (0,)  # the calibration set it; no more flow
+    read_at(mock, 100.0)
+    assert mock.register("reading.ch3.value") == (0,)

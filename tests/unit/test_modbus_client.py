@@ -101,12 +101,23 @@ async def test_reads_and_writes_put_the_manuals_bytes_on_the_wire() -> None:
     assert fake.unmatched == []
 
 
-async def test_the_manuals_zero_key_frame_is_never_sent() -> None:
+@pytest.mark.parametrize("key", [0x01, 0x02, 0x60, 0x00, 0x100])
+async def test_a_key_other_than_the_calibration_keys_is_never_sent(key: int) -> None:
+    # MODE and SIDE reach the menus and their passwords; 60h is ZERO and ENT at once.
     fake = fake_transport(MANUAL_FRAMES)
     async with ModbusPort(fake, startup_settle=0.0) as port:
         with pytest.raises(FujiValidationError, match="write envelope"):
-            await port.client(1).write_register(0x07D0, 0x40)
+            await port.client(1).write_register(0x07D0, key)
     assert fake.writes == []
+
+
+async def test_a_calibration_key_can_be_written_but_never_with_fc10() -> None:
+    async with fast_pair() as (client, mock):
+        await client.write_register(0x07D0, 0x10)
+        with pytest.raises(FujiValidationError, match="write envelope"):
+            await client.write_registers(0x07D0, [0x10])
+    assert mock.transactions() == [(FC06, 0x07D0, 1)]
+    assert [key for key, _ in mock.remote_keys] == [0x10]
 
 
 async def test_a_write_with_no_reply_has_an_unknown_outcome() -> None:
@@ -165,7 +176,9 @@ async def test_bad_writes_are_refused_before_io(address: int, values: list[Any])
     assert mock.exchanges == []
 
 
-@pytest.mark.parametrize(("address", "value"), [(0x009E, 1), (0x07D0, 0x40), (0x0010, 0x10000)])
+@pytest.mark.parametrize(
+    ("address", "value"), [(0x009E, 1), (0x07D0, 0x01), (0x07D0, 0x02), (0x0010, 0x10000)]
+)
 async def test_bad_single_writes_are_refused_before_io(address: int, value: int) -> None:
     async with fast_pair() as (client, mock):
         with pytest.raises(FujiValidationError):

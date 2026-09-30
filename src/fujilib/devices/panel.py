@@ -3,7 +3,8 @@
 A manual zero or span exists only at the front panel: ZERO or SPAN, the
 cursor to the channel, ENT to select it (the wait step, while the gas
 settles), and ENT again to calibrate. This module watches one from the status
-registers; it sends no key.
+registers; it sends no key. :mod:`fujilib.devices.keys` drives one from the
+host, and records it with the same tracker.
 
 **What the registers show** (protocol findings §14, observed on the bench
 analyzer):
@@ -44,11 +45,16 @@ taken from the next read.
 The result register is undocumented, so it decides nothing that the step
 contradicts (design §13.1 #73). Every event carries the evidence for its
 outcome.
+
+**Records.** :func:`calibration_record` writes an event as a
+``fujilib-calibration/1`` document, the same for a calibration watched at the
+panel and one driven from the host (design §13.1 #75, #90).
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime
 from enum import StrEnum
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Final
@@ -64,15 +70,16 @@ from fujilib.registry.enums import (
     RangeMethod,
     ZeroCalibrationMode,
 )
+from fujilib.version import __version__
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping, Sequence
-    from datetime import datetime
 
     from fujilib.devices.decode import RegisterValue
     from fujilib.devices.models import (
         AdcValues,
         ChannelStatus,
+        DeviceInfo,
         DisplayState,
         Frame,
         RangeInfo,
@@ -82,6 +89,7 @@ if TYPE_CHECKING:
     from fujilib.registry.enums import ErrorCode
 
 __all__ = [
+    "CALIBRATION_FORMAT",
     "MANUAL_PLAN_SETTINGS",
     "ManualCalibrationEvent",
     "ManualCalibrationKind",
@@ -89,6 +97,8 @@ __all__ = [
     "ManualCalibrationPlan",
     "ManualCalibrationTracker",
     "PanelObservation",
+    "calibration_record",
+    "calibration_record_header",
     "plan_manual_calibration",
 ]
 
@@ -675,3 +685,84 @@ def _range_number(raw: int, channel: ChannelId, what: str) -> int:
 
 def _scaled(value: RegisterValue) -> float | None:
     return value.value if isinstance(value.value, float) else None
+
+
+# --- Records ---------------------------------------------------------------------------------
+
+#: The format of a calibration record (design §13.1 #90).
+CALIBRATION_FORMAT: Final = "fujilib-calibration/1"
+
+
+def calibration_record_header(
+    *,
+    info: DeviceInfo | None = None,
+    port: str | None = None,
+    address: int | None = None,
+    source: str = "panel",
+) -> dict[str, object]:
+    """The part of a calibration record that names the document and the analyzer."""
+    return {
+        "format": CALIBRATION_FORMAT,
+        "fujilib_version": __version__,
+        "written_at": datetime.now(UTC).isoformat(),
+        "source": source,
+        "analyzer": {
+            "model": info.model if info is not None else None,
+            "serial_number": info.serial_number if info is not None else None,
+            "type_code": info.type_code.raw if info is not None else None,
+            "port": port,
+            "address": address,
+        },
+    }
+
+
+def calibration_record(
+    event: ManualCalibrationEvent,
+    *,
+    info: DeviceInfo | None = None,
+    port: str | None = None,
+    address: int | None = None,
+    source: str = "panel",
+) -> dict[str, object]:
+    """``event`` as a ``fujilib-calibration/1`` document of JSON values.
+
+    ``source`` says who pressed the keys: ``"panel"`` for a calibration made at
+    the front panel and watched, ``"remote"`` for one driven from the host.
+    ``calibrated_at`` is when it ran, at the latest, or ``None`` when it did
+    not run; it is what a zero or span time is taken from. ``channel_gases``
+    gives each channel's gas label, as asserted.
+    """
+
+    def when(moment: datetime | None) -> str | None:
+        return moment.isoformat() if moment is not None else None
+
+    def reading(r: Reading) -> dict[str, object]:
+        return {"value": r.value, "unit": r.unit.value, "state": r.state.value}
+
+    adc = event.adc_before
+    record = calibration_record_header(info=info, port=port, address=address, source=source)
+    record |= {
+        "kind": event.kind.value,
+        "outcome": event.outcome.value,
+        "channels": [c.value for c in event.channels],
+        "channel_gases": {c.value: r.gas.value for c, r in {**event.after, **event.before}.items()},
+        "ranges": {c.value: r for c, r in event.ranges.items()},
+        "calibrated_at": when(event.calibrated_at),
+        "started_at": when(event.started_at),
+        "selected_at": when(event.selected_at),
+        "ran_after": when(event.ran_after),
+        "ran_before": when(event.ran_before),
+        "ended_at": when(event.ended_at),
+        "gas_settings": {c.value: g for c, g in event.gases.items()},
+        "before": {c.value: reading(r) for c, r in event.before.items()},
+        "after": {c.value: reading(r) for c, r in event.after.items()},
+        "deviations": {c.value: d for c, d in event.deviations.items()},
+        "new_errors": {
+            c.value: sorted(int(e) for e in codes) for c, codes in event.new_errors.items()
+        },
+        "detector_counts": list(adc.inputs) if adc is not None else None,
+        "adc": list(adc.raw) if adc is not None else None,
+        "evidence": list(event.evidence),
+        "observations": event.observations,
+    }
+    return record

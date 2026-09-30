@@ -174,6 +174,16 @@ class PollRead:
             raw=self.raw,
         )
 
+    def status(self) -> StatusRead:
+        """The analyzer's and channels 1-5's status in a poll read with ``detail``."""
+        return StatusRead(
+            analyzer=decode_analyzer_status(self.bank),
+            channels=MappingProxyType(
+                {c: decode_channel_status(self.bank, c) for c in MEASURED_CHANNELS}
+            ),
+            timings=self.timings,
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class StatusRead:

@@ -22,7 +22,8 @@ is refused until the analyzer is opened again.
 
 A setting write (:meth:`Session.write_setting`) then reads the analyzer's
 status and refuses to write while a calibration runs or the front panel is in
-a menu; reads the setting and what it depends on; for a range-scaled value,
+a menu, or while this session drives a manual calibration at the panel
+(:meth:`Session.claim_panel`); reads the setting and what it depends on; for a range-scaled value,
 reads the range it is scaled by; encodes the value; writes it once and reads
 it back (:mod:`fujilib.devices.writes`); and, for a channel's selected range,
 waits until the channel measures on it.
@@ -266,6 +267,7 @@ class Session:
             verify_timeout if verify_timeout is not None else _read_budget(port, blocks=2)
         )
         self._write_rate = WriteRateMonitor(warn_per_minute=write_warn_per_minute)
+        self._panel_driver: str | None = None
         self._relabel()
 
     # --- State ---------------------------------------------------------------------------
@@ -698,6 +700,45 @@ class Session:
             return self.learn_ranges(await read_ranges(client, deadline=deadline))
         return self._ranges
 
+    # --- The front panel -----------------------------------------------------------------
+
+    @property
+    def panel_claimed(self) -> bool:
+        """Whether this session is driving a manual calibration at the front panel."""
+        return self._panel_driver is not None
+
+    def claim_panel(self, operation: str) -> None:
+        """Take the front panel for ``operation``, a remote manual calibration (design §6.5).
+
+        One at a time: the keys of two would interleave. While it is held, the
+        session refuses setting writes and commands, which would change what
+        the calibration was planned from or take the panel from it.
+
+        Raises:
+            FujiAnalyzerStateError: another remote manual calibration holds it.
+        """
+        if self._panel_driver is not None:
+            msg = (
+                f"{operation} refused, nothing was sent: {self._panel_driver} is already "
+                "under way on this analyzer"
+            )
+            raise FujiAnalyzerStateError(msg, context=self._context(operation))
+        self._panel_driver = operation
+
+    def release_panel(self) -> None:
+        """Give the front panel back. Idempotent."""
+        self._panel_driver = None
+
+    def _check_panel_free(self, operation: str) -> None:
+        if self._panel_driver is not None:
+            msg = (
+                f"{operation} refused, nothing was written: {self._panel_driver} is under way "
+                "at the front panel"
+            )
+            raise FujiAnalyzerStateError(
+                msg, context=self._context(operation).merged(reasons=(msg,))
+            )
+
     # --- Writes --------------------------------------------------------------------------
 
     async def check_quiet(
@@ -706,9 +747,11 @@ class Session:
         """Read the status, and refuse a write or command it forbids (design §6.1).
 
         Raises:
-            FujiAnalyzerStateError: a calibration is running or the front panel
-                is in a menu; nothing was written.
+            FujiAnalyzerStateError: a calibration is running, the front panel
+                is in a menu, or this session drives a manual calibration;
+                nothing was written.
         """
+        self._check_panel_free(operation)
         status = await read_status(client, deadline=deadline)
         self.learn_current_ranges({c: s.range for c, s in status.channels.items()})
         reasons = busy_reasons(status)
@@ -733,8 +776,9 @@ class Session:
 
         Raises:
             FujiAnalyzerStateError: a calibration, automatic or manual, is under
-                way; nothing was written.
+                way, or this session drives one; nothing was written.
         """
+        self._check_panel_free(operation)
         status = await read_status(client, deadline=deadline)
         self.learn_current_ranges({c: s.range for c, s in status.channels.items()})
         reasons = calibrating_reasons(status)

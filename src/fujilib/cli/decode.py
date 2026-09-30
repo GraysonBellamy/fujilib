@@ -143,8 +143,8 @@ def _registers(table: RegisterTable, start: int, words: Sequence[int]) -> list[o
     return out
 
 
-def _write_note(fc: int, start: int, count: int) -> str:
-    if envelope_allows(fc, start, count):
+def _write_note(fc: int, start: int, count: int, values: Sequence[int] | None = None) -> str:
+    if envelope_allows(fc, start, count, values=values):
         return "inside the write envelope"
     return "outside the write envelope: fujilib never sends this"
 
@@ -208,7 +208,7 @@ def describe_frame(
         else:
             operation = next((o.name for o in OPERATIONS.values() if o.address == address), None)
             report["meaning"] = operation or ", ".join(_names(table, address, 1)) or "unmapped"
-        report["write_envelope"] = _write_note(fc, address, 1)
+        report["write_envelope"] = _write_note(fc, address, 1, (value,))
         return report
     if fc == FC_WRITE_MULTIPLE:
         address, count = int.from_bytes(body[0:2]), int.from_bytes(body[2:4])
@@ -222,7 +222,7 @@ def describe_frame(
                 "values": values,
                 "registers": _names(table, address, count),
             }
-            report["write_envelope"] = _write_note(fc, address, count)
+            report["write_envelope"] = _write_note(fc, address, count, values)
         return report
     return report
 

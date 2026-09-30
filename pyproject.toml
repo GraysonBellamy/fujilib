@@ -52,6 +52,7 @@ parquet = [
 ]
 
 [project.scripts]
+fuji-calibrate = "fujilib.cli.calibrate:main"
 fuji-capture = "fujilib.cli.capture:main"
 fuji-configure = "fujilib.cli.configure:main"
 fuji-decode = "fujilib.cli.decode:main"
@@ -201,6 +202,7 @@ ignore = [
 # (design §6.4); ASYNC109 would have callers wrap each call in anyio.fail_after instead.
 "src/fujilib/devices/analyzer.py" = ["ASYNC109"]
 "src/fujilib/devices/factory.py" = ["ASYNC109"]
+"src/fujilib/devices/keys.py" = ["ASYNC109"]
 "src/fujilib/devices/session.py" = ["ASYNC109"]
 
 [tool.ruff.lint.pydocstyle]

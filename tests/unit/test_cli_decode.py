@@ -40,7 +40,7 @@ def test_fixture_text(capsys: pytest.CaptureFixture[str]) -> None:
     assert code == 0
     assert "12.00 vol%" in out
     assert "key simulation: ZERO" in out
-    assert "outside the write envelope: fujilib never sends this" in out
+    assert "outside the write envelope" not in out
     assert "calibration_gas.ch2.range1.span" in out
 
 
@@ -231,3 +231,11 @@ def test_dump_capture_time_per_table() -> None:
     data["captured_utc"] = {"input": "2026-09-28T15:43:50+00:00", "holding": "x"}
     report = describe_dump(data)
     assert report["clock"] == "2026-09-28 14:46:12"
+
+
+def test_a_menu_key_frame_is_outside_the_write_envelope(capsys: pytest.CaptureFixture[str]) -> None:
+    code, out, _ = run(capsys, "--hex", "01 06 07 D0 00 01 48 87", "--format", "json")
+    assert code == 0
+    report = json.loads(out)
+    assert report["meaning"] == "key simulation: MODE"
+    assert report["write_envelope"] == "outside the write envelope: fujilib never sends this"

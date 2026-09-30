@@ -21,9 +21,10 @@ manual says in both.
 
 **Writes.** The simulator accepts only the writes the manual documents minus
 the ones fujilib must never make, **written out here independently of**
-:data:`fujilib.registry.write_policy.WRITE_ENVELOPE`. A write outside that
-list, above all to the key-simulation register 07D0h, raises
-:class:`MockWriteViolation`, which fails the test. A write is stored as sent,
+:data:`fujilib.registry.write_policy.WRITE_ENVELOPE`. At the key-simulation
+register 07D0h that is the six calibration keys, never MODE, SIDE or two keys
+at once. A write outside that list raises :class:`MockWriteViolation`, which
+fails the test. A write is stored as sent,
 as the bench analyzer stores a value outside a setting's range, neither
 refusing nor clamping it (protocol findings §13.6). A test that wants a
 refusal injects an exception reply, and one that wants a write acknowledged
@@ -56,21 +57,36 @@ calibration's would. A command that arrives while one runs changes nothing,
 and so does blowback, which has no status register. None of this is verified
 on hardware: the bench analyzer has no calibration valves to drive.
 
-**The front panel** is a test control, :meth:`MockAnalyzer.press`: an
-operator pressing keys at the panel. Its manual calibration follows what the
-bench analyzer showed (protocol findings §14):
+**The front panel.** Keys reach it two ways: :meth:`MockAnalyzer.press`, an
+operator pressing keys at the panel, and a key code written to 42001. Its
+manual calibration follows what the bench analyzer showed (protocol findings
+§14, §18):
 
 - ZERO or SPAN opens channel selection (step 4 or 7) with the cursor where it
-  was. UP and DOWN move it; for a zero, the channels set to "at once" share
-  one position.
+  was, or on the first position after a return to measurement (42002) or,
+  with :attr:`MockAnalyzerConfig.cursor_reset_idle_s`, after a long pause.
+- UP and DOWN move the cursor, wrapping round at both ends. For a zero, the
+  channels set to "at once" share one position, which reads as its first
+  channel when reached going down and its last going up.
 - ENT selects the channel: the wait step (5 or 8), the channels' zero or span
   flags, and 30186 at 0.
 - ENT again runs it (6 or 9, 30186 at 4) for
-  :attr:`MockAnalyzerConfig.manual_calibration_s`. It then sets each channel's
-  reading to its calibration gas on its current range, and ends on the
-  measurement step with 30186 at 6.
-- ESC from selection or wait returns to measurement. 30190 shows each key for
-  :attr:`MockAnalyzerConfig.key_hold_s`.
+  :attr:`MockAnalyzerConfig.manual_calibration_s`, the last
+  :attr:`MockAnalyzerConfig.storing_silence_s` of it without answering. It
+  then sets each channel's reading to its calibration gas on its current
+  range, and ends on the measurement step with 30186 at 6.
+- ESC from selection or wait returns to measurement; from the wait step the
+  flags clear :attr:`MockAnalyzerConfig.flag_lag_s` later. Return to
+  measurement (42002) on the wait step leaves them set.
+- 30190 shows each key pressed at the panel for
+  :attr:`MockAnalyzerConfig.key_hold_s`; a key written to 42001 never shows
+  there.
+- With key lock on, a key written to 42001 is acknowledged and does nothing,
+  and the analyzer then answers nothing for
+  :attr:`MockAnalyzerConfig.key_lock_silence_s`.
+
+:meth:`MockAnalyzer.flow` changes the gas at a channel's inlet: the reading
+approaches the new value with a time constant, on the AnyIO clock.
 
 What the bench has not shown is written from the manuals (ZPA manual
 p.64-67, p.75-77, p.89) and is unverified:
@@ -82,6 +98,8 @@ p.64-67, p.75-77, p.89) and is unverified:
 - Output hold sets the channels' hold flags from the wait step to the end;
   their readings are not held.
 - MODE opens the menu screen and ESC closes it; no menu is modelled beyond that.
+- Key lock does not stop keys pressed at the panel here; the bench has not
+  shown what it does to them.
 
 The simulator validates library integration. It does not validate USB
 timing, UART behaviour on real hardware, or analyzer semantics it was
@@ -90,6 +108,7 @@ programmed to assume.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from enum import IntEnum, StrEnum
 from types import MappingProxyType
@@ -100,7 +119,7 @@ import anyio.abc
 from anymodbus.crc import crc16_modbus_bytes
 from anymodbus.testing import MockServer, MockSlave
 
-from fujilib.protocol.modbus.codec import encode_int
+from fujilib.protocol.modbus.codec import decode_int, encode_int
 from fujilib.registry.channels import coerce_channel
 from fujilib.registry.regions import (
     FC_READ_HOLDING,
@@ -149,14 +168,18 @@ _FIXED_BODY: Final = 4
 _VARIABLE_PREFIX: Final = 5
 
 #: What a client may write, by function code: the manual's writable ranges
-#: minus the inferred coefficients (00A4h-00ABh) and key simulation (07D0h).
+#: minus the inferred coefficients (00A4h-00ABh), and key simulation (07D0h)
+#: with the calibration keys only (:data:`_PANEL_KEYS`).
 #: Deliberately not derived from ``fujilib.registry.write_policy`` (design §10).
 _WRITABLE: Final[Mapping[int, tuple[tuple[int, int], ...]]] = MappingProxyType(
     {
-        FC_WRITE_SINGLE: ((0x0000, 0x009D), (0x07D1, 0x07D4)),
+        FC_WRITE_SINGLE: ((0x0000, 0x009D), (0x07D0, 0x07D4)),
         FC_WRITE_MULTIPLE: ((0x0000, 0x00A3),),
     }
 )
+_KEY_REGISTER: Final = 0x07D0
+#: The key codes a client may write to 42001: UP, DOWN, ESC, ENT, ZERO and SPAN.
+_PANEL_KEYS: Final = frozenset({0x04, 0x08, 0x10, 0x20, 0x40, 0x80})
 _COMMANDS: Final = range(0x07D1, 0x07D5)
 
 
@@ -177,6 +200,7 @@ _SELECTED_RANGE: Final = 0x69  # range.ch1.selected; Ch2-Ch5 follow
 _RANGE_METHOD: Final = 0x6E  # range.ch1.method; Ch2-Ch5 follow
 _CHANNELS: Final = range(1, 6)
 _ZERO_MODE: Final = 0x19  # calibration.ch1.zero_mode; Ch2-Ch5 follow
+_KEY_LOCK: Final = 0x49
 _KEY_MODE: Final = 0x01
 _KEY_UP: Final = 0x04
 _KEY_DOWN: Final = 0x08
@@ -278,6 +302,16 @@ class MockAnalyzerConfig:
     """Seconds 30190 shows a key pressed at the panel."""
     panel_channels: tuple[int, ...] = (1, 2, 3, 4, 5)
     """The measured channels the panel's calibration cursor offers."""
+    key_lock_silence_s: float = 1.6
+    """Seconds the analyzer answers nothing after key lock swallows a key written to 42001."""
+    storing_silence_s: float = 0.0
+    """Seconds at the end of a manual calibration's run without an answer (about 1 on the
+    bench, for a zero)."""
+    flag_lag_s: float = 0.0
+    """Seconds a channel's flag stays set after ESC leaves the wait step (a read, on the bench)."""
+    cursor_reset_idle_s: float | None = None
+    """Seconds without a key after which ZERO or SPAN opens on the first position; ``None``
+    for never."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -393,6 +427,17 @@ class _ManualCalibration:
         return self.errors is not None and all(e in _FORCEABLE for e in self.errors.values())
 
 
+@dataclass(frozen=True, slots=True)
+class _Flow:
+    """A gas put at a channel's inlet: its reading approaches ``target`` from ``start``."""
+
+    start: float
+    target: float
+    since: float
+    """When it was put there, on the AnyIO clock."""
+    tau_s: float
+
+
 @dataclass(slots=True)
 class Fault:
     """A fault for the replies to matching requests."""
@@ -442,8 +487,17 @@ class MockAnalyzer:
         """Range switches still to come, by channel: the current-range word and when."""
         self.keys: list[tuple[int, float]] = []
         """Keys pressed at the panel, as ``(key code, AnyIO time)``."""
+        self.remote_keys: list[tuple[int, float]] = []
+        """Keys written to 42001 that acted, as ``(key code, AnyIO time)``."""
+        self.swallowed_keys: list[tuple[int, float]] = []
+        """Keys written to 42001 that key lock swallowed, as ``(key code, AnyIO time)``."""
         self._key_until: float | None = None
+        self._last_key_at: float | None = None
+        self._cursor_reset = False
         self._manual: _ManualCalibration | None = None
+        self._silences: list[tuple[float, float]] = []
+        self._flag_clears: list[tuple[tuple[int, ...], bool, float]] = []
+        self._flows: dict[int, _Flow] = {}
 
     # --- Test controls -------------------------------------------------------------------
 
@@ -575,7 +629,10 @@ class MockAnalyzer:
     def _write(self, request: MockRequest, *, apply: bool) -> bytes:
         fc, address, values = request.function, request.address or 0, request.values
         last = address + len(values) - 1
-        if not any(first <= address and last <= end for first, end in _WRITABLE[fc]):
+        allowed = any(first <= address and last <= end for first, end in _WRITABLE[fc])
+        if allowed and fc == FC_WRITE_SINGLE and address == _KEY_REGISTER:
+            allowed = values[0] in _PANEL_KEYS
+        if not allowed:
             self.violations.append(request)
             msg = (
                 f"station {self.station}: FC{fc:02X} write of {len(values)} word(s) at "
@@ -585,7 +642,9 @@ class MockAnalyzer:
         if len(values) > _MAX_WORDS:
             return _exception(fc, _EXC_ILLEGAL_VALUE)
         if apply:
-            if fc == FC_WRITE_SINGLE and address in _COMMANDS:
+            if fc == FC_WRITE_SINGLE and address == _KEY_REGISTER:
+                self._remote_key(values[0], request.arrived_at)
+            elif fc == FC_WRITE_SINGLE and address in _COMMANDS:
                 self.commands.append((address, values[0]))
                 self._command(_Command(address), values[0], request.arrived_at)
             else:
@@ -604,11 +663,15 @@ class MockAnalyzer:
         """
         self.exchanges.append(exchange)
         request = exchange.request
-        self._switch_ranges(request.arrived_at)
-        self._advance(request.arrived_at)
-        self._advance_panel(request.arrived_at)
+        now = request.arrived_at
+        self._switch_ranges(now)
+        self._advance(now)
+        self._advance_panel(now)
+        self._advance_flows(now)
         if self.on_request is not None:
             self.on_request(request)
+        if self.silent(now):
+            return b"", Fault(FaultKind.DROP)
         fault = self.take_fault(request)
         ignored = fault is not None and fault.kind in {FaultKind.EXCEPTION, FaultKind.IGNORE}
         return self.handle(request, apply=not ignored), fault
@@ -616,12 +679,63 @@ class MockAnalyzer:
     # --- The front panel -----------------------------------------------------------------
 
     def press(self, key: int, *, at: float | None = None) -> None:
-        """Press ``key`` (a 42001 key code) at the front panel, now or at AnyIO time ``at``."""
+        """Press ``key`` (a 42001 key code) at the front panel, now or at AnyIO time ``at``.
+
+        This is the operator: 30190 shows the key, and key lock does not stop it.
+        """
         now = anyio.current_time() if at is None else at
         self._advance_panel(now)
         self.keys.append((key, now))
         self.set_register("display.key", key)
         self._key_until = now + self.config.key_hold_s
+        self._act(key, now)
+
+    def silent(self, now: float) -> bool:
+        """Whether the analyzer answers nothing at AnyIO time ``now``."""
+        self._silences = [(start, end) for start, end in self._silences if end > now]
+        return any(start <= now for start, _ in self._silences)
+
+    def flow(
+        self, channel: ChannelId | str, value: float, *, tau_s: float = 0.0, at: float | None = None
+    ) -> None:
+        """Put a gas of ``value`` at ``channel``'s inlet, now or at AnyIO time ``at``.
+
+        The reading approaches ``value`` exponentially with time constant
+        ``tau_s``, in the channel's own unit and decimals; with ``tau_s`` 0 it
+        takes the value at once.
+        """
+        n = coerce_channel(channel).number
+        now = anyio.current_time() if at is None else at
+        decimals = self.register(f"reading.ch{n}.decimals")[0]
+        raw = decode_int(self.register(f"reading.ch{n}.value")[0], signed=True)
+        self._flows[n] = _Flow(start=raw / 10**decimals, target=value, since=now, tau_s=tau_s)
+        self._advance_flows(now)
+
+    def _advance_flows(self, now: float) -> None:
+        for n, gas in self._flows.items():
+            if gas.tau_s <= 0:
+                value = gas.target
+            else:
+                elapsed = max(0.0, now - gas.since)
+                value = gas.target + (gas.start - gas.target) * math.exp(-elapsed / gas.tau_s)
+            decimals = self.register(f"reading.ch{n}.decimals")[0]
+            self.set_register(f"reading.ch{n}.value", round(value * 10**decimals))
+
+    def _remote_key(self, key: int, now: float) -> None:
+        """A key written to 42001: as at the panel, but never shown in 30190 (findings §18)."""
+        self._advance_panel(now)
+        if self.holding.get(_KEY_LOCK, 0):
+            self.swallowed_keys.append((key, now))
+            self._silences.append((now, now + self.config.key_lock_silence_s))
+            return
+        self.remote_keys.append((key, now))
+        self._act(key, now)
+
+    def _act(self, key: int, now: float) -> None:
+        idle = self.config.cursor_reset_idle_s
+        if idle is not None and self._last_key_at is not None and now - self._last_key_at >= idle:
+            self._cursor_reset = True
+        self._last_key_at = now
         screen = self.register("display.screen")[0]
         step = self.register("display.calibration_step")[0]
         if screen == _SCREEN_MENU:
@@ -641,7 +755,12 @@ class MockAnalyzer:
     def _press_on_measurement(self, key: int) -> None:
         if key in _SELECT_STEP:
             self.set_register("display.calibration_step", _SELECT_STEP[key])
-            self._put_cursor(self._positions(zero=key == _KEY_ZERO), self._cursor())
+            positions = self._positions(zero=key == _KEY_ZERO)
+            if self._cursor_reset:
+                self._cursor_reset = False
+                self._put_cursor(positions[0])
+            else:
+                self._put_cursor(positions[self._position_of(positions, self._cursor())])
         elif key == _KEY_MODE:
             self.set_register("display.screen", _SCREEN_MENU)
 
@@ -650,8 +769,9 @@ class MockAnalyzer:
         positions = self._positions(zero=zero)
         here = self._position_of(positions, self._cursor())
         if key in {_KEY_UP, _KEY_DOWN}:
-            there = max(0, min(here + (1 if key == _KEY_DOWN else -1), len(positions) - 1))
-            self._put_cursor(positions, positions[there][0])
+            down = key == _KEY_DOWN
+            there = (here + (1 if down else -1)) % len(positions)
+            self._put_cursor(positions[there], down=down)
         elif key == _KEY_ENT:
             channels = positions[here]
             self.set_register("display.calibration_step", step + 1)
@@ -667,12 +787,20 @@ class MockAnalyzer:
         if key == _KEY_ENT:
             self.set_register("display.calibration_step", step + 1)
             self.set_register("display.calibration_result", 4)
-            manual.ends_at = now + self.config.manual_calibration_s
+            ends_at = now + self.config.manual_calibration_s
+            manual.ends_at = ends_at
+            storing = min(self.config.storing_silence_s, self.config.manual_calibration_s)
+            if storing > 0:
+                self._silences.append((ends_at - storing, ends_at))
             self._advance_panel(now)
         elif key == _KEY_ESC:
-            self._set_flags(manual.channels, zero=manual.zero, on=False)
             self.set_register("display.calibration_step", _STEP_NONE)
             self._manual = None
+            if self.config.flag_lag_s > 0:
+                due = now + self.config.flag_lag_s
+                self._flag_clears.append((manual.channels, manual.zero, due))
+            else:
+                self._set_flags(manual.channels, zero=manual.zero, on=False)
 
     def _press_on_error(self, key: int) -> None:
         manual = self._manual
@@ -689,6 +817,9 @@ class MockAnalyzer:
         if self._key_until is not None and now >= self._key_until:
             self.set_register("display.key", 0)
             self._key_until = None
+        for clear in [c for c in self._flag_clears if c[2] <= now]:
+            self._flag_clears.remove(clear)
+            self._set_flags(clear[0], zero=clear[1], on=False)
         manual = self._manual
         if (
             manual is not None
@@ -712,6 +843,7 @@ class MockAnalyzer:
         for c in manual.channels:
             rng = self.input.get(_CURRENT_RANGE + c - 1, 0)
             gas = self.holding.get(4 * (c - 1) + 2 * rng + (0 if manual.zero else 1), 0)
+            self._flows.pop(c, None)
             self.set_register(f"reading.ch{c}.value", gas)
         self._set_flags(manual.channels, zero=manual.zero, on=False)
         self.set_register("display.calibration_step", _STEP_NONE)
@@ -744,9 +876,10 @@ class MockAnalyzer:
     def _cursor(self) -> int:
         return self.register("display.cursor_channel")[0] + 1
 
-    def _put_cursor(self, positions: Sequence[tuple[int, ...]], channel: int) -> None:
-        first = positions[self._position_of(positions, channel)][0]
-        self.set_register("display.cursor_channel", first - 1)
+    def _put_cursor(self, position: tuple[int, ...], *, down: bool = True) -> None:
+        """Put the cursor on ``position``: its first channel reached going down, its last up."""
+        channel = position[0] if down else position[-1]
+        self.set_register("display.cursor_channel", channel - 1)
 
     # --- Ranges -------------------------------------------------------------------------------
 
@@ -773,6 +906,7 @@ class MockAnalyzer:
         if command is _Command.RETURN_TO_MEASUREMENT:
             self.set_register("display.screen", 0)
             self.set_register("display.calibration_step", 0)
+            self._cursor_reset = True
         elif command in {_Command.AUTO_CALIBRATION, _Command.AUTO_ZERO}:
             if self.calibration is None:
                 self._start_calibration(command, now)

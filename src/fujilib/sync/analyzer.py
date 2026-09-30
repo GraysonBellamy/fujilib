@@ -8,6 +8,9 @@ test holds them together)::
 
     with Fuji.open("COM8", channel_map={"CH3": "o2"}) as anz:
         print(anz.poll().channel("CH3"))
+
+A remote manual calibration is a blocking context manager too
+(:class:`SyncRemoteCalibration`), entered and left on the portal's loop.
 """
 
 from __future__ import annotations
@@ -22,12 +25,19 @@ from fujilib.devices.profile import ZP_PROFILE
 from fujilib.sync.portal import SyncPortal
 
 if TYPE_CHECKING:
-    from collections.abc import Generator, Iterable, Mapping
+    from collections.abc import Callable, Generator, Iterable, Mapping
     from types import TracebackType
 
     from fujilib.devices.analyzer import Analyzer
     from fujilib.devices.capability import Availability
     from fujilib.devices.decode import RegisterValue
+    from fujilib.devices.keys import (
+        CalibrationGas,
+        KeyPress,
+        RemoteCalibration,
+        RemoteCalibrationResult,
+        RunState,
+    )
     from fujilib.devices.models import (
         AdcValues,
         AnalyzerMetadata,
@@ -51,12 +61,14 @@ if TYPE_CHECKING:
         ManualCalibrationEvent,
         ManualCalibrationKind,
         ManualCalibrationPlan,
+        PanelObservation,
     )
     from fujilib.devices.profile import DeviceProfile
     from fujilib.devices.reads import ClockReading
     from fujilib.devices.session import Session
     from fujilib.devices.settings import ApplyReport, SettingsDiff, SettingsDocument
     from fujilib.devices.snapshot import FujiDeviceSnapshot
+    from fujilib.devices.steadiness import SteadinessRule, SteadinessVerdict
     from fujilib.devices.writes import WriteResult
     from fujilib.protocol.base import ProtocolKind
     from fujilib.registry.channels import ChannelId, Gas
@@ -64,7 +76,7 @@ if TYPE_CHECKING:
     from fujilib.registry.units import Unit
     from fujilib.transport.base import SerialSettings, Transport
 
-__all__ = ["Fuji", "SyncAnalyzer"]
+__all__ = ["Fuji", "SyncAnalyzer", "SyncRemoteCalibration"]
 
 
 class SyncAnalyzer:
@@ -460,8 +472,137 @@ class SyncAnalyzer:
             self._anz.wait_for_manual_calibration, timeout=timeout, interval=interval, adc=adc
         )
 
+    def manual_calibration(
+        self,
+        plan: ManualCalibrationPlan,
+        *,
+        gas: CalibrationGas | Mapping[ChannelId | str, CalibrationGas],
+        confirm: bool = False,
+        rule: SteadinessRule | None = None,
+        adc: bool = False,
+        interval: float = 0.5,
+        key_timeout: float = 2.0,
+        run_timeout: float = 30.0,
+        cleanup_timeout: float = 30.0,
+    ) -> SyncRemoteCalibration:
+        """Blocking :meth:`Analyzer.manual_calibration`; use it in a ``with`` block."""
+        run = self._anz.manual_calibration(
+            plan,
+            gas=gas,
+            confirm=confirm,
+            rule=rule,
+            adc=adc,
+            interval=interval,
+            key_timeout=key_timeout,
+            run_timeout=run_timeout,
+            cleanup_timeout=cleanup_timeout,
+        )
+        return SyncRemoteCalibration(run, self._portal)
+
     def __repr__(self) -> str:
         return "<Sync" + repr(self._anz).removeprefix("<")
+
+
+class SyncRemoteCalibration:
+    """A blocking view of a :class:`~fujilib.devices.keys.RemoteCalibration`.
+
+    Its ``with`` block enters and leaves the run on the portal's loop, so the
+    cleanup runs there however the block is left. Every call is interruptible
+    (:meth:`SyncPortal.call_interruptible`): Ctrl-C cancels it on the loop and
+    waits for it to finish before the block is left, so a key it was about to
+    send is not sent afterwards, and Ctrl-C while entering still cleans up.
+    ``progress`` callbacks are called on the loop's thread.
+    """
+
+    def __init__(self, run: RemoteCalibration, portal: SyncPortal) -> None:
+        """Wrap ``run``, whose analyzer's loop is ``portal``'s."""
+        self._run = run
+        self._portal = portal
+
+    def __enter__(self) -> Self:
+        self._portal.call_interruptible(self._run.__aenter__)
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        self._portal.call_interruptible(self._run.__aexit__, exc_type, exc, tb)
+
+    @property
+    def run(self) -> RemoteCalibration:
+        """The async run; its coroutines must run on the portal."""
+        return self._run
+
+    @property
+    def plan(self) -> ManualCalibrationPlan:
+        """:attr:`RemoteCalibration.plan`."""
+        return self._run.plan
+
+    @property
+    def gases(self) -> Mapping[ChannelId, CalibrationGas]:
+        """:attr:`RemoteCalibration.gases`."""
+        return self._run.gases
+
+    @property
+    def rule(self) -> SteadinessRule:
+        """:attr:`RemoteCalibration.rule`."""
+        return self._run.rule
+
+    @property
+    def state(self) -> RunState:
+        """:attr:`RemoteCalibration.state`."""
+        return self._run.state
+
+    @property
+    def observation(self) -> PanelObservation | None:
+        """:attr:`RemoteCalibration.observation`."""
+        return self._run.observation
+
+    @property
+    def steadiness(self) -> SteadinessVerdict | None:
+        """:attr:`RemoteCalibration.steadiness`."""
+        return self._run.steadiness
+
+    @property
+    def keys(self) -> tuple[KeyPress, ...]:
+        """:attr:`RemoteCalibration.keys`."""
+        return self._run.keys
+
+    @property
+    def event(self) -> ManualCalibrationEvent | None:
+        """:attr:`RemoteCalibration.event`."""
+        return self._run.event
+
+    @property
+    def result(self) -> RemoteCalibrationResult | None:
+        """:attr:`RemoteCalibration.result`."""
+        return self._run.result
+
+    def read(self, *, timeout: float | None = None) -> SteadinessVerdict:
+        """Blocking :meth:`RemoteCalibration.read`."""
+        return self._portal.call_interruptible(self._run.read, timeout=timeout)
+
+    def wait_steady(
+        self,
+        *,
+        timeout: float | None = None,
+        progress: Callable[[SteadinessVerdict], object] | None = None,
+    ) -> SteadinessVerdict:
+        """Blocking :meth:`RemoteCalibration.wait_steady`."""
+        return self._portal.call_interruptible(
+            self._run.wait_steady, timeout=timeout, progress=progress
+        )
+
+    def calibrate(self, *, confirm: bool = False) -> ManualCalibrationEvent:
+        """Blocking :meth:`RemoteCalibration.calibrate`."""
+        return self._portal.call_interruptible(self._run.calibrate, confirm=confirm)
+
+    def cancel(self) -> ManualCalibrationEvent | None:
+        """Blocking :meth:`RemoteCalibration.cancel`."""
+        return self._portal.call_interruptible(self._run.cancel)
 
 
 class Fuji:
