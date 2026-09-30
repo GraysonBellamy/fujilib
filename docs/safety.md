@@ -224,10 +224,18 @@ records what happened:
   deviation from the calibration gas.
 
 Settings writes and commands are refused while a manual calibration is under
-way at the panel, as they are during any calibration. Pressing keys over
-Modbus, to start a zero or span from the host, is planned only for the
-calibration keys, never the keys that open the menus, and only after a
-prototype on the bench (design §6.5).
+way at the panel, as they are during any calibration. Return to measurement is
+the exception, and **it does not cancel a manual calibration**. On the
+development analyzer, sent while the panel waited for the zero gas, it brought
+the display back to the measurement screen but left the channel's calibration
+flag set. Nothing at the panel showed it. The flag stayed set until the
+operator entered that channel's wait step again and pressed ESC. Cancel a
+manual calibration with ESC on its wait step (protocol findings §18.4).
+
+Pressing keys over Modbus, to start a zero or span from the host, is planned
+only for the calibration keys, never the keys that open the menus (design
+§6.5). A prototype on the bench showed that a key written over Modbus acts as
+the same key at the panel, and that key lock stops it (protocol findings §18).
 
 ## On the command line
 

@@ -25,7 +25,7 @@ description: Architecture, design decisions, and phased implementation plan for 
 > recording is outstanding; 0.1.0 follows it. Phase 7 (the front panel) was reopened by
 > the owner on 2026-09-29 (§13.1 #71). Its first part, watching manual calibrations
 > made at the panel, is done on the simulator and on the bench analyzer, and goes into
-> 0.1.0.
+> 0.1.0. The key prototype ran on the bench on 2026-09-30 (findings §18).
 >
 > - **Where statements come from.** Statements about the device come from the three
 >   manuals in `docs/manuals/` (§14) and are marked **[manual]**. The bench analyzer was
@@ -383,7 +383,7 @@ Input registers (FC04).
 | 00B4–00B6 | 30181–30183 | display state: screen, manual-calibration step (on the measurement screen; **[bench]** a menu's page number elsewhere), top channel |
 | 00B9 | 30186 | "do not use"; **[bench]** the last manual calibration: 0 once a channel is selected, 4 while it runs, 6 when it has finished |
 | 00BC, 00BE | 30189, 30191 | manual-calibration cursor channel; alarm 6 state |
-| 00BD | 30190 | not listed; **[bench]** the key being pressed, in 42001's key codes |
+| 00BD | 30190 | not listed; **[bench]** the key being pressed at the panel, in 42001's key codes; a key written to 42001 does not show (findings §18.1) |
 | 0425–0447 | 31062–31096 | per (c, r): number of ranges, unit, range value, decimal point |
 | 0448–0469 | 31097–31130 | type code digits 1–26; board code digits 1–8 |
 | 047A–047C | 31147–31149 | type code digits 27–29 |
@@ -453,6 +453,11 @@ panel's forced stop of an auto calibration or auto zero calibration works only w
 key lock is off (ZPA manual p.55–57, p.62). The key register also reaches maintenance
 and factory mode (§6.5), so fujilib will write it only for the calibration keys
 (Phase 7C), and until then does not write it at all.
+
+**[bench]** A key written to 42001 acts as the same key at the panel, within a tenth
+of a second, unless key lock is on, which swallows it (findings §18). 42002 returns
+the display to measurement from a manual calibration's wait step, but leaves the
+channel's calibration flag set (findings §18.4).
 
 A command's reply confirms that the analyzer accepted it, not that it finished
 (TN5A1190a p.11, p.17). Input 30049 is one flag for auto calibration and auto zero
@@ -1319,8 +1324,9 @@ key simulation out. The owner reopened it on 2026-09-29 (§13.1 #71):
 
 The work is staged (§12, Phase 7). **Watching** manual calibrations made at the panel
 needs no key (7A). The step, the flags, 00B9h and 00BDh show the whole sequence
-(§2.6, findings §14). **Driving** one (7C) comes after a key prototype (7B), and answers
-the first design's four reasons as follows:
+(§2.6, findings §14). **The key prototype** (7B) showed on the bench that a key written
+to 42001 acts as the same key at the panel (findings §18). **Driving** a calibration
+(7C) answers the first design's four reasons as follows:
 
 1. **The same keys reach factory mode.** Maintenance mode is behind MODE, a menu and a
    password entered with SIDE; its default is 0000, and it can change the station
@@ -1334,8 +1340,9 @@ the first design's four reasons as follows:
 3. **Gas stability can't be judged over Modbus while output hold is on.** The
    concentrations are held during a calibration then (ZPA p.64). With hold off they are
    live (findings §14), and a steadiness rule (§13.1 #78) watches them. Where hold is
-   on, the rule falls back to the raw A/D counts, if the prototype shows those stay
-   live. The operator names the gas; fujilib compares it with the calibration-gas
+   on, the rule would fall back to the raw A/D counts, if those stay live. The
+   prototype's hold step was not run (findings §18.7), so that is still open (#86).
+   The operator names the gas; fujilib compares it with the calibration-gas
    setting, and the reading with the gas, before the calibrating key.
 4. **The scope is wider than the call.** "At once" zeroes every channel set to it
    together, and "both" calibrates both ranges (§2.6). `plan_manual_calibration()`
@@ -1343,22 +1350,41 @@ the first design's four reasons as follows:
    and the run stops if it has changed.
 
 **How keys are sent.** Every key is one locked operation:
-1. read the step;
+1. read the screen, the step, the cursor and the flags, and refuse unless the step
+   allows the key;
 2. write the key once, never retried;
-3. read until the step, the key register (00BDh) and the flags show that it took.
+3. read until the step, the cursor and the flags show that it took.
+
+On the bench the change was there by the first read after the reply, and a flag at
+most one read later (findings §18.1). 00BDh shows only keys pressed at the panel, so it
+cannot confirm fujilib's own keys.
+
+- **Key lock** swallows a key written over Modbus, although the analyzer acknowledges
+  it, and the analyzer then answers nothing for about two seconds (findings §18.6).
+  fujilib reads key lock (40074) before the first key and refuses while it is on
+  (#85).
+- **The cursor** wraps round at both ends. ZERO or SPAN may open it where it was left,
+  or on Ch1: that happened after a 42002 and after a long pause (findings §18.2).
+  fujilib reads the cursor after every key and moves it towards the planned position.
+  Channels zeroed "at once" share a position, which reads as its first channel when
+  approached going down and its last going up. fujilib approaches it going down, as on
+  the bench, and sends ENT only when the cursor is on the planned position.
 
 Anything unexpected stops the run, and the cleanup depends on the step it stopped on:
 
 | Step | Cleanup |
 |---|---|
-| channel selection, wait | ESC, which returns to measurement |
+| channel selection | ESC, which returns to measurement |
+| wait | ESC, which returns to measurement and clears the flags; never 42002, which returns the display but leaves the flag set (findings §18.4) |
 | running | wait for the analyzer to finish |
 | error display | ESC |
 | any other screen | 42002 only |
 
 Cleanup runs shielded, with its own deadline, as the read-back does. It checks that the
 flags have cleared as well as the screen: returning the display to measurement is not
-proof that a calibration stopped.
+proof that a calibration stopped (findings §18.4). A flag still set on the measurement
+screen raises and names the channel. The recovery the bench showed is to enter that
+channel's wait step and press ESC. fujilib leaves that recovery to the operator (#84).
 
 **Records.** A calibration, watched or driven, is recorded as a `ManualCalibrationEvent`
 (§8):
@@ -2657,11 +2683,17 @@ cancelled. Found while building it and on the bench:
 - A cancelled calibration first reported a deviation from the calibration gas
   it never used; an event now reports deviations only when it ran.
 
-**7B — Key prototype** (one attended session, authorized separately, #79):
+**7B — Key prototype** (**done 2026-09-30**; one attended session, authorized
+separately, #79, #82):
 
 - `scripts/probe_panel.py`, on `anymodbus` directly as the probes of Phase 2 were. It
-  sends only ZERO, SPAN, UP, DOWN, the ENT that selects a channel, and ESC, to 42001.
-  It never sends MODE, SIDE, or the ENT that starts a calibration.
+  sends only ZERO, SPAN, UP, DOWN, the ENT that selects a channel, and ESC, to 42001,
+  and 1 to 42002. It never sends MODE, SIDE, or the ENT that starts a calibration.
+  - Its one write takes an address and a value from a fixed list.
+  - It reads the panel before every key and refuses a key the step does not allow.
+  - It cleans up for the step it stops on.
+  - `probe_panel.py check` runs every experiment, refusal and cleanup path on the
+    simulator through an in-process fake station.
 - It answers:
   - whether a key written to 42001 acts, and shows in 00BDh, as a key pressed at the
     panel;
@@ -2672,20 +2704,71 @@ cancelled. Found while building it and on the bench:
   display, the "at once" pair, a "both" channel, and output hold, with the A/D values
   watched under hold.
 
-*Exit:* findings §15, and the design of 7C revised from them and estimated.
+*Exit:* findings §18, and the design of 7C revised from them and estimated.
+
+*Exit met* on 2026-09-30, 12:56–13:12 UTC (findings §18). Eight experiments sent
+40 keys and two 42002, and nothing was calibrated. What it found:
+
+- **A key written to 42001 acts** as the same key at the panel. The change shows by
+  the first read after the reply, within about 0.1 s.
+- **It never shows in 00BDh**, which reflects the keys pressed at the panel only.
+- **Key lock swallows it**, although the analyzer acknowledges it, and the analyzer
+  is then silent for about two seconds.
+- **The cursor wraps round.** The "at once" pair's position reads Ch1 or Ch2 by the
+  direction it was reached from. ZERO sometimes opens it on Ch1.
+- **42002 on a wait step returns the display but leaves the flag set.** No timeout
+  cleared it; the operator's ESC on that channel's wait step did.
+- **The "at once" pair:** ENT on its position sets the zero flags of Ch1 and Ch2,
+  not those of the absent Ch4 and Ch5.
+
+Left open, and not in the session:
+
+- the backlight and output hold, prepared as `probe_panel.py backlight` and `hold`
+  and not run, at the owner's choice;
+- the error display and a "both" channel, which need a real calibration.
 
 **7C — Remote manual zero and span** (after 0.1.0):
 
 - The key driver of §6.5 in `devices/panel.py`: `manual_calibration(plan,
   confirm=True)`, an async context manager that cleans up for the step it stops on.
   The key that starts the calibration is `DANGEROUS`; the other keys are `STATEFUL`.
+  From 7B (findings §18):
+  - a key is confirmed by the step, the cursor and the flags, never by 00BDh;
+  - the cursor is read after every key and moved with the wrap-round, approaching an
+    "at once" position going down;
+  - key lock is read first and refused (#85);
+  - a wait step is cancelled only with ESC;
+  - a flag still set after the cleanup raises (#84).
 - The write envelope gains 07D0h for the six calibration keys, with the value checked
   in the client and, independently, in the simulator (§5.4, §10).
+- The simulator's panel brought in line with findings §18:
+  - the cursor wraps round, and the "at once" position reads by direction;
+  - a key written to 07D0h acts but does not show in 30190;
+  - key lock swallows keys;
+  - 42002 on a wait step leaves the flags set;
+  - ZERO opens on Ch1 after a 42002.
+
+  `MockAnalyzer.press()` stays the operator at the panel.
 - A steadiness rule (#78) and the gas the operator names, checked against the
-  calibration-gas setting and the reading.
+  calibration-gas setting and the reading. Output hold is refused until §13.2 #38 is
+  answered (#86).
 - `fuji-calibrate`, an interactive command that walks the operator through the valves
   (#76, #77).
 - A calibration record (#75) written beside each run.
+
+*Estimate:* about 7–10 working days, plus one attended bench session of an hour or two
+with both gases:
+
+| Part | Days |
+|---|---|
+| the key driver, its cleanup and the envelope's value check | 2–3 |
+| the simulator's panel | 1 |
+| the steadiness rule and the gas checks | 1–2 |
+| `fuji-calibrate` and the record | 2–3 |
+| the docs | 1 |
+
+If #86 is settled by running the hold step first, that adds about 15 minutes at the
+panel, before the session.
 
 *Exit:*
 - the software exit as for 7A;
@@ -2707,7 +2790,7 @@ cancelled. Found while building it and on the bench:
 ### Sequencing
 
 ```
-decisions ─► Phase 0 ─► Phase 1 ─► Phase 3 ─► Phase 4 ─► Phase 5 ─► Phase 6 ─► 7A ─► 0.1.0 ─► 7B ─► 7C
+decisions ─► Phase 0 ─► Phase 1 ─► Phase 3 ─► Phase 4 ─► Phase 5 ─► Phase 6 ─► 7A ─► 7B ─► 0.1.0 ─► 7C
                             ▲         ▲           ▲
 anymodbus 0.2.1 ────────────┼─────────┘           │
 Phase 2 (bench) ────────────┴─────────────────────┘   (findings feed registry, defaults, O2 scope)
@@ -2806,11 +2889,16 @@ engineer-weeks) plus the hardware session and the soak, and the writes at anothe
 | 79 | Calibrations and keys on the bench analyzer | **Decided 2026-09-29 by the owner:** calibrations at the panel by the owner are allowed (an O2 zero and span were made, findings §14). Each session in which fujilib sends a key needs its own authorization |
 | 80 | The step register on a menu screen | **Adopted 2026-09-29 at the owner's request** ("fix the calibration tracker"), after findings §15.2. The menus put page numbers in 30182, some equal to calibration steps, and the tracker had turned a menu walk into five calibration events. 30182 is now a step only while 30181 shows measurement, as the manual defines it (TN5A1190a p.46). `PanelObservation.step` is `NONE` on any other screen, so a menu page neither starts a pass nor continues one. The decoder keeps the raw page number there. An event whose first read after it shows a menu says so in its evidence. The write refusal already checked the screen first (#63) |
 | 81 | Readings while the analyzer warms up after a power cycle | *(awaiting)* For about a minute after power-on the readings are far off, CO2 up to 220 %FS, and no flag says so (findings §15.5). A recording with `--reconnect` rides out the outage and keeps these rows with state `ok`. Options: (a) leave them, and document it; (b) give the polls of a settling period after a reconnect, about 90 s, a state that is not `ok`; (c) detect the warm-up from the analyzer, but nothing found so far marks it. The only trace of a power cycle is that 00B9h and the cursor read 0, which they may do anyway. Recommendation: (b), since a USB unplug and a power cut look the same from the host |
+| 82 | The key prototype's session | **Decided 2026-09-30 by the owner:** authorized, with the owner at the panel (#79). Experiments 1-8 of `docs/hardware-test-day.md` ran, key lock included; the backlight and output-hold steps did not. Zero gas was at the inlet for the zero experiments and air for the span one. When 42002 left Ch3's zero flag set, the owner chose to clear it at the panel (ZERO, O2, ENT, ESC) rather than by a power cycle (findings §18.4) |
+| 83 | `return_to_measurement()` during a manual calibration | *(awaiting)* 42002 on a manual calibration's wait step returns the display to measurement but leaves the channel's flag set, and nothing at the panel shows it (findings §18.4). #63 lets the command through in every state, and it reports `done` on the measurement screen. Options: (a) document it only; (b) refuse it while a manual calibration's zero or span flag is set (`FujiAnalyzerStateError`, saying that ESC on the wait step cancels), and let it through on menus and channel selection as now; (c) as now, but not `done` while such a flag is set. Recommendation: (b), before 0.1.0, since the command is in the release |
+| 84 | How a remote calibration cancels and recovers (7C) | *(awaiting, 7C)* Recommendation: ESC is the only cancel on a wait step, never 42002 (findings §18.4). A flag still set on the measurement screen after the cleanup raises `FujiAnalyzerStateError`, naming the channel and the recovery: enter its wait step and press ESC. fujilib does not attempt that recovery itself; it would need ZERO or SPAN while a flag is set, which the driver otherwise refuses |
+| 85 | Key lock and remote keys (7C) | *(awaiting, 7C)* Recommendation: read key lock (40074) before the first key, and refuse while it is on. Its keys are acknowledged and swallowed, and the analyzer is then silent for about two seconds (findings §18.6) |
+| 86 | Output hold and remote calibration (7C) | *(awaiting, 7C)* Whether the readings and the A/D values freeze under hold is still open (§13.2 #38). Options: (a) run `probe_panel.py hold` before 7C's bench session, and design the steadiness rule under hold from it; (b) refuse a remote calibration while output hold is on. Recommendation: (b) until (a) has run |
 
 ### 13.2 Hardware verification
 
-Answered by the read-only probes of 2026-09-28 and the writes of 2026-09-29. Details
-and data are in [protocol-findings.md](protocol-findings.md).
+Answered by the read-only probes of 2026-09-28, the writes of 2026-09-29 and the keys
+of 2026-09-30. Details and data are in [protocol-findings.md](protocol-findings.md).
 
 | # | Question | Result |
 |---|---|---|
@@ -2835,6 +2923,7 @@ and data are in [protocol-findings.md](protocol-findings.md).
 | 32 | Whether the analyzer refuses, clamps or stores a value outside a setting's documented range | **It stores it** (2026-09-29, findings §13.6). 61 and 0 written to the response time of NDIR component 4 were acknowledged without an exception and read back as written; fujilib's limits are the only guard. One register tried, of an absent component |
 | 35 | What a manual calibration at the panel leaves in the registers | Done 2026-09-29 (findings §14), watched read-only while the owner zeroed and spanned O2 and cancelled a zero. No holding word changes, the factory blocks included. The step register, the per-channel zero and span flags, 00B9h (the last calibration) and 00BDh (the key being pressed) follow it; the detector's A/D count is not changed by it. fujilib's own watcher then recorded a zero, a span and a cancel as they happened (findings §16) |
 | 40 | What the undocumented registers hold | Done 2026-09-29 (findings §15), read-only, while the owner walked the menus and power-cycled the analyzer. 30182 numbers menu pages off the measurement screen (#80). 046Ah–0471h are the unsmoothed detector counts. The factory blocks hold the "other parameters" at 0C2Dh–0C34h, but no calibration coefficients, and they did not change across a power cycle. The readings are wrong for about a minute after power-on, with no flag set (#81). The register capture of 2026-09-28 has one bad word, 0440h |
+| 39 | Whether a key written to 42001 acts, and shows in 00BDh, as a key pressed at the panel; whether key lock swallows it | Done 2026-09-30 (findings §18), with `scripts/probe_panel.py` and the owner at the panel. It acts, by the first read after the reply (within about 0.1 s). It never shows in 00BDh. Key lock swallows it, and the analyzer is then silent for about 2 s. 42002 on a wait step leaves the flag set. The cursor wraps round. The backlight was not tested |
 | 34 | Setting writes and commands on the analyzer | Done 2026-09-29 (findings §13). The current range lags a verified range write by tens of milliseconds (findings §13.2), so a range write now waits for it (#70); with that, 10 of 10 stateful tests pass (findings §13.8). A menu at the panel refuses writes, and return to measurement closes it. Every setting matched the saved ones at the end |
 
 Still open:
@@ -2868,17 +2957,24 @@ Still open:
     valve-drive option, and whether 30049 covers the hold extension. *Never on the bench
     unit; a unit with the option and plumbed gases.*
 36. A manual calibration that fails: the error display (step 10), what 00B9h and the
-    flags show, and whether ENT forces it (§2.8). *Phase 7B, at the panel.*
-37. A manual zero of the "at once" pair, and of a channel set to "both": which flags
-    are set, and which ranges change. *Phase 7B, at the panel.*
+    flags show, and whether ENT forces it (§2.8). *Needs a real calibration that
+    fails; not in the key prototype. The owner's call.*
+37. Which ranges a manual zero of the "at once" pair changes, and a channel set to
+    "both": its flags and ranges. *Needs a real calibration.* ENT on the pair's
+    position sets the zero flags of Ch1 and Ch2, not those of the absent Ch4 and Ch5
+    (findings §18.5).
 38. Output hold during a manual calibration: whether the readings and the A/D values
-    freeze (ZPA p.64 says the readings do). *Phase 7B, at the panel.*
-39. Whether a key written to 42001 acts, and shows in 00BDh, as a key pressed at the
-    panel; whether key lock or the backlight swallows it. *Phase 7B, the key
-    prototype.*
+    freeze (ZPA p.64 says the readings do). *Prepared as `scripts/probe_panel.py hold`;
+    not run on 2026-09-30 (#86).*
+39. ~~Whether a key written to 42001 acts, and shows in 00BDh, as a key pressed at the
+    panel; whether key lock swallows it~~: it acts, never shows in 00BDh, and key lock
+    swallows it (table above). Whether the backlight swallows it is still open.
+    *Prepared as `scripts/probe_panel.py backlight`.*
 41. What 00B7h, 00B8h, 00BAh, 00BBh, 00BFh–00C1h and 0472h–0478h mean, why each
     detector count at 046Ah–0471h appears twice, and the rest of the factory blocks
     (findings §15.7). *No plan: nothing depends on them.*
+42. Why ZERO sometimes opens with the cursor on Ch1: after a 42002, and after a long
+    pause (findings §18.2). *No plan: the key driver reads the cursor instead.*
 29. ~~Trio with a real Windows COM port (§4.7 item 14)~~ — fixed in `anyserial` 0.2.0;
     the hardware tests pass on trio on the bench (findings §10.4). *Linux and macOS
     untested.*

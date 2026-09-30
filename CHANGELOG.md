@@ -78,6 +78,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   meanwhile; `scripts/probe_unknowns.py`, which sends the read-only diagnostic
   function codes once each and watches the display words no manual explains;
   `examples/watch_manual_calibration.py`.
+- `scripts/probe_panel.py`, a bench probe that presses front-panel keys over
+  Modbus without calibrating. It sends ZERO, SPAN, UP, DOWN, ESC and the ENT that
+  selects a channel to 42001, and return to measurement. It reads the panel before
+  each key and refuses a key the step does not allow, and cleans up for the step it
+  stops on. `probe_panel.py check` runs it against the simulator. The procedure is
+  in `docs/hardware-test-day.md`, and the bench results are protocol findings §18.
 - Setting writes: `Analyzer.write_parameter(name, value, *, unit=None, confirm=False)`
   and `set_response_time`, `set_output_hold`, `set_hold_mode`, `set_hold_value`,
   `set_range`, `set_range_method` and `set_calibration_gas`. Everything above

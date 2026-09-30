@@ -1,5 +1,5 @@
 ---
-description: What the bench Fuji ZPA analyzer actually does on the wire, measured read-only from 2026-09-28 and with writes on 2026-09-29, and where it differs from the MODBUS manual.
+description: What the bench Fuji ZPA analyzer actually does on the wire, measured read-only from 2026-09-28, with writes on 2026-09-29 and with front-panel keys on 2026-09-30, and where it differs from the MODBUS manual.
 ---
 
 # Protocol findings — bench ZPA, 2026-09-28
@@ -11,7 +11,9 @@ codes were sent; no register was written and no command was issued. §13 records
 first writes and commands, made in a session the owner authorized and attended. §14
 records a calibration the owner made at the front panel, watched read-only, and §15 a
 read-only session on what the registers still left unexplained. §16 is fujilib's own
-watch of a panel calibration, and §17 what the factory-mode screens showed.
+watch of a panel calibration, and §17 what the factory-mode screens showed. §18
+records the first front-panel keys written over Modbus, in a session the owner
+authorized and attended.
 
 This document records what was **observed**. The manual is INZ-TN5A1190a-E unless noted.
 Addresses are relative (on-the-wire) hexadecimal. Raw results are in `probe_out/`
@@ -898,6 +900,8 @@ vol% in 18 s and reached 20.68 about 36 s after the change. It then stayed withi
   manual calibration (ZPA p.64 says the readings do).
 - Whether a key written to 42001 acts, and shows in 00BDh, as a key at the panel.
 
+§18 answers the last item, and the "at once" pair's flags.
+
 ## 15. What the registers left unexplained (2026-09-29)
 
 A read-only session at 18:04–18:16 UTC set out to explain the words the analyzer
@@ -1215,3 +1219,153 @@ the list above is taken as right. The other numbers seen in §15 (1, 2, 12, 13, 
   cell. It also expects 18,000–22,000 counts on zero gas, where this cell reads about
   634. How −99366 relates to the zero count is not known. One value cannot say; the
   coefficient read again after another O2 zero, with that zero's count, would.
+
+## 18. Front-panel keys written over Modbus (2026-09-30)
+
+The key prototype of design §12 Phase 7B, 12:56–13:12 UTC. The owner authorized the
+session and stood at the front panel throughout. `scripts/probe_panel.py` wrote key
+codes to 42001 and 1 to 42002, and after each write read the panel until it settled,
+about 12 times a second.
+
+- **What it sent:** ZERO, SPAN, UP, DOWN, ESC, and the ENT that selects a channel. It
+  never sent the ENT that starts a calibration, MODE or SIDE, and each key went only
+  after a read of the step showed it allowed.
+- **Nothing was calibrated.** 00B9h stayed 0 and no step read "running".
+- **Nothing else changed.** All 162 settings read the same at the end as in the dump
+  taken before the first key. No holding word changed while §18.4's flag was cleared.
+- **The gases:** zero gas at the inlet for the zero experiments and air for the span
+  one, at the owner's choice. A calibration started by mistake would then have used
+  the right gas.
+- **Setup:** `COM8`, station 1, `anymodbus` 0.3.0, `anyserial` 0.2.0, `anyio` 4.15.1,
+  Python 3.13.13, Windows 11.
+- **Raw files** (git-ignored):
+  - `probe_out/probe_panel_<experiment>_20260930T*.json`, one per run;
+  - `probe_out/calwatch_20260930T130351Z/`, the read-only watch of §18.4;
+  - `probe_out/settings_before_keys_20260930.json`, and
+    `probe_out/settings_diff_close_keys_20260930.txt` for the closing diff.
+
+| UTC | Experiment | Written | Steps (30182) |
+|---|---|---|---|
+| 12:56:45 | `select-esc` | ZERO, ESC, SPAN, ESC | 0 → 4 → 0, then 0 → 7 → 0 |
+| 12:57:30 | `cursor` | ZERO, DOWN ×3, UP ×3, ESC; SPAN, DOWN ×3, UP ×3, ESC | 4 and 7 throughout; the cursor in §18.2 |
+| 13:01:14 | `zero-cancel` | ZERO, DOWN, ENT, ESC | 0 → 4 → 5 → 0; Ch3's zero flag on at 5, off with the step |
+| 13:01:29 | `return-select` | ZERO, 42002 | 0 → 4 → 0 |
+| 13:01:44 | `return-wait` | ZERO, DOWN, ENT, 42002 | 0 → 4 → 5 → 0; **Ch3's zero flag stayed on** (§18.4) |
+| 13:09:05 | `at-once` | ZERO, UP, UP, DOWN, ENT, ESC | 0 → 4 → 5 → 0; the zero flags of Ch1 and Ch2 (§18.5) |
+| 13:10:37 | `span-cancel` | SPAN, DOWN, DOWN, ENT, ESC | 0 → 7 → 8 → 0; Ch3's span flag on at 8, off one read after the step |
+| 13:11:25 | `key-lock` | ZERO, with key lock on | none: key lock swallowed it (§18.6) |
+
+The experiments ran in the planned order except `span-cancel`. It was moved after the
+zero experiments so the gas changed once. The `backlight` and `hold` experiments were
+prepared and not run, at the owner's choice.
+
+### 18.1 A key written to 42001 acts as the same key at the panel
+
+- **Every write was acknowledged** with the normal echo in 24–41 ms: 40 keys and two
+  42002. There was no exception reply and no lost reply.
+- **The analyzer did what the key does at the panel.** ZERO and SPAN opened channel
+  selection, UP and DOWN moved the cursor, ENT selected the channel and opened the
+  wait step, and ESC went back.
+- **The change was there by the first read after the reply**, in every case but one.
+  That read ended 105–132 ms after the write was sent, and reads came about every
+  82 ms. So a key takes effect well within a tenth of a second.
+- **A flag can lag the step by one read.** On the span's ESC the step read 0 at 112 ms,
+  and the span flag cleared at 199 ms. Every other flag changed in the same read as
+  the step.
+- **00BDh never showed a key written over Modbus.** It read 0 in all 500 reads after
+  the writes. The owner's presses at the panel in the same session showed in it as on
+  2026-09-29 (§14.2): 64, 16, 8 and 32, each for one read at 0.5 s. So 00BDh is the key
+  pressed at the panel only, and a program cannot confirm its own key from it.
+
+### 18.2 The cursor wraps round
+
+On channel selection the cursor (30189) wraps at both ends:
+
+- **For a span** it offers Ch1, Ch2 and Ch3. DOWN from Ch3 goes to Ch1, and UP from Ch1
+  to Ch3.
+- **For a zero** it offers two positions: Ch1 and Ch2 together, which are zeroed "at
+  once", and Ch3. The absent Ch4 and Ch5, also set to "at once", are not offered.
+  - The pair's position reads **Ch1 when reached going down** (DOWN from Ch3, which
+    wraps round) and **Ch2 when reached going up** (UP from Ch3). The owner saw Ch1
+    and Ch2 highlighted together both ways.
+  - UP from the pair wraps round to Ch3.
+
+**Where ZERO opens.** It usually opened with the cursor where it was left, as on
+2026-09-29. Three times it opened on Ch1 instead:
+
+- the first ZERO of the session, after 18 hours without a key;
+- the probe's ZERO at 13:01:44, the first after a 42002;
+- the owner's ZERO at the panel at 13:04:49, the first after another 42002.
+
+ESC never had that effect. Why it happens is not known. SPAN was never opened after a
+42002 or a long pause. A program has to read the cursor after ZERO or SPAN; it cannot
+predict it.
+
+### 18.3 ESC and 42002 from channel selection and the wait step
+
+| From | ESC | 42002 |
+|---|---|---|
+| channel selection (step 4 or 7) | the measurement screen | the measurement screen |
+| the wait step (5 or 8) | the measurement screen; the channel's flag clears | the measurement screen; **the channel's flag stays set** |
+
+Each went straight to the measurement screen, not to the step before.
+
+### 18.4 42002 on the wait step leaves the calibration flag set
+
+The 42002 at 13:01:48 returned the display to measurement, and 30182 read 0. The
+owner saw a normal measurement screen. But Ch3's zero flag (30052) stayed set:
+
+- **It did not time out.** It was still set at 13:07:45, six minutes later, beyond the
+  gas flow time of 300 s.
+- **A cancel from channel selection did not clear it.** The owner pressed ZERO, which
+  opened channel selection with the cursor on Ch1, and ESC (13:04:49–13:04:53).
+- **A cancel from the wait step did.** The owner pressed ZERO, moved to O2, pressed
+  ENT once (the wait step) and then ESC (13:08:22–13:08:28). The flag cleared with the
+  step. 00B9h stayed 0 throughout: nothing ran.
+
+So 42002 closes the display, but not the analyzer's manual calibration. While the flag
+is set, fujilib reads the channel as calibrating, and refuses setting writes (design
+§13.1 #63). An operator would see nothing wrong at the panel. On an analyzer with
+calibration valves, the calibration gas might go on flowing; this unit has none, so
+that is untested. **The way to cancel a manual calibration is ESC on its wait step, not
+42002.**
+
+### 18.5 The "at once" pair
+
+ENT on the pair's position set the zero flags of Ch1 and Ch2 (30050 and 30051). It did
+not set those of the absent Ch4 and Ch5, although they are set to "at once" too. ESC
+cleared both in the same read as the step. This answers the flags half of design
+§13.2 #37. Which ranges a completed "at once" zero changes still needs a real
+calibration.
+
+### 18.6 Key lock swallows keys written over Modbus
+
+With key lock switched on at the panel, a ZERO written to 42001 was acknowledged
+normally (25 ms), and nothing changed: the step stayed 0. Key lock does not stop
+setting writes (§13.3), but it does stop keys.
+
+The analyzer then answered no read for 1.6 s:
+
+- the next read timed out on all three attempts;
+- the one after it timed out once;
+- then a late reply to the earlier request arrived, which `anymodbus` rejected and
+  retried.
+
+Reads were normal again 2.3 s after the key. What the display
+showed meanwhile was not seen.
+
+### 18.7 Not answered here
+
+- Whether a key is swallowed while the backlight is off. The session's first ZERO
+  acted after 18 hours without a key, but whether the backlight was off then was not
+  seen.
+- Output hold during a manual calibration: whether the readings and the A/D values
+  freeze (design §13.2 #38). This is prepared as `probe_panel.py hold`.
+- The error display (§13.2 #36) and a channel set to "both" (#37). Both need a real
+  calibration.
+- Why ZERO sometimes opens on Ch1 (§18.2).
+
+In passing: O2 read 21.08–21.09 vol% on air, at 3,367–3,369 counts. The span of
+2026-09-29 at 18:30 (§16) set 20.95 at 3,349 counts, so the detector count had risen
+by about 19 counts (0.14 vol%) in 19 hours. Whether that was pressure or drift is not
+known.

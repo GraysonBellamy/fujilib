@@ -5,11 +5,16 @@ description: The procedure for running fujilib's tests against a real Fuji ZP-se
 # Hardware test day
 
 > The written procedure for the hardware tests (design §10). Each tier needs the
-> owner's authorization before it is ever run; this page covers the read-only
-> tier, the stateful one, which writes settings and restores them, and the
-> watching of a calibration the owner makes at the front panel. There are no
-> destructive tests: the bench analyzer cannot auto-calibrate. Results go to
-> [protocol-findings.md](protocol-findings.md).
+> owner's authorization before it is ever run. This page covers:
+>
+> - the read-only tier;
+> - the stateful tier, which writes settings and restores them;
+> - the watching of a calibration the owner makes at the front panel;
+> - the key prototype, which presses front-panel keys over Modbus without
+>   calibrating.
+>
+> There are no destructive tests: the bench analyzer cannot auto-calibrate.
+> Results go to [protocol-findings.md](protocol-findings.md).
 
 ## Bench facts
 
@@ -247,9 +252,180 @@ Phase 7A).
 
 The 2026-09-29 sessions recorded the same sequence with
 `scripts/probe_calibration.py` (findings §14) and then with this watcher, which
-reported the zero and span completed and the cancel cancelled (findings §16). A second channel, a channel set
-to "at once" or "both", output hold and a calibration that fails are open
-questions for the key prototype (design §12, Phase 7B).
+reported the zero and span completed and the cancel cancelled (findings §16). The
+key prototype below answered which flags the "at once" pair sets (findings §18.5).
+A channel set to "both", output hold and a calibration that fails are still open
+(design §13.2 #36-#38).
+
+## The key prototype
+
+This session finds out what a key written to 42001 does before fujilib drives
+a manual calibration itself (design §6.5, §12 Phase 7B).
+`scripts/probe_panel.py` presses front-panel keys over Modbus, one experiment
+per run. It needs the owner's authorization for the session, with the owner at
+the front panel throughout (design §13.1 #79). **Nothing in it calibrates.**
+
+| Allowed | Not allowed |
+|---|---|
+| `scripts/probe_panel.py`, one experiment at a time | MODE and SIDE, which open the menus and enter their passwords; two keys at once |
+| ZERO, SPAN, UP, DOWN and ESC; ENT on channel selection, where it selects the channel | ENT on a wait step, where it starts the calibration, or on the error display, where it can force one (ZPA p.89) |
+| 42002, return to measurement | 42003-42005: auto calibration, auto zero, blowback |
+| Output hold switched on for the hold step and off after it, with `fuji-configure apply` | Any calibration. The error display and a channel set to "both" need one (design §13.2 #36, #37), so they are left out |
+| | Any other register write |
+
+The probe enforces this itself:
+
+- Its one write takes an address and a value from a fixed list: the six keys to
+  42001, and 1 to 42002.
+- It reads the panel just before every key, and refuses a key the step does not
+  allow. ENT also needs the cursor on the channel the experiment names.
+- A key is sent once and never repeated. A lost reply is settled by reading the
+  panel.
+- After each key it reads the step, the cursor, the zero, span and hold flags,
+  00B9h and 00BDh until they settle, and records when each changed.
+- Anything unexpected ends the experiment, and a cleanup follows:
+  - ESC on channel selection, a wait step or the error display;
+  - a wait while a calibration runs;
+  - 42002 on any other screen.
+
+  It then checks the flags, not only the screen. It sends each of its keys
+  once, and not at all if the experiment has just sent the same key on the same
+  step.
+
+**At the panel:**
+
+- Keep your hands off the keys while an experiment runs. The probe reads the
+  step just before each key, so a key pressed at the panel between that read
+  and the write lands on a step it did not check.
+- If it is practical, have zero gas at the inlet for the zero experiments and
+  span gas for the span ones. Then even a calibration started by mistake would
+  be made on the right gas. The probe never sends the ENT that calibrates, so
+  this is a second line of defence, not a requirement.
+- Say what the display shows where the probe cannot see it: the backlight, a
+  key-lock message.
+
+### Before the first key
+
+1. Pre-flight as for the read-only session. Check the process list: no
+   recording, soak monitor or probe has `COM8` open.
+2. Check the probe on the simulator. It opens no port and must end with
+   `every check passed`:
+
+   ```bash
+   uv run python scripts/probe_panel.py check
+   ```
+
+3. Save the settings:
+
+   ```bash
+   fuji-configure dump COM8 --out probe_out/settings_before_keys.json
+   ```
+
+4. Read the panel and the settings the experiments depend on. This reads only:
+
+   ```bash
+   uv run python scripts/probe_panel.py --port COM8 status
+   ```
+
+   Expected:
+   - the measurement screen, step 0, no calibration or hold flag set;
+   - key lock off and output hold off;
+   - Ch3 zeroed on its own ("each"), and Ch1 and Ch2 zeroed "at once".
+
+### The experiments
+
+Run each in this order, one at a time:
+
+```bash
+uv run python scripts/probe_panel.py --port COM8 <experiment> --confirm
+```
+
+| # | Experiment | Keys sent | Expected | What it answers |
+|---|---|---|---|---|
+| 1 | `select-esc` | ZERO, ESC; SPAN, ESC | step 0 → 4 → 0, then 0 → 7 → 0; no flag set | whether a key acts, whether it shows in 00BDh, how soon the step follows; ESC from channel selection |
+| 2 | `cursor` | ZERO, DOWN ×3, UP ×3, ESC; then the same after SPAN | a zero offers the Ch1 position (Ch1 and Ch2 "at once") and Ch3; a span offers Ch1, Ch2 and Ch3 | whether the cursor stops at the ends or wraps round |
+| 3 | `zero-cancel` | ZERO, UP or DOWN to Ch3, ENT, ESC | step 5 with Ch3's zero flag only, 00B9h at 0; ESC gives step 0 with the flag clear | the channel-selecting ENT, and ESC from the wait step |
+| 4 | `span-cancel` | SPAN, to Ch3, ENT, ESC | step 8 with Ch3's span flag only; ESC gives step 0 with the flag clear | the same for a span |
+| 5 | `return-select` | ZERO, 42002 | not known | what 42002 does on channel selection |
+| 6 | `return-wait` | ZERO, to Ch3, ENT, 42002 | the measurement screen with **Ch3's zero flag left set** (findings §18.4); clear it at the panel: ZERO, O2, one ENT, ESC | what 42002 does on a wait step, and whether the flag clears with the step |
+| 7 | `at-once` | ZERO, UP to the Ch1 position, ENT, ESC | step 5 with the zero flags of Ch1 and Ch2, perhaps also of the absent Ch4 and Ch5; ESC clears them all | design §13.2 #37, the "at once" pair |
+| 8 | `key-lock` | ZERO, then ESC if it opened channel selection | not known | whether key lock stops a key written over Modbus |
+| 9 | `backlight` | ZERO, then ESC if it opened channel selection | not known | whether a key is swallowed while the backlight is off |
+| 10 | `hold` | ZERO, to Ch3, ENT; 120 s on the wait step; ESC | see below | design §13.2 #38 |
+
+**Key lock (8).** Switch key lock on at the front panel (Parameter Setting),
+return to the measurement screen, and run the step. Say what the display does.
+Switch key lock off afterwards.
+
+**Backlight (9).** Let the backlight go off. Its timer is set in Parameter
+Setting, 1-60 minutes; set it as you prefer, and put it back afterwards. Run
+the step without touching the panel, and say whether the backlight came on.
+
+**Output hold (10).** Switch output hold on with a one-setting document, then
+run the step in the background: it takes up to 10 minutes.
+
+```bash
+fuji-configure apply COM8 --file probe_out/output_hold_on.json --confirm
+uv run python scripts/probe_panel.py --port COM8 hold --confirm
+```
+
+`output_hold_on.json` is
+`{"format": "fujilib-settings/1", "settings": {"output_hold.enabled": true}}`.
+
+1. Start with span gas (air) at the inlet.
+2. When the panel shows the zero wait screen for Ch3, switch to zero gas. The
+   probe reads the readings and the A/D values for 120 s (`--dwell`), then
+   sends ESC.
+3. After ESC it reads on until the hold flag clears, for at most 7 minutes
+   (`--hold-watch`). After a calibration is cancelled, the analyzer holds the
+   outputs for the hold extension (ZPA p.66 e.), and this unit's gas flow times
+   are all 300 s.
+4. Keep the zero gas until the probe ends, then switch back to air.
+5. Switch output hold off with the same document set to `false`.
+
+Expected (ZPA p.67): the Modbus readings stay at their value from before the
+hold, while the O2 A/D count follows the gas. That would let the steadiness
+rule use the counts where hold is on (design §13.1 #78). To end the watching
+early, create `probe_out/probe_panel.stop`: the probe sends the ESC and stops.
+
+### Closing
+
+Compare with the saved settings; nothing may be written. Then read the panel:
+
+```bash
+fuji-configure diff COM8 --file probe_out/settings_before_keys.json
+uv run python scripts/probe_panel.py --port COM8 status
+```
+
+Every setting must be unchanged, and the panel on measurement with no flag set.
+
+### When something is unexpected
+
+- An experiment that ends `unexpected`, or a cleanup that ends `NOT CLEAN`,
+  stops the session. Look at the panel. Run nothing more until `status` shows
+  the measurement screen with no flag set.
+- If a flag stays set on the measurement screen, the probe sends nothing more,
+  and the owner decides at the panel. As a last resort, switching the analyzer
+  off and on clears the panel's state (findings §15.5); the readings are wrong
+  for about a minute afterwards (design §13.1 #81).
+
+**Not in this session:**
+
+- the error display (design §13.2 #36) and a channel set to "both" (#37). Both
+  need a real calibration, and one that fails can change the calibration. They
+  need the owner's explicit acceptance, in a session of their own;
+- anything touching auto calibration, auto zero or blowback, which are never
+  run on this unit.
+
+Each run writes `probe_out/probe_panel_<experiment>_<time>.json`. The results
+go to protocol findings §18.
+
+**The session of 2026-09-30** (12:56-13:12 UTC, findings §18) ran experiments 1-8.
+`span-cancel` came after `at-once`, so the gas changed only once. The backlight and
+output-hold steps were not run. Every key acted as at the panel, and nothing was
+calibrated. At the close all 162 settings matched the saved ones. Only
+`return-wait` did not end clean: its 42002 left Ch3's zero flag set, and the owner
+cleared it at the panel.
 
 ## Deliverables
 
