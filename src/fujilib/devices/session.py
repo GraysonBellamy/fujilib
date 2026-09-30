@@ -73,7 +73,7 @@ from fujilib.devices.encode import encode_prepared
 from fujilib.devices.models import DeviceHealth, DeviceInfo
 from fujilib.devices.reads import read_ranges, read_registers, read_status
 from fujilib.devices.snapshot import FujiDeviceSnapshot
-from fujilib.devices.writes import busy_reasons, describe, write_setting
+from fujilib.devices.writes import busy_reasons, calibrating_reasons, describe, write_setting
 from fujilib.errors import (
     ErrorContext,
     FujiAnalyzerStateError,
@@ -714,6 +714,36 @@ class Session:
         reasons = busy_reasons(status)
         if reasons:
             msg = f"{operation} refused, nothing was written: {'; '.join(reasons)}"
+            raise FujiAnalyzerStateError(
+                msg, context=self._context(operation).merged(reasons=tuple(reasons))
+            )
+        return status
+
+    async def check_not_calibrating(
+        self, client: ProtocolClient, deadline: Deadline, operation: str
+    ) -> StatusRead:
+        """Read the status, and refuse return to measurement while a calibration is under way.
+
+        A menu or a manual calibration's channel selection does not refuse it:
+        closing them is what it is for. On a manual calibration's wait step
+        42002 brings the display back but leaves the channel's flag set
+        (protocol findings §18.4), and during a running calibration what it does
+        is not known, so it is refused whenever a calibration flag is set
+        (design §13.1 #83).
+
+        Raises:
+            FujiAnalyzerStateError: a calibration, automatic or manual, is under
+                way; nothing was written.
+        """
+        status = await read_status(client, deadline=deadline)
+        self.learn_current_ranges({c: s.range for c, s in status.channels.items()})
+        reasons = calibrating_reasons(status)
+        if reasons:
+            msg = (
+                f"{operation} refused, nothing was written: {'; '.join(reasons)}. On a "
+                "manual calibration's wait step it would bring the display back but leave "
+                "the calibration's flag set; ESC on the wait step cancels it"
+            )
             raise FujiAnalyzerStateError(
                 msg, context=self._context(operation).merged(reasons=tuple(reasons))
             )

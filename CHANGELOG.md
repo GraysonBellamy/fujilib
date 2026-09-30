@@ -108,7 +108,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   comparison.
 - Operation commands: `start_auto_calibration()`, `start_auto_zero_calibration()`,
   `start_blowback()` and `return_to_measurement()`, each sent once and followed by
-  a status read (`CommandResult`: started, ambiguous, done or sent);
+  a status read (`CommandResult`: started, ambiguous, done or sent). Return to
+  measurement closes a menu or a manual calibration's channel selection, and is
+  refused while a calibration flag is set: on a manual calibration's wait step
+  42002 brings the display back but leaves the flag set. It is `done` only with
+  no flag set after it;
   `plan_auto_calibration()` and `plan_auto_zero_calibration()` say what a
   calibration will touch and for how long; `calibration_status()` and
   `wait_for_calibration(timeout=...)`. Auto calibration and auto zero need the

@@ -24,7 +24,9 @@ cancellation and within its own deadline:
   ``ambiguous`` when the analyzer acknowledged it but nothing runs: it never
   started, or already ended (design §6.4);
 - return to measurement is ``done`` when the panel shows the measurement
-  screen;
+  screen and no calibration flag is set. It is refused while a flag is set
+  before it (design §13.1 #83): on a manual calibration's wait step 42002
+  brings the display back but leaves the flag set (protocol findings §18.4);
 - blowback is only ``sent``: no register shows it running.
 
 A command whose reply was lost is established from the status where the
@@ -104,7 +106,7 @@ class CommandOutcome(StrEnum):
     AMBIGUOUS = "ambiguous"
     """Acknowledged, but nothing runs: it never started, or it already ended."""
     DONE = "done"
-    """The front panel shows the measurement screen."""
+    """The front panel shows the measurement screen, and no calibration flag is set."""
     SENT = "sent"
     """Acknowledged; nothing shows what it did."""
 
@@ -385,7 +387,7 @@ class CommandResult:
     status_error: FujiError | None = None
     """Why the status read after the command failed, when it did."""
     before: CalibrationStatus | None = None
-    """The status read just before the command; ``None`` for return to measurement."""
+    """The status read just before the command."""
 
 
 async def send_command(
@@ -404,7 +406,8 @@ async def send_command(
         FujiWriteOutcomeUnknownError: its reply was lost and the status cannot
             say whether it acted, or the port failed.
         FujiVerificationError: return to measurement was acknowledged, but the
-            panel does not show the measurement screen.
+            panel does not show the measurement screen; or the panel shows it
+            with a calibration flag set.
         FujiError: the command could not be sent; nothing was.
     """
     name = operation.name
@@ -455,6 +458,13 @@ def _outcome(
     if status is not None:
         if name == "return_to_measurement":
             shown = status.display.screen if status.display is not None else None
+            if shown == DisplayScreen.MEASUREMENT and status.busy:
+                msg = (
+                    f"{name}: the front panel shows the measurement screen, but a "
+                    "calibration flag is set; a calibration began at the panel, or the "
+                    "command left one open"
+                )
+                raise FujiVerificationError(msg, context=context)
             if shown == DisplayScreen.MEASUREMENT:
                 return CommandOutcome.DONE
             if acknowledged:

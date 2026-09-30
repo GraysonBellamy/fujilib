@@ -53,6 +53,7 @@ CH1, CH2, CH3, CH4, CH5 = (ChannelId.from_number(n) for n in range(1, 6))
 AUTO = Capability.AUTO_CALIBRATION | Capability.AUTO_ZERO
 PLAN = [b.key for b in plan_reads([REGISTRY.resolve(n) for n in PLAN_SETTINGS])]
 AUTO_CAL, AUTO_ZERO, BLOWBACK, MEASURE = 0x07D2, 0x07D3, 0x07D4, 0x07D1
+ESC_KEY, ENT_KEY, ZERO_KEY, SPAN_KEY = 0x10, 0x20, 0x40, 0x80
 
 
 def fast(scale: float = 0.0001) -> MockAnalyzer:
@@ -267,11 +268,19 @@ async def test_a_port_that_fails_during_a_command_breaks_the_session(
     async with analyzer_on(mock) as (anz, _):
         stream = anz.session._port.transport.stream
         assert isinstance(stream, anyserial.SerialPort)
+        cls = type(stream)
+        original = cls.drain
+        count = 0
 
         async def drain(self: anyserial.SerialPort) -> None:
-            raise anyserial.SerialError("device reports an I/O error")
+            nonlocal count
+            count += 1
+            # The status read before the command goes out; the command does not.
+            if count > len(POLL):
+                raise anyserial.SerialError("device reports an I/O error")
+            await original(self)
 
-        monkeypatch.setattr(type(stream), "drain", drain)
+        monkeypatch.setattr(cls, "drain", drain)
         with pytest.raises(FujiWriteOutcomeUnknownError) as info:
             await anz.return_to_measurement(confirm=True)
         assert anz.session.state is SessionState.BROKEN
@@ -289,12 +298,71 @@ async def test_return_to_measurement_leaves_a_menu_and_is_checked() -> None:
             await anz.return_to_measurement()
         assert mock.exchanges == []
         result = await anz.return_to_measurement(confirm=True)
-    assert mock.transactions() == [(FC06, MEASURE, 1), *POLL]
+    assert mock.transactions() == [*POLL, (FC06, MEASURE, 1), *POLL]
     assert result.outcome is CommandOutcome.DONE
     assert result.plan is None
+    assert result.before is not None
+    assert result.before.display is not None
+    assert result.before.display.screen is DisplayScreen.MAINTENANCE
     assert result.status is not None
     assert result.status.display is not None
     assert result.status.display.screen is DisplayScreen.MEASUREMENT
+
+
+def panel() -> MockAnalyzer:
+    """The bench analyzer with its front panel's three measured channels."""
+    return MockAnalyzer(replace(DEFAULT_ZPA_BANK, panel_channels=(1, 2, 3)))
+
+
+async def test_return_to_measurement_is_refused_while_a_manual_calibration_waits() -> None:
+    mock = panel()
+    async with analyzer_on(mock) as (anz, _):
+        mock.press(SPAN_KEY)
+        mock.press(ENT_KEY)  # the wait step: the channel's span flag is set
+        with pytest.raises(FujiAnalyzerStateError, match="CH1 is being calibrated") as info:
+            await anz.return_to_measurement(confirm=True)
+        assert "ESC on the wait step cancels it" in str(info.value)
+        assert mock.transactions() == POLL
+        mock.press(ESC_KEY)  # the operator cancels at the panel
+        mock.clear()
+        result = await anz.return_to_measurement(confirm=True)
+    assert mock.transactions() == [*POLL, (FC06, MEASURE, 1), *POLL]
+    assert result.outcome is CommandOutcome.DONE
+
+
+async def test_return_to_measurement_closes_a_manual_calibrations_channel_selection() -> None:
+    mock = panel()
+    async with analyzer_on(mock) as (anz, _):
+        mock.press(ZERO_KEY)
+        result = await anz.return_to_measurement(confirm=True)
+    assert result.before is not None
+    assert result.before.display is not None
+    assert result.before.display.calibration_step is ManualCalibrationStep.ZERO_CHANNEL_SELECT
+    assert result.outcome is CommandOutcome.DONE
+    assert mock.register("display.calibration_step") == (0,)
+
+
+async def test_return_to_measurement_is_refused_during_an_auto_calibration() -> None:
+    mock = fast(scale=1.0)
+    async with analyzer_on(mock, options=AUTO) as (anz, _):
+        await anz.start_auto_zero_calibration(confirm=True)
+        with pytest.raises(FujiAnalyzerStateError, match="auto zero calibration is running"):
+            await anz.return_to_measurement(confirm=True)
+    assert mock.commands == [(AUTO_ZERO, 1)]
+
+
+async def test_a_flag_set_meanwhile_is_not_done() -> None:
+    mock = panel()
+
+    def operator(request: MockRequest) -> None:
+        if request.function == FC06:  # ENT at the panel as the command arrives
+            mock.set_register("status.ch3.zero_calibrating", 1)
+
+    async with analyzer_on(mock) as (anz, _):
+        mock.on_request = operator
+        with pytest.raises(FujiVerificationError, match="but a calibration flag is set"):
+            await anz.return_to_measurement(confirm=True)
+    assert mock.commands == [(MEASURE, 1)]
 
 
 async def test_return_to_measurement_that_is_ignored_is_a_mismatch() -> None:
@@ -345,6 +413,15 @@ def test_an_outcome_without_a_display_is_not_done() -> None:
     status = CalibrationStatus(False, {}, False, None, datetime.now(UTC))
     with pytest.raises(FujiVerificationError):
         _outcome("return_to_measurement", status, acknowledged=True, read_error=FujiTimeoutError())
+
+
+def test_a_lost_reply_with_a_flag_set_is_not_done() -> None:
+    measuring = DisplayState(DisplayScreen.MEASUREMENT, ManualCalibrationStep.NONE, None, None)
+    running = CalibrationStatus(True, {}, False, measuring, datetime.now(UTC))
+    with pytest.raises(FujiVerificationError, match="but a calibration flag is set"):
+        _outcome(
+            "return_to_measurement", running, acknowledged=False, read_error=FujiTimeoutError()
+        )
 
 
 def test_outcomes_the_status_cannot_settle() -> None:
@@ -428,7 +505,8 @@ async def test_a_port_that_fails_in_the_status_read_breaks_the_session(
         async def drain(self: anyserial.SerialPort) -> None:
             nonlocal count
             count += 1
-            if count > 1:  # the command goes out; the status read after it does not
+            # The status read before and the command go out; the read after does not.
+            if count > len(POLL) + 1:
                 raise anyserial.SerialError("device reports an I/O error")
             await original(self)
 

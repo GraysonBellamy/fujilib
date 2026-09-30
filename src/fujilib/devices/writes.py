@@ -25,7 +25,8 @@ is raised as an unknown outcome at once; nothing more can be read.
 forbids a write or a command now: a calibration running, or the front panel
 in a menu or in a manual calibration. The operator may be changing the very
 setting, and a setting changed during a calibration can change its scope
-mid-run (design §6.1).
+mid-run (design §6.1). :func:`calibrating_reasons` is the calibration part
+alone, which also stops return to measurement (design §13.1 #83).
 """
 
 from __future__ import annotations
@@ -64,6 +65,7 @@ __all__ = [
     "WriteResult",
     "WriteState",
     "busy_reasons",
+    "calibrating_reasons",
     "describe",
     "outcome_error",
     "write_setting",
@@ -120,14 +122,24 @@ def describe(value: RegisterValue) -> str:
     return f"{shown} {value.unit}" if value.unit else str(shown)
 
 
-def busy_reasons(status: StatusRead) -> list[str]:
-    """Why the analyzer's status forbids a write or a command now; empty when it does not."""
+def calibrating_reasons(status: StatusRead) -> list[str]:
+    """Which calibrations the status shows under way, automatic or manual; empty when none.
+
+    A manual calibration's channel flags are set from its wait step to its end
+    (protocol findings §14.3).
+    """
     reasons: list[str] = []
     if status.analyzer.auto_calibration_running:
         reasons.append("an auto calibration or auto zero calibration is running")
     for channel, channel_status in status.channels.items():
         if channel_status.calibrating:
             reasons.append(f"{channel.value} is being calibrated")
+    return reasons
+
+
+def busy_reasons(status: StatusRead) -> list[str]:
+    """Why the analyzer's status forbids a write or a command now; empty when it does not."""
+    reasons = calibrating_reasons(status)
     display = status.analyzer.display
     if display is not None:
         if display.screen != DisplayScreen.MEASUREMENT:

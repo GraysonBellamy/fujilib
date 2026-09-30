@@ -54,7 +54,9 @@ it writes:
    during a manual calibration at the panel (`FujiAnalyzerStateError`,
    nothing written). The operator may be changing the very setting, and a
    setting changed during a calibration can change its scope. Return to
-   measurement is the exception: its purpose is to leave a menu.
+   measurement is the exception: its purpose is to leave a menu, or a manual
+   calibration's channel selection. It too is refused while a calibration is
+   under way (see below).
 7. **What the setting depends on.** A calibration gas is checked against its
    channel and range read just now: the range must exist on the channel, the
    unit must be the range's own, the value must fit its decimals exactly and
@@ -161,7 +163,7 @@ differs.
 
 | Method | Command | Tier | Outcome |
 |---|---|---|---|
-| `return_to_measurement()` | 42002 | `STATEFUL` | `done` when the panel shows the measurement screen |
+| `return_to_measurement()` | 42002 | `STATEFUL` | `done` when the panel shows the measurement screen with no calibration flag set |
 | `start_auto_calibration()` | 42003 | `DANGEROUS` | `started`, `ambiguous` (see below), or `sent` when the status after it cannot be read |
 | `start_auto_zero_calibration()` | 42004 | `DANGEROUS` | as auto calibration |
 | `start_blowback()` | 42005 | `STATEFUL` | `sent`: no register shows blowback |
@@ -224,13 +226,20 @@ records what happened:
   deviation from the calibration gas.
 
 Settings writes and commands are refused while a manual calibration is under
-way at the panel, as they are during any calibration. Return to measurement is
-the exception, and **it does not cancel a manual calibration**. On the
-development analyzer, sent while the panel waited for the zero gas, it brought
-the display back to the measurement screen but left the channel's calibration
-flag set. Nothing at the panel showed it. The flag stayed set until the
-operator entered that channel's wait step again and pressed ESC. Cancel a
-manual calibration with ESC on its wait step (protocol findings §18.4).
+way at the panel, as they are during any calibration. **Return to measurement
+does not cancel a manual calibration.** On the development analyzer, sent while
+the panel waited for the zero gas, it brought the display back to the
+measurement screen but left the channel's calibration flag set. Nothing at the
+panel showed it, and the flag stayed set until the operator entered that
+channel's wait step again and pressed ESC (protocol findings §18.4). So:
+
+- `return_to_measurement()` is refused while any calibration flag is set, with
+  nothing sent (`FujiAnalyzerStateError`). It still closes a menu, and a manual
+  calibration's channel selection, where no flag is set yet.
+- It is `done` only when the panel shows the measurement screen with no flag
+  set. A flag set after it, because an operator began a calibration at the
+  panel meanwhile, raises `FujiVerificationError`.
+- Cancel a manual calibration with ESC on its wait step.
 
 Pressing keys over Modbus, to start a zero or span from the host, is planned
 only for the calibration keys, never the keys that open the menus (design

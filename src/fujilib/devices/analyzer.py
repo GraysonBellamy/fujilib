@@ -940,13 +940,21 @@ class Analyzer:
     ) -> CommandResult:
         """Put the front panel back on the measurement screen (42002). STATEFUL.
 
-        It takes an operator out of whatever menu they are in, so it is not
-        refused while the panel is in one. It does not stop a calibration.
+        It takes an operator out of whatever menu they are in, and out of a
+        manual calibration's channel selection, so it is not refused there. It
+        does not stop or cancel a calibration, and is refused while one is under
+        way: on a manual calibration's wait step 42002 brings the display back
+        but leaves the calibration's flag set, and nothing at the panel shows it
+        (protocol findings §18.4, design §13.1 #83). ESC on the wait step, at
+        the panel, cancels a manual calibration.
 
         Raises:
             FujiConfirmationRequiredError: ``confirm`` is not ``True``; nothing was sent.
+            FujiAnalyzerStateError: a calibration, automatic or manual, is under
+                way; nothing was sent.
             FujiVerificationError: acknowledged, but the panel does not show
-                the measurement screen.
+                the measurement screen; or it shows it with a calibration flag
+                set, which a calibration started at the panel meanwhile would do.
             FujiWriteOutcomeUnknownError: its reply was lost and the status
                 cannot be read.
             FujiError: a transaction failed.
@@ -1139,20 +1147,21 @@ class Analyzer:
 
         async def body(client: ProtocolClient, deadline: Deadline) -> CommandResult:
             plan = None
-            before = None
-            if name != "return_to_measurement":
+            if name == "return_to_measurement":
+                status = await session.check_not_calibrating(client, deadline, name)
+            else:
                 status = await session.check_quiet(client, deadline, name)
-                before = operations.calibration_status(status)
-                if run is not None:
-                    operations.check_healthy(status, name)
-                    ranges = await session.ensure_ranges(client, deadline)
-                    plan = await operations.read_calibration_plan(
-                        client,
-                        run,
-                        ranges=ranges,
-                        established=[c.channel for c in session.channels],
-                        deadline=deadline,
-                    )
+            before = operations.calibration_status(status)
+            if run is not None:
+                operations.check_healthy(status, name)
+                ranges = await session.ensure_ranges(client, deadline)
+                plan = await operations.read_calibration_plan(
+                    client,
+                    run,
+                    ranges=ranges,
+                    established=[c.channel for c in session.channels],
+                    deadline=deadline,
+                )
             result = await operations.send_command(
                 client,
                 spec,

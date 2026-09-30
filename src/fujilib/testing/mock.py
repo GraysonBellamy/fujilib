@@ -39,7 +39,9 @@ findings §13.2). Under the auto or remote method the current range stays.
 manual p.31, p.46-47, p.53-60), on the AnyIO clock, with every flow time
 shortened by :attr:`MockAnalyzerConfig.time_scale`:
 
-- *return to measurement* shows the measurement screen;
+- *return to measurement* shows the measurement screen. On a manual
+  calibration's wait step it leaves the channels' flags set, as the bench
+  analyzer did (protocol findings §18.4);
 - *auto calibration* zeroes the channels enabled for it (40021-40025)
   together for flow time 1, then spans them one at a time from Ch1 for flow
   times 2-6, then holds for flow time 7 if output hold is on;
