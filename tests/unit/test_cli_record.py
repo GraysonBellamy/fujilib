@@ -42,7 +42,7 @@ from fujilib.cli.stream import text_line
 from fujilib.errors import ErrorContext, FujiConfigurationError
 from fujilib.registry.channels import ChannelId, Gas
 from fujilib.registry.enums import AlarmState, ErrorCode
-from fujilib.sinks import row_columns
+from fujilib.sinks import pipe, row_columns
 from fujilib.streaming.poll_source import PollSourceAdapter
 from fujilib.testing import FaultKind, mock_analyzer_pair
 from fujilib.transport.serial import SerialTransport
@@ -481,15 +481,35 @@ def test_capture_records_missing_package_versions(monkeypatch: pytest.MonkeyPatc
 def test_capture_writes_its_counters_while_it_records(
     capsys: pytest.CaptureFixture[str], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    import anyio
+
     real = capture._write_json
     written: list[dict[str, Any]] = []
+    counted: anyio.Event | None = None
 
     async def keep(path: Path, document: dict[str, object]) -> None:
         await real(path, document)
-        written.append(json.loads(json.dumps(document, default=str)))
+        copy = json.loads(json.dumps(document, default=str))
+        written.append(copy)
+        if counted is not None and copy["summary"] is not None and copy["summary"]["polls"]:
+            counted.set()
+
+    async def unhurried(*args: Any) -> Any:
+        """The pipe, which then waits for a checkpoint that counts a poll.
+
+        A runner whose event loop or disk stalls for the length of the
+        recording would otherwise end it before the first checkpoint is written.
+        """
+        nonlocal counted
+        counted = anyio.Event()
+        summary = await pipe(*args)
+        with anyio.move_on_after(30):
+            await counted.wait()
+        return summary
 
     monkeypatch.setattr(capture, "_CHECKPOINT_S", 0.05)
     monkeypatch.setattr(capture, "_write_json", keep)
+    monkeypatch.setattr(capture, "pipe", unhurried)
     out = tmp_path / "run.parquet"
     argv = [*BENCH, *ASSERT, "--rate", "20", "--duration", "0.5", "--out", str(out), "--quiet"]
     code, _out, _err = run(capsys, capture.main, *argv)
