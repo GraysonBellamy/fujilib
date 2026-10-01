@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Protocol findings §21.4: a setting changed and restored, and a zero begun and
+  cancelled on its wait step, through an application's manual control card on the
+  development analyzer. The key that calibrates was not sent, and every setting
+  read the same afterwards.
+
 ## [0.2.0] - 2026-10-01
 
 What an application built on fujilib needed: the model builders, and a state for

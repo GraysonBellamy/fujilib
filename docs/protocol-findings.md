@@ -15,7 +15,8 @@ watch of a panel calibration, and §17 what the factory-mode screens showed. §1
 records the first front-panel keys written over Modbus, in a session the owner
 authorized and attended, and §19 the first calibrations driven from the host with
 them, the owner at the gas valves. §20 is the response time, and §21 fujilib under
-capa's device adapter, read-only.
+capa's device adapter: reading, and then a setting changed and restored and a
+calibration begun and cancelled.
 
 This document records what was **observed**. The manual is INZ-TN5A1190a-E unless noted.
 Addresses are relative (on-the-wire) hexadecimal. Raw results are in `probe_out/`
@@ -1639,11 +1640,12 @@ Not answered here:
 
 ## 21. fujilib under capa's device adapter (2026-10-01)
 
-The read-only part of design §12 Phase 8's hardware exit, on `COM8`, station 1. Only
-Modbus read function codes were sent: no setting, no key and no command. The owner
-allowed each session. `anymodbus` 0.3.0, `anyserial` 0.2.0, `anyio` 4.15.1, Python
-3.13.13, Windows 11; fujilib as on `main` at `9893174`, and capa's adapter
-(`capa/devices/fuji.py`) as written for its pull request. The files are in
+Design §12 Phase 8's hardware exit, on `COM8`, station 1. In §21.1–§21.3 only Modbus
+read function codes were sent: no setting, no key and no command. §21.4 is the two
+write steps. The owner allowed each session. `anymodbus` 0.3.0, `anyserial` 0.2.0,
+`anyio` 4.15.1, Python 3.13.13, Windows 11. For the reads, fujilib was as on `main` at
+`9893174` and capa's adapter (`capa/devices/fuji.py`) as written for its pull request;
+for the writes, fujilib 0.2.0 from PyPI and capa's `main` at `8b8e17c`. The files are in
 `probe_out/capa_bench_20261001/` and `probe_out/capa_worker_check.py` (git-ignored).
 
 ### 21.1 fujilib on the event loop of a worker thread
@@ -1703,15 +1705,46 @@ ended the run `completed`, sealed the bundle and verified its integrity.
   `0.1.1.dev2+g7d469229f`, the editable install's metadata, built before the day's
   commits, as in §12.2. The code was that of `9893174`.
 
-### 21.4 Not done here
+### 21.4 The write steps, through capa's manual control card
+
+16:45:16–16:45:31 UTC, in a session the owner authorized.
+`probe_out/capa_bench_20261001/capa_write_session.py` built capa's manual control card
+for the analyzer without a display, on a real worker pool with the real adapter, and
+called what the card's buttons call. The script answered the card's confirmation
+dialogs; nobody looked at the card on a screen. Before the pool opened and after it
+closed, fujilib read every setting and the panel directly.
+
+| Step | Sent | Result |
+|---|---|---|
+| A setting changed | the O2 response time, 1 s to 2 s | accepted, `response_time.o2: 1 s -> 2 s`; the card's read-back showed 2 |
+| The setting restored | 2 s to 1 s | accepted, `response_time.o2: 2 s -> 1 s`; the read-back showed 1 |
+| The plan of a zero of Ch3 | reads only | `zero of CH3: CH3 range 1 against 0 vol%` |
+| The zero begun | ZERO, ENT | on the wait step 1.0 s after the command; the keys taken in 0.16 and 0.33 s. The cursor was already on Ch3, so no DOWN was sent |
+| 6.7 s on the wait step | ten reads | Ch3 `calibrating` in the card's read-back; never steady: 20.57 vol% of room air is 98.0 %FS from the gas named, 0, where 10 %FS is allowed. The card's calibrate button stayed disabled |
+| The zero cancelled | ESC | taken in 0.31 s; `cancelled`; the cleanup found the panel clean and sent nothing |
+
+- **The key that calibrates was never sent**, as agreed: the record says
+  `calibrating_key_sent: false`, and three keys in all (ZERO, ENT, ESC).
+- **Nothing was left changed.** All 162 settings read the same after as before. The
+  panel was on the measurement screen with no step and no zero, span or hold flag, and
+  the readings were `ok` and the same: CO2 −0.08, CO −0.008, O2 20.57 vol%.
+- **The record** was saved by the card as `N8A0259T_CH3_zero_20261001T164528Z.json`: a
+  `fujilib-calibration/1` document with the plan, the gas named and its label, the
+  ten reads of the wait step, the keys and the cleanup.
+- **The confirmation for beginning** said that the calibration keys are pressed, that
+  the panel stays on the wait step until the operator calibrates or cancels, and that
+  nothing is calibrated until then.
+- These writes were made with no capa run active, so no run's bundle holds an event
+  for them. That path, a setting changed during a run, is covered by capa's tests only.
+
+### 21.5 Not done here
 
 - **The adapter unplugged and plugged back during a capa run**, and a session in
   capa's interface with live plots. Both need the owner at the bench.
-- **Any write through capa**: a setting changed and restored from the manual control
-  card, and a calibration begun and cancelled on its wait step. Each needs its own
-  authorization, as every write session does.
 - **capa's interface on screen**: the Setup tab's forms and the manual control card
-  have run only in capa's tests, against its simulated analyzer.
+  have been driven by code only, in capa's tests and in §21.4.
+- **A calibration carried through from capa.** §21.4 stopped at the wait step. A zero
+  and a span driven from the host with the same key driver are in §19.
 - **An outage at the start of a run.** capa types each column of the records file
   from its first 1,024 rows, so a run whose first 1,024 polls all failed would store
   the reading columns as text (design §12 Phase 8). That is pinned by capa's tests,
