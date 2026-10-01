@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The README, the documentation's home page and the package metadata name the
+  other brands the analyzer is sold under: the CAI ZPA of California Analytical
+  Instruments (now part of ENVEA), which the development analyzer is, and the
+  Yokogawa IR202, which is untested but documents the same register map.
+- The documentation's home page no longer says that nothing has been released.
+
 ## [0.1.0] - 2026-09-30
 
 The first release.

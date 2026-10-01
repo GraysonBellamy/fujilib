@@ -9,13 +9,19 @@ build-backend = "hatchling.build"
 [project]
 name = "fujilib"
 dynamic = ["version"]
-description = "Async Python driver for Fuji Electric ZP-series NDIR gas analyzers (Modbus RTU)."
+description = "Async Python driver for Fuji Electric ZP-series NDIR gas analyzers (ZPA, also sold as the CAI / ENVEA ZPA) over Modbus RTU."
 readme = "README.md"
 requires-python = ">=3.13"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "Grayson Bellamy", email = "gbellamy@umd.edu" }]
-keywords = ["fuji", "fuji electric", "gas analyzer", "ndir", "zpa", "modbus", "rs-485", "serial", "instrument"]
+keywords = [
+    "fuji", "fuji electric", "gas analyzer", "infrared gas analyzer", "ndir",
+    "zpa", "zpb", "zpg", "zpaj",
+    "cai", "california analytical instruments", "envea", "yokogawa ir202",
+    "co2", "co", "o2", "cems",
+    "modbus", "rs-485", "serial", "instrument",
+]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Framework :: AnyIO",

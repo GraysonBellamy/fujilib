@@ -5,6 +5,10 @@
 > built on [`anyserial`](https://pypi.org/project/anyserial/) and
 > [`anymodbus`](https://pypi.org/project/anymodbus/).
 
+The ZPA is also sold as the **CAI ZPA** by California Analytical Instruments
+(CAI), now part of **ENVEA**. `fujilib` is developed and tested against a
+CAI-branded ZPA. See [Also sold as](#also-sold-as).
+
 `fujilib` is a member of the `*lib` instrument-driver family (`alicatlib`,
 `sartoriuslib`, `watlowlib`, `servomexlib`, …). It shares their entry point,
 frozen models, error hierarchy, streaming / sinks / sync / CLI conventions and
@@ -63,6 +67,19 @@ The first release, **0.1.0**, covers:
 - a manual zero or span driven from the host (`fuji-calibrate`): fujilib presses
   the calibration keys while the operator switches the gas valves, waits for the
   reading to settle on the gas named, and records the run.
+
+## Also sold as
+
+ZP-series analyzers are sold under other names too:
+
+| Sold as | By | Status |
+|---|---|---|
+| ZPA NDIR/O2 Multichannel Analyzer (CAI ZPA) | California Analytical Instruments (CAI), now part of ENVEA (CAI ENVEA Group) | The development analyzer is a CAI-branded ZPA. |
+| IR202 Infrared Gas Analyzer | Yokogawa | Untested. Its MODBUS manual (IM 11G02Q02-51EN) documents the same register map and the same 38400 8-N-1 link. |
+
+`fujilib` is an independent project. It is not affiliated with or endorsed by
+Fuji Electric, California Analytical Instruments, ENVEA or Yokogawa; their names
+and product names belong to their owners.
 
 ## Design points
 

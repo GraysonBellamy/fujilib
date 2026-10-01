@@ -1,6 +1,6 @@
 [project]
 site_name = "fujilib"
-site_description = "Async Python driver for Fuji Electric ZP-series NDIR gas analyzers."
+site_description = "Async Python driver for Fuji Electric ZP-series NDIR gas analyzers (ZPA, also sold as the CAI / ENVEA ZPA)."
 site_url = "https://fujilib.graysonbellamy.dev/"
 repo_url = "https://github.com/GraysonBellamy/fujilib"
 repo_name = "GraysonBellamy/fujilib"

@@ -3159,6 +3159,7 @@ Still open:
 
 | Field | Value | Source |
 |---|---|---|
+| Brand | California Analytical Instruments (CAI), now part of ENVEA: a CAI-branded ZPA | owner, 2026-10-01 |
 | Nameplate type | `ZPA3` | owner |
 | Nameplate components | CO2 0–10 %, CO 0–1 %, O2P 0–10 % | owner |
 | O2 cell | Hummingbird Premus paramagnetic, probably an upgrade; variant and specification not yet known | owner |
@@ -3242,6 +3243,9 @@ External:
 | Source | Used for |
 |---|---|
 | Hummingbird Sensing, [Paracube Premus-Alpha](https://hummingbirdsensing.com/sensors/sensor/paracube-premus-alpha/) | O2 cell range (0–100 %); no numeric performance published there |
+| ENVEA, [CAI ZPA data sheet](https://envea.global/design/pdf/cai/ZPA_DATA_SHEET_321.pdf) and the [CAI ENVEA Group announcement](https://envea.global/news/new-group-formed-to-enhance-customer-service-in-environmental-management-solutions-and-multi-gas-sensing-technologies/) | the ZPA as sold by California Analytical Instruments; ENVEA bought CAI in May 2023 |
+| Yokogawa, [IM 11G02Q02-51EN](https://web-material3.yokogawa.com/IM11G02Q02-51EN.pdf), *IR202 Communication Functions (MODBUS)* (3rd ed., July 2022) | read on 2026-10-01: 38400 8-N-1 and the register ranges and worked examples of TN5A1190 (40001–40172, 30001–30194, 31062–31130, 31147–31149, 34097–35896, 42001–42005). The IR202 is named in the README as untested |
+| Teledyne, [7500 / 7600 communication manual](https://www.teledyne-ai.com/en-us/Products_/Documents/Manuals/man_75007600comm.pdf) | read on 2026-10-01: an older, smaller map (40001–40110, 30001–30190, 31062–31096, 42001–42002) at 9600 baud over RS-232. Out of scope, and not named as supported |
 
 Sibling libraries and what each contributes:
 
