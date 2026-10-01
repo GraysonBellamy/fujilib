@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `fujilib.testing.frames`: builders for synthetic readings, statuses and frames
+  (`reading`, `status`, `analyzer`, `frame`, `timing`, `bench_readings`), also
+  exported from `fujilib.testing`. They are for code that consumes fujilib's
+  models without an analyzer or a simulated line, such as an application's
+  adapter tests or its own simulator: a built `Frame` goes through
+  `Sample.from_frame()` and `sample_to_row()` like a polled one. `timing()` takes
+  a caller's clock origins and `frame()` its timings; the defaults are fixed, so
+  a test's timestamps are too.
+- A settling period after a reconnect. For 90 s after a reopen that follows a
+  connection failure, by `Analyzer.reopen()` or a recording's `ReconnectPolicy`,
+  a reading that would be `ok` has the new state `ReadingState.SETTLING`
+  (`settling` in `chN_state`), so `valid` is false; its value is kept as read.
+  The analyzer may have been switched off meanwhile, and for about a minute
+  after power-on its readings are far off with no flag of its own (protocol
+  findings §15.5). `open_device(settle_after_reopen_s=...)` sets the period (0
+  for none), and `Session.settling_until` says when it ends. Nothing is marked
+  at the first open, nor after an outage in which the port stayed open.
+
 ### Changed
 
 - The README, the documentation's home page and the package metadata name the
@@ -14,6 +34,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Instruments (now part of ENVEA), which the development analyzer is, and the
   Yokogawa IR202, which is untested but documents the same register map.
 - The documentation's home page no longer says that nothing has been released.
+- A response time may be written as 0 s, which switches the analyzer's filter
+  off: `set_response_time`, `write_parameter` and a settings file take 0-60 s,
+  where they took 1-60 s. On the development analyzer the A/D values then equal
+  the unsmoothed detector counts, and a response time of 1 s still filters
+  (protocol findings §20).
 
 ## [0.1.0] - 2026-09-30
 
