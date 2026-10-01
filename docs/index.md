@@ -15,7 +15,7 @@ The ZPA is also sold as the **CAI ZPA** by California Analytical Instruments
 CAI-branded ZPA. See [Also sold as](#also-sold-as).
 
 !!! warning "Alpha"
-    0.1.0 is the first release. The read-only API works against the development
+    0.2.0 is the current release. The read-only API works against the development
     analyzer: `open_device()`, identification, polls with validity, metadata,
     settings, logs, discovery, [recording](recording.md) to memory, CSV or
     Parquet, a blocking facade and the [`fuji-*` commands](cli.md). A reviewed

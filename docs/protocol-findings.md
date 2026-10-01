@@ -1,5 +1,5 @@
 ---
-description: What the bench Fuji ZPA analyzer actually does on the wire, measured read-only from 2026-09-28, with writes on 2026-09-29 and with front-panel keys and remote calibrations on 2026-09-30, and where it differs from the MODBUS manual.
+description: What the bench Fuji ZPA analyzer actually does on the wire, measured read-only from 2026-09-28, with writes on 2026-09-29, with front-panel keys and remote calibrations on 2026-09-30 and under capa's adapter on 2026-10-01, and where it differs from the MODBUS manual.
 ---
 
 # Protocol findings — bench ZPA, 2026-09-28
@@ -14,7 +14,8 @@ read-only session on what the registers still left unexplained. §16 is fujilib'
 watch of a panel calibration, and §17 what the factory-mode screens showed. §18
 records the first front-panel keys written over Modbus, in a session the owner
 authorized and attended, and §19 the first calibrations driven from the host with
-them, the owner at the gas valves.
+them, the owner at the gas valves. §20 is the response time, and §21 fujilib under
+capa's device adapter, read-only.
 
 This document records what was **observed**. The manual is INZ-TN5A1190a-E unless noted.
 Addresses are relative (on-the-wire) hexadecimal. Raw results are in `probe_out/`
@@ -1635,3 +1636,83 @@ Not answered here:
 - A power cycle with a response time of 0. Settings are kept (§13.5); this one was
   not tried.
 - Whether the analog outputs follow the setting in the same way.
+
+## 21. fujilib under capa's device adapter (2026-10-01)
+
+The read-only part of design §12 Phase 8's hardware exit, on `COM8`, station 1. Only
+Modbus read function codes were sent: no setting, no key and no command. The owner
+allowed each session. `anymodbus` 0.3.0, `anyserial` 0.2.0, `anyio` 4.15.1, Python
+3.13.13, Windows 11; fujilib as on `main` at `9893174`, and capa's adapter
+(`capa/devices/fuji.py`) as written for its pull request. The files are in
+`probe_out/capa_bench_20261001/` and `probe_out/capa_worker_check.py` (git-ignored).
+
+### 21.1 fujilib on the event loop of a worker thread
+
+Before the adapter was written. capa gives every serial port a thread with its own
+asyncio loop, and runs an adapter's `open()`, `stream()`, `command()` and `close()` on
+it as separate tasks. fujilib had run on a worker thread's loop only through the
+blocking facade's portal (§11). `probe_out/capa_worker_check.py` drove it as capa
+does: the analyzer opened in one task, a recording at 2 Hz with a `ReconnectPolicy` in
+a second, two metadata reads from a third while it recorded, and the close in a fourth.
+
+- **21 of 21 polls answered**, the concentration block in about 48 ms each, with no
+  error; both metadata reads came back while the recording ran.
+- The loop was Windows' Proactor loop, the default on a thread's new loop, which
+  `anyserial` needs. capa does not change the loop policy.
+
+### 21.2 The adapter's handshake, discovery and read-back
+
+14:56 UTC.
+
+- **The handshake** (`capa validate --strict`, which opens, identifies and closes):
+  `fuji model=ZPA serial=N8A0259T type_code=ZPACBJY1MPFYYYYYY2DEYAYAY0 station=1
+  channels=[CH1=co2, CH2=co, CH3=o2]`.
+- **capa's hardware tests for the adapter** (`tests/hardware/test_fuji_smoke.py`,
+  which write nothing): 5 of 5 pass in 9.5 s. They open and identify the analyzer and
+  read its settings; read the operator-facing snapshot, with a decoded reading for
+  each of the three channels; run the handshake; find the analyzer by discovery; and
+  make a 5 s run through capa's whole stack.
+- **Discovery was asked for `COM8` only.** capa's discovery command and its Setup tab
+  scan every serial port, and every port scanned is sent a Modbus read at 38400 baud.
+  That was not run: the other ports on this machine belong to other instruments.
+
+### 21.3 A five-minute run through capa
+
+`capa run --headless` on `configs/experiments/fuji_real_freerun.yaml` with its
+duration raised to 300 s, 14:56:52–15:01:53 UTC: the analyzer at 1 Hz with a
+`ReconnectPolicy`, four capa channels (CO2, CO and O2, and the validity of O2). capa
+ended the run `completed`, sealed the bundle and verified its integrity.
+
+| Check | Result |
+|---|---|
+| Polls | 301 by the recorder's count: none late, dropped or failed, no disconnect; the latest started 25.1 ms after its slot |
+| `device_records/fuji.parquet` | 300 rows of 55 columns (the 301st poll came as the run stopped); no error row; intervals 0.985–1.013 s, median 1.0002 s |
+| Column types | per channel: value `double`, raw and decimals `int64`, valid, hold and calibrating `bool`, and unit, gas, label source, state and errors text. `t_midpoint_mono_ns`, always empty, is text |
+| Round trip of the concentration block | 45.8–53.3 ms, median 48.8 ms, as in the 12-hour recording (§12.3) |
+| Readings | CO2 −0.09 to −0.08 vol%, CO −0.007 to −0.006 vol%, O2 20.61–20.62 vol% on room air; every row `asserted`, state `ok`, valid, no hold, calibration, alarm or error |
+| `scalars.parquet` | 1,200 samples, 300 for each channel, in percent, every status `ok`; the validity channel 1.0 throughout |
+| `status.sqlite` | 10 snapshots, one every 30 s, health `ok`, with the analyzer's settings: response times 1 s, hold mode last value, output hold off, and its clock, 6 min 39 s behind the host |
+| `events.sqlite` | the run's start and end only: nothing from the analyzer |
+| `equipment.toml` | model `ZPA`, serial number `N8A0259T` |
+| Shutdown | the worker disarmed `OK`, and the pool closed clean |
+
+- **No label warning.** The adapter warns when the type code suggests another gas
+  than the one asserted. For Ch3 the type code suggests none (design §2.9), so nothing
+  was reported, and the row says `asserted`.
+- **The version in the bundle's environment record is stale**: fujilib
+  `0.1.1.dev2+g7d469229f`, the editable install's metadata, built before the day's
+  commits, as in §12.2. The code was that of `9893174`.
+
+### 21.4 Not done here
+
+- **The adapter unplugged and plugged back during a capa run**, and a session in
+  capa's interface with live plots. Both need the owner at the bench.
+- **Any write through capa**: a setting changed and restored from the manual control
+  card, and a calibration begun and cancelled on its wait step. Each needs its own
+  authorization, as every write session does.
+- **capa's interface on screen**: the Setup tab's forms and the manual control card
+  have run only in capa's tests, against its simulated analyzer.
+- **An outage at the start of a run.** capa types each column of the records file
+  from its first 1,024 rows, so a run whose first 1,024 polls all failed would store
+  the reading columns as text (design §12 Phase 8). That is pinned by capa's tests,
+  not seen on the bench.

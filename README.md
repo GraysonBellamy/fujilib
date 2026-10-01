@@ -16,7 +16,7 @@ the unified device-library API; its internals are shaped to this analyzer.
 
 ## Status
 
-**Alpha.** 0.1.0 is the first release. The read-only API works against the
+**Alpha.** 0.2.0 is the current release. The read-only API works against the
 development analyzer: `open_device()`, identification, polls with validity,
 metadata, settings, logs, discovery, recording at a fixed rate to memory, CSV
 or Parquet, a blocking facade, and the `fuji-read`, `fuji-discover`,
@@ -67,6 +67,12 @@ The first release, **0.1.0**, covers:
 - a manual zero or span driven from the host (`fuji-calibrate`): fujilib presses
   the calibration keys while the operator switches the gas valves, waits for the
   reading to settle on the gas named, and records the run.
+
+**0.2.0** adds what an application built on fujilib needs: the builders of
+`fujilib.testing.frames` for its own tests and simulator, and the state
+`settling` for readings taken in the 90 s after a reconnect, when the analyzer
+may have been switched off. It also takes a response time of 0 s, which switches
+the analyzer's filter off.
 
 ## Also sold as
 
