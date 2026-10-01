@@ -16,6 +16,7 @@ import anyio
 from anyserial import SerialConfig
 from anyserial.testing import serial_port_pair
 
+from fujilib.config import DEFAULTS
 from fujilib.devices.analyzer import Analyzer
 from fujilib.devices.capability import Capability
 from fujilib.devices.profile import ZP_PROFILE
@@ -195,6 +196,7 @@ async def replugging(
     *analyzers: MockAnalyzer,
     channel_map: Mapping[ChannelId, Gas] | None = ASSERTED,
     identify: bool = True,
+    settle_after_reopen_s: float = DEFAULTS.settle_after_reopen_s,
     **timing: Any,
 ) -> AsyncGenerator[tuple[Analyzer, Cable]]:
     """An :class:`Analyzer` whose session can be reopened over a :class:`Cable`.
@@ -205,7 +207,12 @@ async def replugging(
         cable = Cable(tg, analyzers, timing)
         port = await cable.plug()
         session = Session(
-            port, address=1, profile=ZP_PROFILE, channel_map=channel_map, reopener=cable.plug
+            port,
+            address=1,
+            profile=ZP_PROFILE,
+            channel_map=channel_map,
+            reopener=cable.plug,
+            settle_after_reopen_s=settle_after_reopen_s,
         )
         analyzer = Analyzer(session)
         try:

@@ -12,6 +12,7 @@ failure (``Analyzer.reopen()``); a transport the caller passed in cannot.
 
 from __future__ import annotations
 
+import math
 from dataclasses import replace
 from functools import partial
 from typing import TYPE_CHECKING
@@ -54,6 +55,7 @@ async def open_device(
     channel_map: Mapping[ChannelId | str, Gas | str] | None = None,
     options: Capability = Capability.NONE,
     write_warn_per_minute: int = DEFAULTS.write_warn_per_minute,
+    settle_after_reopen_s: float = DEFAULTS.settle_after_reopen_s,
 ) -> Analyzer:
     r"""Open the analyzer at station ``address`` on ``port``.
 
@@ -84,6 +86,9 @@ async def open_device(
             them, like gas labels (design §6.1).
         write_warn_per_minute: Setting writes a minute above which a warning is
             logged; 0 for never (design §6.3).
+        settle_after_reopen_s: Seconds for which readings are ``settling``
+            instead of ``ok`` after a reopen that follows a connection failure;
+            0 for not at all (design §8).
 
     Raises:
         FujiValidationError: an argument is invalid; nothing was opened.
@@ -94,7 +99,7 @@ async def open_device(
     """
     _check_protocol(profile, protocol)
     _check_address(address)
-    _check_options(options, write_warn_per_minute)
+    _check_options(options, write_warn_per_minute, settle_after_reopen_s)
     asserted = coerce_channel_map(channel_map) if channel_map is not None else None
     reopener: Reopener | None = None
     if isinstance(port, str):
@@ -125,6 +130,7 @@ async def open_device(
             reopener=reopener,
             options=options,
             write_warn_per_minute=write_warn_per_minute,
+            settle_after_reopen_s=settle_after_reopen_s,
         )
         analyzer = Analyzer(session)
         if identify:
@@ -167,7 +173,9 @@ def _is_transport(value: object) -> bool:
     return isinstance(value, Transport)
 
 
-def _check_options(options: object, write_warn_per_minute: object) -> None:
+def _check_options(
+    options: object, write_warn_per_minute: object, settle_after_reopen_s: object
+) -> None:
     if not isinstance(options, Capability) or options & ~OPTION_CAPABILITIES:
         msg = f"options must be option capabilities, e.g. Capability.AUTO_ZERO; got {options!r}"
         raise FujiValidationError(msg)
@@ -178,6 +186,17 @@ def _check_options(options: object, write_warn_per_minute: object) -> None:
     ):
         msg = (
             f"write_warn_per_minute must be a whole number 0 or more, got {write_warn_per_minute!r}"
+        )
+        raise FujiValidationError(msg)
+    if not (
+        isinstance(settle_after_reopen_s, int | float)
+        and not isinstance(settle_after_reopen_s, bool)
+        and math.isfinite(settle_after_reopen_s)
+        and settle_after_reopen_s >= 0
+    ):
+        msg = (
+            "settle_after_reopen_s must be finite seconds, 0 or more; "
+            f"got {settle_after_reopen_s!r}"
         )
         raise FujiValidationError(msg)
 

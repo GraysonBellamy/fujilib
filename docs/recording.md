@@ -131,6 +131,13 @@ code. Only an analyzer opened by port name can be reopened, not one opened on
 a transport you passed in. You can also reopen one yourself with
 `await anz.reopen()`.
 
+The rows after an outage are marked: for 90 s after the reopen, a reading that
+would be `ok` has the state `settling` and is not valid, because the analyzer
+may have been switched off and reports nothing of its own while it warms up
+(see [Measurement quality](measurement-quality.md)). The values are recorded
+as read. `open_device(..., settle_after_reopen_s=...)` sets the period, and 0
+turns it off.
+
 ## The summary
 
 `rec.summary` is updated live and finished when the recording stops, however

@@ -690,10 +690,13 @@ async def test_a_pulled_cable_is_ridden_out_with_a_reconnect_policy() -> None:
         policy = ReconnectPolicy(backoff_s=(0.0,))
         source = PollSourceAdapter("zpa", anz)
         states: list[bool] = []
+        rows: list[tuple[object, object, object]] = []  # CH3's state, validity and value
         with anyio.fail_after(20):  # a regression fails here instead of hanging
             async with record(source, rate_hz=50.0, reconnect=policy) as rec:
                 async for batch in rec:
                     states.append(batch["zpa"].error is None)
+                    row = sample_to_row(batch["zpa"])
+                    rows.append((row["ch3_state"], row["ch3_valid"], row["ch3_value"]))
                     if len(states) == 3:
                         await cable.unplug()
                     if len(states) == 6:
@@ -705,6 +708,9 @@ async def test_a_pulled_cable_is_ridden_out_with_a_reconnect_policy() -> None:
         assert states[-1]
         assert rec.summary.disconnects == 1
         assert rec.summary.reconnects == 1
+        # The rows after the outage say the analyzer may still be warming up (design §8).
+        assert [state for state, _valid, _value in rows[:3]] == ["ok", "ok", "ok"]
+        assert rows[-1] == ("settling", False, rows[0][2])
         _ = await anz.poll()
 
 

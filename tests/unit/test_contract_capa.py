@@ -3,8 +3,10 @@
 capa's adapter for fujilib will follow its alicat adapter: one ``wide_row``
 ``SourceRecord`` per tick built from ``sample_to_row()``, and one
 ``ChannelSample`` per bound channel whose ``source_field`` is a row column.
-Error samples produce the record but no channel samples (capa's sartorius
-path). This test builds those records from fujilib's own types, so the row
+A channel binds a reading's value or its validity (1.0 or 0.0), since capa
+stores a sample's status but reads it nowhere (design §13.1 #106). Error
+samples produce the record but no channel samples (capa's sartorius path).
+This test builds those records from fujilib's own types, so the row
 shape, units, timestamps, validity columns, error rows and snapshot shape are
 fixed before any I/O layer exists.
 
@@ -122,6 +124,34 @@ def to_channel_samples(sample: Sample, record: Mapping[str, Any]) -> list[dict[s
     return out
 
 
+def to_validity_samples(sample: Sample, record: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """What capa's adapter would build per channel bound to a reading's validity."""
+    if sample.frame is None:
+        return []
+    out: list[dict[str, Any]] = []
+    t_mono_ns = record["t_mono_ns"]
+    for name, channel in BINDINGS.items():
+        reading = sample.frame.channel(channel)
+        if reading.valid is None:
+            continue  # unknown validity is not reported as either
+        out.append(
+            {
+                "channel": f"{name}_valid",
+                "t_mono_ns": t_mono_ns,
+                "t_mono_s": t_mono_ns / 1e9,
+                "value": 1.0 if reading.valid else 0.0,
+                "raw": reading.valid,
+                "unit": "dimensionless",
+                "uncertainty": None,
+                "status": reading.state.value,
+                "source_record_id": record["record_id"],
+                "source_field": f"ch{channel.number}_valid",
+                "metadata": {},
+            }
+        )
+    return out
+
+
 def ok_sample() -> Sample:
     held_o2 = reading(
         ChannelId.CH3, Gas.O2, 2029, 2, channel_status=status(hold=True), state=ReadingState.HOLD
@@ -209,6 +239,45 @@ def test_an_undecodable_value_yields_no_channel_sample() -> None:
     assert names == {"co", "o2"}
 
 
+def test_validity_samples() -> None:
+    sample = ok_sample()
+    record = to_source_record(sample, seq=0)
+    samples = {s["channel"]: s for s in to_validity_samples(sample, record)}
+    assert set(samples) == {f"{name}_valid" for name in BINDINGS}
+    for cs in samples.values():
+        assert tuple(cs) == CHANNEL_SAMPLE_FIELDS
+        assert cs["value"] in {0.0, 1.0}
+        assert record["row"][cs["source_field"]] is cs["raw"]
+    assert samples["co2_valid"]["value"] == 1.0
+    assert (samples["o2_valid"]["value"], samples["o2_valid"]["status"]) == (0.0, "hold")
+
+
+def test_unknown_validity_yields_no_validity_sample() -> None:
+    # Without the status block every state is unknown: neither valid nor invalid.
+    unknown = tuple(
+        dataclasses.replace(r, state=ReadingState.UNKNOWN, status=None)
+        for r in frame(detail=False).readings
+    )
+    sample = Sample.from_frame(frame(unknown, detail=False), device="zpa", address=1)
+    record = to_source_record(sample, seq=0)
+    assert to_validity_samples(sample, record) == []
+    assert record["row"]["ch3_valid"] is None
+    assert len(to_channel_samples(sample, record)) == len(BINDINGS)  # the values still flow
+
+
+def test_a_settling_reading_is_a_sample_that_says_so() -> None:
+    # After a reconnect the value is kept and the state says not to trust it; capa's
+    # balance adapter uses the same word for an unstable reading.
+    settling = tuple(dataclasses.replace(r, state=ReadingState.SETTLING) for r in frame().readings)
+    sample = Sample.from_frame(frame(settling), device="zpa", address=1)
+    record = to_source_record(sample, seq=0)
+    values = to_channel_samples(sample, record)
+    assert {cs["status"] for cs in values} == {"settling"}
+    assert {cs["value"] for cs in to_validity_samples(sample, record)} == {0.0}
+    assert record["row"]["ch3_state"] == "settling"
+    assert record["row"]["ch3_valid"] is False
+
+
 def test_expected_gas_check_has_typed_labels() -> None:
     # capa checks an operator-declared gas against the reading, as its watlow
     # adapter checks the wire unit. It needs typed gas, label source and unit.
@@ -248,6 +317,6 @@ def test_rows_build_capa_records() -> None:
     for seq, sample in enumerate((ok_sample(), error_sample())):
         record = to_source_record(sample, seq=seq)
         source = records.SourceRecord(**record)
-        for cs in to_channel_samples(sample, record):
+        for cs in (*to_channel_samples(sample, record), *to_validity_samples(sample, record)):
             records.ChannelSample(**cs)
         assert source.t_utc == datetime.fromisoformat(record["row"]["t_utc"]).astimezone(UTC)

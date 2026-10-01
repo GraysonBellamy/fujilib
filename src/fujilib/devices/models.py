@@ -91,7 +91,8 @@ class ReadingState(StrEnum):
     """Whether a reading is live and, if not, the most important reason why.
 
     When several reasons apply, the first in this order wins: analyzer error,
-    channel error, calibrating, auto calibration, hold, source invalid.
+    channel error, calibrating, auto calibration, hold, source invalid,
+    settling.
     """
 
     OK = "ok"
@@ -108,6 +109,9 @@ class ReadingState(StrEnum):
     """The channel's output is held; the value is frozen, not live."""
     SOURCE_INVALID = "source_invalid"
     """A derived channel whose source channel or O2 channel is not valid."""
+    SETTLING = "settling"
+    """Read soon after the connection came back: the analyzer may have been
+    switched off, and reports nothing of its own while it warms up (design §8)."""
     UNKNOWN = "unknown"
     """The status was not read, or the value did not decode."""
 

@@ -59,6 +59,13 @@ class Defaults:
     #: ``alicatlib``'s EEPROM-wear guard does. 0 turns the warning off.
     write_warn_per_minute: int = 10
 
+    #: Seconds after a reopen that follows a connection failure during which
+    #: readings are ``settling``, not ``ok``. The host cannot tell a pulled
+    #: cable from a power cut, and after a power cut the bench unit read CO2
+    #: at up to 220 % of range, with no flag set, until it settled 64 s after
+    #: its first non-zero reading (findings §15.5). 0 turns the period off.
+    settle_after_reopen_s: float = 90.0
+
 
 #: The defaults in use.
 DEFAULTS: Final = Defaults()
