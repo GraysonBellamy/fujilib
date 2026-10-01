@@ -44,13 +44,19 @@ an operator can change a range or a setting at any time (design §1).
 A session whose port was opened by name can be reopened after a connection
 failure (:meth:`Session.reopen`): the port is opened again under the same
 settings, the analyzer is identified again and must be the same one, and
-what the session had learned is kept.
+what the session had learned is kept. When the reopen follows a connection
+failure, readings that would be ``ok`` are ``settling`` for a while
+(:attr:`Session.settling_until`, design §8): a pulled cable and a power cut
+look alike from here, and an analyzer that was switched off reports nothing
+of its own while it warms up.
 """
 
 from __future__ import annotations
 
+import math
+import time
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Final
@@ -71,7 +77,7 @@ from fujilib.devices.capability import (
 )
 from fujilib.devices.decode import label_channels
 from fujilib.devices.encode import encode_prepared
-from fujilib.devices.models import DeviceHealth, DeviceInfo
+from fujilib.devices.models import DeviceHealth, DeviceInfo, ReadingState
 from fujilib.devices.reads import read_ranges, read_registers, read_status
 from fujilib.devices.snapshot import FujiDeviceSnapshot
 from fujilib.devices.writes import busy_reasons, calibrating_reasons, describe, write_setting
@@ -227,6 +233,7 @@ class Session:
         options: Capability = Capability.NONE,
         verify_timeout: float | None = None,
         write_warn_per_minute: int = DEFAULTS.write_warn_per_minute,
+        settle_after_reopen_s: float = DEFAULTS.settle_after_reopen_s,
     ) -> None:
         """Bind to station ``address`` on ``port``, which the session then owns.
 
@@ -236,14 +243,23 @@ class Session:
         read after a write or command; by default it is what the port's timing
         allows two block reads to take, each with its retries and a late-reply
         window. ``write_warn_per_minute`` is where the write-rate warning
-        starts (0 for never).
+        starts (0 for never). ``settle_after_reopen_s`` is how long readings
+        are ``settling`` after a reopen that follows a connection failure (0
+        for not at all).
 
         Raises:
             FujiValidationError: ``address`` is not a station number, 1-31;
-                ``options`` holds something that is not an option.
+                ``options`` holds something that is not an option;
+                ``settle_after_reopen_s`` is negative or not finite.
         """
         if options & ~OPTION_CAPABILITIES:
             msg = f"options must be option capabilities, got {options!r}"
+            raise FujiValidationError(msg)
+        if not math.isfinite(settle_after_reopen_s) or settle_after_reopen_s < 0:
+            msg = (
+                "settle_after_reopen_s must be finite seconds, 0 or more; "
+                f"got {settle_after_reopen_s!r}"
+            )
             raise FujiValidationError(msg)
         self._client = port.client(address)
         self._port = port
@@ -268,6 +284,9 @@ class Session:
         )
         self._write_rate = WriteRateMonitor(warn_per_minute=write_warn_per_minute)
         self._panel_driver: str | None = None
+        self._settle_after_reopen_s = float(settle_after_reopen_s)
+        # The end of the settling period: on the clock a poll is timed by, and on the wall clock.
+        self._settling: tuple[int, datetime] | None = None
         self._relabel()
 
     # --- State ---------------------------------------------------------------------------
@@ -370,6 +389,19 @@ class Session:
     def last_frame(self) -> Frame | None:
         """The most recent poll's frame, or ``None``."""
         return self._last_frame
+
+    @property
+    def settling_until(self) -> datetime | None:
+        """When readings stop being marked ``settling`` (UTC), or ``None`` when they are not.
+
+        The period starts when :meth:`reopen` brings back a session that a
+        connection failure had broken, and lasts the ``settle_after_reopen_s``
+        the session was opened with (design §8).
+        """
+        settling = self._settling
+        if settling is None or time.monotonic_ns() >= settling[0]:
+            return None
+        return settling[1]
 
     @property
     def asserted_options(self) -> Capability:
@@ -688,9 +720,23 @@ class Session:
             )
             self._relabel()
         self.learn_current_ranges(poll.current_ranges)
-        frame = poll.decode(self._channels)
+        frame = self._mark_settling(poll.decode(self._channels))
         self._last_frame = frame
         return frame
+
+    def _mark_settling(self, frame: Frame) -> Frame:
+        """``frame``, its ``ok`` readings ``settling`` if it was read in the settling period."""
+        settling = self._settling
+        if settling is None:
+            return frame
+        if frame.readings_timing.t_request_mono_ns >= settling[0]:
+            self._settling = None
+            return frame
+        readings = tuple(
+            replace(r, state=ReadingState.SETTLING) if r.state is ReadingState.OK else r
+            for r in frame.readings
+        )
+        return replace(frame, readings=readings)
 
     async def ensure_ranges(
         self, client: ProtocolClient, deadline: Deadline
@@ -951,7 +997,9 @@ class Session:
         opened again with the settings it was first opened with. The station
         must identify as the analyzer that was open: the same serial number and
         type code. The asserted channel map, the established channels and the
-        traffic counters are kept. Calls made meanwhile are refused. Reopens
+        traffic counters are kept. If a connection failure had broken the
+        session, the settling period starts (:attr:`settling_until`). Calls
+        made meanwhile are refused. Reopens
         are taken one at a time, and a call that finds the analyzer reopened
         by another while it waited returns at once. :meth:`close` waits for a
         reopen in progress, so no port is left open once it returns.
@@ -980,6 +1028,7 @@ class Session:
                     self._check_not_closed(operation)
                     if self._port is not found and self._state is SessionState.OPEN:
                         return self._require_info()  # another call reopened it meanwhile
+                    was_broken = self._state is SessionState.BROKEN
                     self._state = SessionState.BROKEN
                     await self._port.aclose()
                     port = await reopener()
@@ -995,6 +1044,8 @@ class Session:
                     client.counters = _added(self._client.counters, client.counters)
                     self._port, self._client = port, client
                     self._state = SessionState.OPEN
+                    if was_broken:
+                        self._start_settling()
         except FujiError as exc:
             located = self._located(exc, operation)
             self._last_error = located.context
@@ -1003,6 +1054,21 @@ class Session:
             raise located from exc.__cause__
         _LOG.info("%s station %d: reopened", self.port, self.address)
         return self.learn_identity(identity)
+
+    def _start_settling(self) -> None:
+        seconds = self._settle_after_reopen_s
+        if seconds <= 0:
+            return
+        self._settling = (
+            time.monotonic_ns() + int(seconds * 1e9),
+            datetime.now(UTC) + timedelta(seconds=seconds),
+        )
+        _LOG.info(
+            "%s station %d: readings are marked settling for %g s after the connection failure",
+            self.port,
+            self.address,
+            seconds,
+        )
 
     def _check_not_closed(self, operation: str) -> None:
         if self._state is SessionState.CLOSED:

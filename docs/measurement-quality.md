@@ -37,13 +37,20 @@ decimals.
 
 ## Time response happens inside the analyzer
 
-Every value has passed through the analyzer's response-time setting (15 s on
-every channel of the development unit), and possibly its moving average,
-before it reaches a register. fujilib timestamps the Modbus read (`t_mono_ns`,
-`t_utc`: the midpoint of the request and reply), not the gas. The settings are
-reported by `read_metadata()` and written into `fuji-capture`'s
-`.meta.json`, so time alignment can account for them; they are never
-subtracted from timestamps.
+Every value has passed through the analyzer's response-time filter before it
+reaches a register, and an averaged channel through its average period as
+well. On the development unit the filter is a moving average as long as the
+response time (15 s as shipped): a value is the mean of the last N seconds,
+so it lags a steady change by N/2 s, and a step is 90 % through 0.9 N s
+after it reaches the detector. A response time of 1 s still averages over a
+second. Only 0 switches the filter off: the A/D values then equal the
+unsmoothed detector counts ([protocol findings](protocol-findings.md) §20).
+The sample line adds its own delay, which no setting removes.
+
+fujilib timestamps the Modbus read (`t_mono_ns`, `t_utc`: the midpoint of the
+request and reply), not the gas. The settings are reported by
+`read_metadata()` and written into `fuji-capture`'s `.meta.json`, so time
+alignment can account for them; they are never subtracted from timestamps.
 
 ## A flat value may be a held value
 
@@ -54,12 +61,34 @@ shows `----`. So:
 
 - use `Reading.state` / `chN_state` (`ok`, `hold`, `calibrating`,
   `auto_calibration`, `channel_error`, `analyzer_error`, `source_invalid`,
-  `unknown`), or `Reading.valid` / `chN_valid`, which is true only for `ok`;
+  `settling`, `unknown`), or `Reading.valid` / `chN_valid`, which is true only
+  for `ok`;
 - never read a flat Modbus value as evidence that a gas has stabilized;
 - keep the raw values: validity flags them, it does not hide them.
 
 `valid` is `None`, not `True`, when the status was not read
 (`poll(detail=False)`); the recorder always reads it.
+
+## The analyzer does not say it is warming up
+
+After power-on the readings are far off for about a minute, and no status,
+hold or error flag says so. On the development unit CO2 first read 220 % of
+its range and came within 0.02 vol% of its settled value 64 s later
+([protocol findings](protocol-findings.md) §15.5). Respect the warm-up time in
+the analyzer's manual before trusting a reading; fujilib cannot know how long
+the analyzer has been on when it opens the port.
+
+What fujilib can see is its own connection. When the port fails (the adapter
+unplugged, say) and the analyzer is reopened, by a recording's
+`ReconnectPolicy` or by `reopen()`, the analyzer may have lost power too. So
+for 90 s after such a reopen, every reading that would be `ok` has the state
+`settling` and `valid` is false. The value is kept as read.
+`Session.settling_until` says when the period ends, and
+`open_device(..., settle_after_reopen_s=...)` sets its length (0 for none).
+
+This does not cover an analyzer switched off and on while the port stays
+open. The polls in between fail with a timeout, no reopen follows, and the
+readings after it are `ok` as far as fujilib can tell.
 
 ## Labels must be asserted
 

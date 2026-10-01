@@ -155,7 +155,7 @@ Common recording options (`fuji-stream` and `fuji-capture`):
 | `--name NAME` | the model, e.g. `zpa` | the `device` value of every row |
 | `--overflow` | `block` | `block`, `drop_newest` or `drop_oldest` (see [Recording](recording.md)) |
 | `--buffer-size N` | 64 | batches waiting before the overflow policy applies |
-| `--reconnect` | off | ride out a connection failure; needs a serial port (with `--fixture` it is a usage error) |
+| `--reconnect` | off | ride out a connection failure; needs a serial port (with `--fixture` it is a usage error). Readings in the 90 s after the port is reopened have the state `settling` (see [Recording](recording.md)) |
 
 ## fuji-diag timing
 

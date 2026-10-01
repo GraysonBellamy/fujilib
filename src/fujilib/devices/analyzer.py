@@ -605,12 +605,14 @@ class Analyzer:
         confirm: bool = False,
         timeout: float | None = None,
     ) -> WriteResult:
-        """Set a response time, 1-60 s, by channel or by slot (``"o2"``, ``"ndir1"``..``"ndir4"``).
+        """Set a response time, 0-60 s, by channel or by slot (``"o2"``, ``"ndir1"``..``"ndir4"``).
 
         There are four NDIR-component slots and one O2 slot, not one per
         channel (design §2.6). A channel is mapped to its slot only through
         asserted gases: O2 to the O2 slot, the n-th NDIR channel to ``ndirn``,
         which needs every channel before it asserted. Otherwise name the slot.
+
+        0 switches the analyzer's filter off (protocol findings §20).
 
         Raises:
             FujiValidationError: the channel cannot be mapped to a slot; as

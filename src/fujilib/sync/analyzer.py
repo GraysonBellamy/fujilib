@@ -622,6 +622,7 @@ class Fuji:
         channel_map: Mapping[ChannelId | str, Gas | str] | None = None,
         options: Capability = Capability.NONE,
         write_warn_per_minute: int = DEFAULTS.write_warn_per_minute,
+        settle_after_reopen_s: float = DEFAULTS.settle_after_reopen_s,
         portal: SyncPortal | None = None,
     ) -> Generator[SyncAnalyzer]:
         """Open an analyzer for the ``with`` block; the arguments are :func:`open_device`'s.
@@ -644,6 +645,7 @@ class Fuji:
                 channel_map=channel_map,
                 options=options,
                 write_warn_per_minute=write_warn_per_minute,
+                settle_after_reopen_s=settle_after_reopen_s,
             )
             stack.callback(active.call, analyzer.close)
             yield SyncAnalyzer(analyzer, active)
