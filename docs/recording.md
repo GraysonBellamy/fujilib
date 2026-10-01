@@ -138,6 +138,12 @@ may have been switched off and reports nothing of its own while it warms up
 as read. `open_device(..., settle_after_reopen_s=...)` sets the period, and 0
 turns it off.
 
+Only a reopen marks rows. An analyzer switched off and on while its USB adapter
+stays powered never fails the port: the polls in between are error rows with a
+timeout, no reopen follows, and the rows after them are `ok` although the
+analyzer is warming up. If the analyzer may have lost power during a recording,
+treat the first minutes after such a run of timeouts as suspect.
+
 ## The summary
 
 `rec.summary` is updated live and finished when the recording stops, however

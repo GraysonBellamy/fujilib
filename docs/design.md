@@ -28,7 +28,9 @@ description: Architecture, design decisions, and phased implementation plan for 
 > part, a manual zero or span driven from the host with the calibration keys, is done on
 > the simulator and on the bench analyzer (findings §19), and goes into 0.1.0 as well
 > (§13.1 #95). **0.1.0 was released on 2026-09-30** (§12). Phase 8, the capa adapter,
-> was begun on 2026-10-01 (§12; §13.1 #97–#106).
+> was begun on 2026-10-01 (§12; §13.1 #97–#109). fujilib's part of it is 0.2.0; the
+> adapter itself is written in capa and has read the bench analyzer (findings §21),
+> and the rest of its bench session is still to come.
 >
 > - **Where statements come from.** Statements about the device come from the three
 >   manuals in `docs/manuals/` (§14) and are marked **[manual]**. The bench analyzer was
@@ -2332,9 +2334,7 @@ The capture policy (§13.1 #11) and the sample shape (#13) are settled; the benc
 channel map (#14) was adopted with Phase 4. The remaining items marked *(awaiting)* in
 §13.1 are each needed before the work that uses them:
 
-- the acceptance criteria for O2 (#15), before the O2 comparison;
-- whether an analyzer that falls silent and answers again, with the port still open,
-  starts the settling period too (#81), before 0.2.0.
+- the acceptance criteria for O2 (#15), before the O2 comparison.
 
 ### Phase 0 — Repository bootstrap (**done 2026-09-28**)
 
@@ -2966,7 +2966,7 @@ run began, so the steadiness rule's defaults stand (#78): the settling time afte
 change of gas is still to be recorded with them. The cleanup paths were driven on the
 simulator only: the bench session gave none of them cause to run.
 
-### Phase 8 — The capa adapter (begun 2026-10-01)
+### Phase 8 — The capa adapter (begun 2026-10-01; 8A and 8B **done 2026-10-01**)
 
 capa gets a device adapter for the analyzer, built on fujilib (#44, #97–#106). It reads
 CO2, CO and O2 with their validity, records the analyzer's metadata, changes its
@@ -2981,12 +2981,25 @@ which capa's own pins already accept. `anymodbus` 0.3 checks a reply against its
 request and retries a read on more kinds of bad reply, so `watlowlib`'s Modbus path
 changes behaviour with it, without a code change.
 
-**8B — fujilib 0.2.0.**
+*Done 2026-10-01:* `alicatlib` 0.3.1, `sartoriuslib` 0.4.3 and `watlowlib` 0.7.1 are on
+PyPI. Each repository's lint, type checks, tests, docs build and pre-commit passed on
+`anyserial` 0.2.0, and `watlowlib`'s on `anymodbus` 0.3.0 too, with no code change. On
+the bench a Watlow controller on `COM6` (Standard Bus, station 1) answered a read
+through the new versions, and capa's Watlow smoke test identified it and read its
+process value. Two limits: that controller is in Standard Bus mode, so `watlowlib`'s
+Modbus RTU path on `anymodbus` 0.3 has not run on hardware; and the smoke test's
+free-run step fails for a reason of its own (its channel declares degC, and the
+adapter's wire unit is °F, so the channel is quarantined).
+
+**8B — fujilib 0.2.0** (*done 2026-10-01*).
 
 - `fujilib.testing.frames`: the model builders, public and in the wheel (#103).
 - The settling period after a reopen (#81): `ReadingState.SETTLING`,
-  `open_device(settle_after_reopen_s=...)` and `Session.settling_until`.
-- `tests/unit/test_contract_capa.py` grows with whatever capa's mapping adds.
+  `open_device(settle_after_reopen_s=...)` and `Session.settling_until`. An analyzer
+  that loses power while its port stays open is not covered, by the owner's decision
+  (#81).
+- `tests/unit/test_contract_capa.py` pins the row and record shapes capa's mapping
+  uses: values, validity columns, error rows and the snapshot.
 
 **8C — The adapter in capa** (`capa/devices/fuji.py`; its shape is in §7.8):
 
@@ -3017,6 +3030,33 @@ changes behaviour with it, without a code change.
   calorimetry (§2.11) and that the analyzer needs its warm-up time.
 - **Not in the first capa pull request:** any change to capa's domain profiles (#102).
 
+*As built* (2026-10-01; in capa's branch `fuji-adapter`, to be merged by pull request):
+
+- **A calibration is three commands and a plan.** `calibration_plan` reads what a zero
+  or span would reach; `calibration_begin` starts the task that owns the run and
+  returns on the wait step; `calibration_commit` and `calibration_cancel` signal it.
+  The task reads the wait step every 0.5 s and publishes the steadiness verdict, which
+  the card shows. Left alone for 15 minutes, a run cancels itself. A run starting
+  cancels it (#108), and closing the adapter stops it within capa's close grace (#109).
+- **An unsteady reading only blocks** (#104): the card's hold-to-confirm button is
+  enabled while the last verdict is steady, and `calibrate()` checks again.
+- **The card reads back once a second** while it is visible and no run is active: one
+  poll, so that the operator sees the gas arrive before beginning. During a
+  calibration it shows the calibration's own reads and sends nothing.
+- **Records** (#105) are named by serial number, channel, kind and the time the run
+  ended. A card built again while the adapter still holds an ended run finds the file
+  it wrote and writes no second; a calibration refused before its first key leaves no
+  file.
+- **A run that starts in an outage.** capa's device-records file takes each column's
+  type from its first 1,024 rows, and types a column that is empty in all of them as
+  text. A failed poll's row has every column, empty, so a run whose first 1,024 polls
+  all fail stores the reading columns as text; nothing is refused or lost. One good
+  poll among them is enough for typed columns. capa's sink was left as it is.
+- **The Setup tab's device form** is generated from the adapter's parameters: the
+  channel map is a line of JSON, which discovery fills with the type code's suggestion.
+- **The simulator** models one range per channel, no outage and no `settling`, and
+  its calibration record is a short one marked `simulated`.
+
 *Exit:*
 
 - every repository touched passes its lint, type checks, tests and docs build; fujilib
@@ -3032,15 +3072,33 @@ changes behaviour with it, without a code change.
   changed and restored from the manual card, and a calibration begun and cancelled on
   its wait step.
 
-*Checked on the bench before the adapter was written* (2026-10-01, reads only): fujilib
-on the event loop of a worker thread, driven as capa drives an adapter. capa gives every
-serial port a thread with its own asyncio loop and runs `open()`, `stream()`,
-`command()` and `close()` on it as separate tasks; fujilib had run on a worker thread's
-loop only through the blocking facade's portal (§7.3, findings §11). On `COM8`, with the
-analyzer opened in one task, a recording at 2 Hz with a `ReconnectPolicy` in a second,
-two metadata reads from a third while it recorded, and the close in a fourth: 21 of 21
-polls answered, about 48 ms each, no error. The loop was Windows' Proactor loop, the
-default, which `anyserial` needs; capa does not change the loop policy.
+*Where the exit stands* (2026-10-01):
+
+- **Software: met** in fujilib and the three siblings, and in capa's branch, where the
+  whole suite, the type check, the lint and the docs build pass. A simulated capa run
+  writes both files (capa's `tests/integration/test_fuji_headless_run.py`). The Setup
+  tab's discovery rows and device form, and the manual control card with a setting, a
+  plan and a guarded zero against the simulator, are exercised by capa's tests
+  through a real worker pool. Neither has been looked at on screen.
+- **The bench, reading: met in part** (findings §21). The handshake, discovery on
+  `COM8`, capa's five read-only hardware tests, and a five-minute run at 1 Hz: 300
+  rows with no failed poll, the three gases and O2's validity in `scalars.parquet`,
+  ten snapshots, the identity in `equipment.toml`, and the bundle sealed. *Still to
+  do, with the owner at the bench:* the USB adapter unplugged and plugged back during
+  a run, and a session in capa's interface with live plots.
+- **The bench, writing: not begun.** Each of the two steps needs its own
+  authorization.
+
+*Checked on the bench before the adapter was written* (2026-10-01, reads only; findings
+§21.1): fujilib on the event loop of a worker thread, driven as capa drives an adapter.
+capa gives every serial port a thread with its own asyncio loop and runs `open()`,
+`stream()`, `command()` and `close()` on it as separate tasks; fujilib had run on a
+worker thread's loop only through the blocking facade's portal (§7.3, findings §11). On
+`COM8`, with the analyzer opened in one task, a recording at 2 Hz with a
+`ReconnectPolicy` in a second, two metadata reads from a third while it recorded, and
+the close in a fourth: 21 of 21 polls answered, about 48 ms each, no error. The loop was
+Windows' Proactor loop, the default, which `anyserial` needs; capa does not change the
+loop policy.
 
 **After Phase 8, as hardware, manuals and need allow:**
 
@@ -3163,7 +3221,7 @@ develops against local checkouts.
 | 78 | The steadiness rule | **Decided 2026-09-30 by the owner** (first adopted on the owner's \"proceed\"): `SteadinessRule`, with the recommended defaults, to be tuned from the wait-step reads the bench session records: the reading moves no more than 0.5 %FS over the longer of 30 s and twice the channel's response time, and the window's mean lies within 10 %FS of the named gas, with no two reads in it more than 5 s apart; every channel of the calibration at once; give up after 10 minutes. The response time is the channel's slot where the asserted gases say which, else the longest of the five. The read before the calibrating key must still be steady. On the bench on 2026-09-30 (findings §19) steady gases met it with a wide margin, 0.00–0.05 %FS of movement and 0.2–0.3 %FS from the gas; the defaults stand until a session records the settling after a change of gas. On 2026-09-29 O2 settled within 0.01 vol% about 36 s after the gas changed (findings §14.4). The A/D counts are recorded, not judged: output hold is refused (#86) |
 | 79 | Calibrations and keys on the bench analyzer | **Decided 2026-09-29 by the owner:** calibrations at the panel by the owner are allowed (an O2 zero and span were made, findings §14). Each session in which fujilib sends a key needs its own authorization |
 | 80 | The step register on a menu screen | **Adopted 2026-09-29 at the owner's request** ("fix the calibration tracker"), after findings §15.2. The menus put page numbers in 30182, some equal to calibration steps, and the tracker had turned a menu walk into five calibration events. 30182 is now a step only while 30181 shows measurement, as the manual defines it (TN5A1190a p.46). `PanelObservation.step` is `NONE` on any other screen, so a menu page neither starts a pass nor continues one. The decoder keeps the raw page number there. An event whose first read after it shows a menu says so in its evidence. The write refusal already checked the screen first (#63) |
-| 81 | Readings while the analyzer warms up after a power cycle | **Decided 2026-10-01 by the owner: (b)**, with one case still open (below). For about a minute after power-on the readings are far off, CO2 up to 220 %FS, and no flag says so (findings §15.5). A recording with `--reconnect` rides out the outage and keeps these rows with state `ok`. Options: (a) leave them, and document it; (b) give the polls of a settling period after a reconnect, about 90 s, a state that is not `ok`; (c) detect the warm-up from the analyzer, but nothing found so far marks it. The only trace of a power cycle is that 00B9h and the cursor read 0, which they may do anyway. Recommendation: (b), since a USB unplug and a power cut look the same from the host. **As built for 0.2.0:** after a reopen that follows a connection failure, every reading polled in the next `settle_after_reopen_s` seconds (90 by default, an argument of `open_device`; 0 turns it off) that would be `ok` has a new state, `settling`, so it is not valid; its raw value is kept, as with every other state, and a reading with a reason of its own keeps that reason. The period is the session's (`Session.settling_until`), so `poll()`, the recorder and capa all see it. Nothing is flagged at the first open: the host cannot know how long the analyzer has been on, and the documentation says to respect the manual's warm-up time. A replug with the analyzer still powered is flagged too, since flagging 90 s of good readings is the cheaper mistake. capa passes the state through as the channel sample's status, the word its balance adapter already uses for an unstable reading. **Still open *(awaiting)*:** the recommendation's premise is wrong for one case. A pulled USB cable fails the port, but a power cut that leaves the adapter powered does not: the port stays open, the polls time out, and no reopen follows. That is the case findings §15.5 observed, and its readings are still `ok`. Proposed: the period also starts when a poll is answered after one that got no reply at all (a timeout after its retries). A poll that fails that way is rare (none in the 43,200 of the 12-hour recording), so little good data would be marked |
+| 81 | Readings while the analyzer warms up after a power cycle | **Decided 2026-10-01 by the owner: (b)**, with one case left as it is (below). For about a minute after power-on the readings are far off, CO2 up to 220 %FS, and no flag says so (findings §15.5). A recording with `--reconnect` rides out the outage and keeps these rows with state `ok`. Options: (a) leave them, and document it; (b) give the polls of a settling period after a reconnect, about 90 s, a state that is not `ok`; (c) detect the warm-up from the analyzer, but nothing found so far marks it. The only trace of a power cycle is that 00B9h and the cursor read 0, which they may do anyway. Recommendation: (b), since a USB unplug and a power cut look the same from the host. **As built for 0.2.0:** after a reopen that follows a connection failure, every reading polled in the next `settle_after_reopen_s` seconds (90 by default, an argument of `open_device`; 0 turns it off) that would be `ok` has a new state, `settling`, so it is not valid; its raw value is kept, as with every other state, and a reading with a reason of its own keeps that reason. The period is the session's (`Session.settling_until`), so `poll()`, the recorder and capa all see it. Nothing is flagged at the first open: the host cannot know how long the analyzer has been on, and the documentation says to respect the manual's warm-up time. A replug with the analyzer still powered is flagged too, since flagging 90 s of good readings is the cheaper mistake. capa passes the state through as the channel sample's status, the word its balance adapter already uses for an unstable reading. **One case is not covered, and stays so by the owner's decision of 2026-10-01:** the recommendation's premise is wrong for it. A pulled USB cable fails the port, but a power cut that leaves the adapter powered does not: the port stays open, the polls time out, and no reopen follows. That is the case findings §15.5 observed, and its readings are still `ok`. It was proposed that the period also start when a poll is answered after one that got no reply at all (a timeout after its retries); a poll that fails that way is rare (none in the 43,200 of the 12-hour recording), but the analyzer is also silent for about a second while it stores a calibration (findings §14.3), which is two of a read's three attempts. The owner chose to leave the case and document it: `docs/measurement-quality.md`, `docs/recording.md` and capa's device page say that only a reopen marks readings |
 | 82 | The key prototype's session | **Decided 2026-09-30 by the owner:** authorized, with the owner at the panel (#79). Experiments 1-8 of `docs/hardware-test-day.md` ran, key lock included; the backlight and output-hold steps did not. Zero gas was at the inlet for the zero experiments and air for the span one. When 42002 left Ch3's zero flag set, the owner chose to clear it at the panel (ZERO, O2, ENT, ESC) rather than by a power cycle (findings §18.4) |
 | 83 | `return_to_measurement()` during a manual calibration | **Decided 2026-09-30 by the owner:** (b) with (c) as a backstop, in 0.1.0. 42002 on a manual calibration's wait step returns the display to measurement but leaves the channel's flag set, and nothing at the panel shows it (findings §18.4); #63 let the command through in every state, and it reported `done` on the measurement screen. It now reads the status first and is refused, nothing sent, while any calibration flag is set, automatic or manual (`FujiAnalyzerStateError`, saying that ESC on the wait step cancels). It still closes menus and a manual calibration's channel selection. It is `done` only when the panel shows the measurement screen with no flag set; a flag set after it, from a calibration begun at the panel meanwhile, raises `FujiVerificationError`. (The other options were (a) documenting it only, and (c) alone: keep sending it, but not `done` while a flag is set) |
 | 84 | How a remote calibration cancels and recovers (7C) | **Decided 2026-09-30 by the owner** (first adopted on the owner's \"proceed\"): as recommended. ESC is the only cancel on a wait step, never 42002 (findings §18.4). A flag still set on the measurement screen after the cleanup raises `FujiAnalyzerStateError`, naming the channel and the recovery: enter its wait step and press ESC. fujilib does not attempt that recovery itself; it would need ZERO or SPAN while a flag is set, which the driver otherwise refuses |
@@ -3186,10 +3244,12 @@ develops against local checkouts.
 | 101 | The siblings' `anyserial` and `anymodbus` pins | **Decided 2026-10-01 by the owner:** `alicatlib`, `sartoriuslib` and `watlowlib` may be changed to accept `anyserial` 0.2 and, in `watlowlib`, `anymodbus` 0.3, in patch releases. Without them capa cannot install fujilib (Phase 8A) |
 | 102 | capa's domain profiles | **Decided 2026-10-01 by the owner:** unchanged in the first capa pull request. The cone profile's oxygen group stays analog-only and its `AnalyzerCalibration` stays typed by the operator (§2.11) |
 | 103 | The model builders | **Adopted 2026-10-01** with #100; not separately confirmed: `timing`, `status`, `reading`, `analyzer`, `frame` and `bench_readings` move from the test suite into `fujilib.testing.frames`, public and in the wheel, for 0.2.0 (§10). `timing()` takes a caller's clock origins and `frame()` its timings, so a simulator can stamp its frames; the defaults stay the fixed ones the suite uses |
-| 104 | Which writes capa exposes, and behind which gate | **Decided 2026-10-01 by the owner**, as proposed: capa's own authorization gate first, then a rule by fujilib's tier (§6.2). The `PERSISTENT` setters (response time, output hold, hold mode and value, range, range method) and the `STATEFUL` commands (return to measurement, cancelling a calibration) pass with either of capa's authorizations: a run's, or a person's confirmation at the interface. Everything `DANGEROUS` (a calibration gas, the key that calibrates, auto calibration and auto zero where the option is asserted) needs a person's confirmation even inside an authorized run, so a method step cannot calibrate on its own; beginning a calibration needs it too. `write_parameter` and `apply_settings` take the tier of what they would write. An unsteady reading blocks the key that calibrates unless it is forced with a second confirmation. A refusal by fujilib (a value, the analyzer's state, a missing option, an exception reply) is a result, not an exception; an unverified or unknown outcome is a failed result and an error event. Blowback is not exposed |
+| 104 | Which writes capa exposes, and behind which gate | **Decided 2026-10-01 by the owner**, as proposed: capa's own authorization gate first, then a rule by fujilib's tier (§6.2). The `PERSISTENT` setters (response time, output hold, hold mode and value, range, range method) and the `STATEFUL` commands (return to measurement, cancelling a calibration) pass with either of capa's authorizations: a run's, or a person's confirmation at the interface. Everything `DANGEROUS` (a calibration gas, the key that calibrates, auto calibration and auto zero where the option is asserted) needs a person's confirmation even inside an authorized run, so a method step cannot calibrate on its own; beginning a calibration needs it too. `write_parameter` and `apply_settings` take the tier of what they would write. An unsteady reading blocks the key that calibrates, and nothing forces it: `RemoteCalibration.calibrate()` itself refuses unless the gas is steady (§6.5), and a reading that will not settle within the rule is calibrated at the front panel, which capa records as it does any calibration made there. (As first approved, the block could be forced with a second confirmation; the owner dropped the force on 2026-10-01, when it turned out to need a change to `calibrate()`.) A refusal by fujilib (a value, the analyzer's state, a missing option, an exception reply) is a result, not an exception; an unverified or unknown outcome is a failed result and an error event. Blowback is not exposed |
 | 105 | Where capa keeps calibration records | **Decided 2026-10-01 by the owner**, as proposed: the manual control card saves each `fujilib-calibration/1` record (#90) as a JSON file under the workspace's `configs/calibrations/analyzer/`, named by serial number, kind and UTC time, never overwriting one, and logs a manual event. A calibration that ends during a run is also an event in that run's bundle |
 | 106 | What a capa channel binds | **Adopted 2026-10-01** with #97; not separately confirmed: a channel (`CH1`–`CH12`) and a field, `value` (the concentration) or `valid` (1.0 or 0.0 from `Reading.valid`; no sample while it is unknown). capa stores `ChannelSample.status` but nothing in it reads it, so validity needs a channel of its own for alarms and procedures to watch. A reading whose unit is not the channel's declared unit quarantines the channel until the next run starts, with one event. The check compares canonical unit names, since capa's unit registry cannot tell percent from ppm by dimension, and runs on every sample, since a range change can change the unit |
 | 107 | A response time of 0 | **Decided 2026-10-01 by the owner:** allowed. A response time is written as 0–60 s, the MODBUS manual's limits. On the bench unit 0 switches the filter off: the A/D values then equal the unsmoothed detector counts. Any other setting is the length of a moving average, so 1 s still averages over a second (findings §20). The other writable limits stay the narrower of the two manuals' (§2.6). (First: 1–60 s, the narrower of the two manuals', as for every writable limit) |
+| 108 | A capa calibration still on its wait step when a run starts | **Adopted 2026-10-01** with the adapter; not separately confirmed: the adapter cancels it (ESC) as the run starts, and its end is the run's first event. capa's manual control panel takes no command during a run, so nobody could calibrate or cancel it, and it would hold the readings `calibrating` until its own 15-minute limit |
+| 109 | How long the capa adapter may take to close during a calibration | **Adopted 2026-10-01** with the adapter; not separately confirmed: capa gives an adapter 3 s to close and then cancels the close. The calibration's cleanup is therefore bounded at 1.5 s (`cleanup_timeout`, 30 s by default in fujilib), the adapter waits 0.5 s more for it, and the port is closed whether or not the cleanup finished. A cleanup cut short leaves the panel where it was; the calibration's record says the panel was not left clean |
 
 ### 13.2 Hardware verification
 
@@ -3223,6 +3283,7 @@ of 2026-09-30. Details and data are in [protocol-findings.md](protocol-findings.
 | 43 | A remote zero and span of O2 with `fuji-calibrate` | Done 2026-09-30 (findings §19), the owner at the gases. A zero on N2 (0.05 → 0.00 vol%) and a span on air (20.89 → 20.95 vol%) each completed, and a zero answered no was cancelled with nothing run. Every key was taken by the first read after it; each cleanup found the panel clean; all 162 settings read as before |
 | 34 | Setting writes and commands on the analyzer | Done 2026-09-29 (findings §13). The current range lags a verified range write by tens of milliseconds (findings §13.2), so a range write now waits for it (#70); with that, 10 of 10 stateful tests pass (findings §13.8). A menu at the panel refuses writes, and return to measurement closes it. Every setting matched the saved ones at the end |
 | 44 | What a response time of 0 does, and whether it differs from 1 s | Done 2026-10-01 (findings §20), with `scripts/probe_response.py`, the gas at rest. The analyzer takes 0 on its live components, and 0 switches the filter off: A/D values No. 0 and No. 1 then equal the unsmoothed counts at 046Ah–0471h, which never follow the setting. The filter is a moving average as long as the setting: a 0 s step averaged over 15 s matches the 15 s step within 5 counts of 2,724, and 1 s averages over 1.0 s. O2 has no count before the filter, and its reading follows its count. On a change between air and nitrogen the gas path was most of the response: about 9 s before the count moved and 6 s from 10 to 90 % with the filter off, a tenth of a second more at 1 s, and 13 s at 15 s. CO2 and CO have no gas connected, and their readings did not move a step |
+| 45 | fujilib under capa's adapter: on a worker thread's event loop, and through capa's whole stack | Done 2026-10-01 for the reads (findings §21). On a worker thread's loop, with open, recording, metadata reads and close each in a task of its own: 21 of 21 polls, no error. Through capa: the handshake, discovery on `COM8`, capa's five read-only hardware tests, and a five-minute run at 1 Hz with no failed poll, sealed, with the analyzer's records, channels, snapshots and identity in the bundle. The rest is item 46 |
 
 Still open:
 
@@ -3276,6 +3337,16 @@ Still open:
 43. ~~A remote zero and span of O2 with `fuji-calibrate`~~: done (table above).
     *Still open:* the settling of a gas after the valves change, recorded by the
     steadiness rule, from a run started before the gas is switched (#78).
+46. The rest of capa's bench session (§12 Phase 8). Reading: the USB adapter unplugged
+    and plugged back during a capa run, with its error rows, its events and the
+    `settling` readings after it; a session in capa's interface with live plots; and
+    capa's discovery of every port, which sends a Modbus read to each. Writing, each
+    separately authorized: a setting changed and restored from the manual control
+    card, and a calibration begun and cancelled on its wait step. *The owner at the
+    bench.*
+47. An analyzer switched off and on while its USB adapter stays powered, during a
+    recording: the rows after it are `ok` (#81). Seen once, outside a recording
+    (findings §15.5). *Left as it is and documented, by the owner's decision.*
 29. ~~Trio with a real Windows COM port (§4.7 item 14)~~ — fixed in `anyserial` 0.2.0;
     the hardware tests pass on trio on the bench (findings §10.4). *Linux and macOS
     untested.*

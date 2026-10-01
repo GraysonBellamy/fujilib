@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-01
+
+What an application built on fujilib needed: the model builders, and a state for
+readings taken just after a reconnect.
+
 ### Added
 
 - `fujilib.testing.frames`: builders for synthetic readings, statuses and frames
@@ -39,6 +44,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   where they took 1-60 s. On the development analyzer the A/D values then equal
   the unsmoothed detector counts, and a response time of 1 s still filters
   (protocol findings §20).
+- The recording page says what the settling period does not cover: an analyzer
+  switched off and on while its USB adapter stays powered never fails the port,
+  so the rows after it are `ok`.
+- Protocol findings §21: fujilib on the event loop of a worker thread and under
+  an application's device adapter, read-only on the development analyzer.
 
 ## [0.1.0] - 2026-09-30
 
