@@ -1486,3 +1486,152 @@ The O2 counts fit §17.3's span coefficient, 800 × gas / (span count − zero c
 analyzer now shows 6.1437 is not known.
 
 Design §12 Phase 7C's hardware exit is met.
+
+## 20. The response time, and a response time of 0 (2026-10-01)
+
+The owner asked what a response time of 0 does, and whether it differs from 1 s.
+`scripts/probe_response.py` ran at 12:23–12:33 UTC on `COM8`, with the owner's
+authorization for the session. It set the response times of the three live
+components (40076, 40078 and 40084) to 0, 1, 0 and 15 s in turn, and put back what it
+had found. Each stage, and one before and one after at the setting found, lasted
+90 s. Through every stage it read the Ch1–Ch3 readings, A/D values No. 0–4 and the
+counts at 046Ah–0471h about ten times a second: 5,550 reads of each, none failed.
+The gas at the inlet was at rest, with O2 at 20.59 vol%. The first 20 s of each stage
+are left out of the figures. Raw files: `probe_out/probe_response_20261001T122358Z.jsonl`
+and `.json`.
+
+**The three response times read 1 s when the session began.** They read 15 s on
+2026-09-29 (§13) and had been changed since, not by a probe. They were left at 1 s.
+
+### 20.1 The analyzer takes 0 on a live component
+
+Each write of 0 was acknowledged and read back as 0, as on the absent component of
+§13.6. No reading jumped when a setting changed, in either direction, and no read
+went unanswered. Those writes went through the client, past the library's limit of
+the time. Once fujilib took 0 (§20.8), the runs of 12:50 and 13:00 UTC wrote it with
+`write_parameter`, which read each one back.
+
+### 20.2 A response time of 0 switches the filter off
+
+The scatter of each value (standard deviation, in counts), and how often the A/D
+value equalled the count read about 30 ms after it:
+
+| Stage | Setting | A/D No. 0 (CO2) | 046Ah (CO2) | A/D No. 1 (CO) | 046Eh (CO) | No. 0 = 046Ah | No. 1 = 046Eh |
+|---|---|---|---|---|---|---|---|
+| before | 1 s | 0.59 | 0.90 | 2.46 | 3.70 | 44 % | 11 % |
+| 1 | 0 s | 0.98 | 0.98 | 4.17 | 4.15 | 77 % | 69 % |
+| 2 | 1 s | 0.60 | 0.92 | 2.81 | 4.30 | 41 % | 10 % |
+| 3 | 0 s | 0.89 | 0.88 | 4.12 | 4.16 | 84 % | 77 % |
+| 4 | 15 s | 0.32 | 1.19 | 0.51 | 4.38 | 37 % | 9 % |
+| after | 1 s | 0.75 | 1.02 | 2.93 | 4.20 | 37 % | 9 % |
+
+- **At 0 s the A/D value is the count.** The two scatter alike, change in the same
+  share of reads (51 % and 50 % for CO2, 69 % and 68 % for CO in stage 1) and are
+  equal in 69–84 % of reads. The rest fits the count moving between the two reads.
+- **1 s is still a filter.** It takes CO's scatter from about 4.2 counts to 2.5–2.9,
+  about half the variance. What kind of filter is in §20.7.
+- **At 15 s** CO's A/D value scatters 0.51 counts against the count's 4.38.
+- **The counts at 046Ah–0471h do not follow the setting**: 0.88–1.19 and 3.70–4.38
+  counts at every setting. So the smoothing of §15.4 is the response-time filter, and
+  the A/D values come after it.
+
+### 20.3 O2 has no count before the filter
+
+A/D No. 4 follows the setting like No. 0 and No. 1, and nothing at 046Ah–0471h is O2
+(§15.4).
+
+- At 1 s and 15 s it read 3323 in every read of stages 2 and 4 and of the last. In
+  the first stage, at 1 s, it changed 8 times in 70 s.
+- At 0 s it moved between 3323 and 3324, changing in 31 % and 11 % of reads.
+- The O2 reading moved with it, between 20.59 and 20.60 vol%, in the same reads: one
+  step of the reading for one count.
+
+So an unfiltered O2 value exists only with the response time at 0, and the reading
+is then as fine as the count (§14.4).
+
+### 20.4 The CO2 and CO readings did not move
+
+Ch1 read −0.08 vol% and Ch2 −0.005 vol% in every read at every setting. At rest their
+noise is below one step of the reading, so this run shows nothing of the filter in
+them.
+
+### 20.5 How often the values are renewed
+
+The counts, and at 0 s the A/D values, changed in half to two thirds of consecutive
+reads 100 ms apart, and most changes were one read apart. So the analyzer renews them
+at least about as often as they were read. Faster reads would be needed to time it.
+
+### 20.6 A change of gas at each setting
+
+A second run, 13:00–13:12 UTC, with the owner at the gases
+(`probe_out/probe_response_20261001T130002Z.jsonl` and `.json`). Six stages of 120 s:
+1 s as found, then 0, 1, 0 and 15 s, then 1 s again. In each the probe told the owner
+to change air for nitrogen 15 s in and back to air 65 s in. 7,298 reads, none failed.
+Only O2 has gas connected, so the figures are A/D No. 4's. Air read 20.91 vol% at
+3,364–3,365 counts and nitrogen 0.00 vol% at 640–642.
+
+| Stage | Setting | Fall, 10–90 % | Fall, steepest | Rise, 10–90 % | Rise, steepest | 50 % after the cue: fall, rise |
+|---|---|---|---|---|---|---|
+| before | 1 s | 5.97 s | 594 counts/s | 6.51 s | 707 counts/s | 12.9 s, 11.0 s |
+| 1 | 0 s | 5.87 s | 677 | 6.35 s | 728 | 11.6 s, 11.0 s |
+| 2 | 1 s | 5.90 s | 616 | 6.50 s | 730 | 12.0 s, 11.0 s |
+| 3 | 0 s | 5.75 s | 695 | 6.48 s | 752 | 11.4 s, 10.6 s |
+| 4 | 15 s | 13.18 s | 210 | 13.34 s | 207 | 19.4 s, 18.8 s |
+| after | 1 s | 5.92 s | 625 | 6.45 s | 717 | 11.8 s, 10.8 s |
+
+The steepest slope is over half a second. The times after the cue include the
+owner's hand on the valve, so they compare only roughly between stages; the 10–90 %
+times and the slopes do not depend on it.
+
+- **The gas path is most of the response.** With the filter off the count first
+  moved 8.4–9.0 s after the cue and took another 5.8–6.5 s from 10 to 90 %. It was
+  within 5 % of the new gas 17–18 s after the cue and within 2 % at 19.5–21.5 s.
+- **1 s against 0 s is about a tenth of a second** on the 10–90 % time, 5.90–5.97
+  against 5.75–5.87 s falling and 6.45–6.51 against 6.35–6.48 s rising, and about a
+  tenth less on the steepest fall. That is the size of one read.
+- **15 s more than doubles it:** 13.2–13.3 s from 10 to 90 %, a third of the slope,
+  and the 50 % point 6–8 s later.
+- **The reading follows the count.** Ch3's curve crossed every level within 0.15 s
+  of A/D No. 4's, at every setting. Nothing else filters between them.
+
+### 20.7 The filter is a moving average as long as the setting
+
+Each 0 s step of §20.6, averaged over a window and shifted in time for the best fit,
+against the 15 s step (rms difference in counts, of a step of 2,724):
+
+| Filter of the 0 s step | Fall | Rise |
+|---|---|---|
+| none | 293–301 | 268–285 |
+| moving average, 14 s | 23–24 | 21–22 |
+| moving average, 15 s | **3.4–4.9** | **4.1–4.7** |
+| moving average, 16 s | 19–20 | 19–20 |
+| one pole, best time constant (5.5 s) | 94 | 90 |
+
+The same on §20.2's noise, with no shift: the CO count at 046Eh averaged over a
+window, against A/D No. 1 (rms difference in counts).
+
+| Setting | Count as read | Averaged over the setting | Next best window | Best one pole |
+|---|---|---|---|---|
+| 1 s (three stages) | 3.3–4.1 | **0.58–0.68** over 1.0 s | 0.71–0.80 over 1.2 s | 1.00–1.28 at 0.7 s |
+| 15 s | 4.2 | **0.52** over 15 s | 0.59 over 18 s | 0.67 at 10 s |
+
+- **The value is the mean of the last N seconds**, N being the response time. It is
+  not an exponential filter: one fits about twenty times worse on the step.
+- So a step is 90 % through 0.9 N s after it reaches the detector, which is the
+  manual's "response time (for 90 % FS response)" (ZPA p.94), and the value lags a
+  steady change by N/2 s.
+- With N = 1 the mean is over 1.0 s; 0.8 and 1.2 s fit worse.
+
+### 20.8 What this changes, and what it leaves
+
+fujilib now writes a response time of 0–60 s (design §13.1 #107); it kept to 1–60 s,
+the instruction manual's limit, before.
+
+Not answered here:
+
+- A change of gas on CO2 or CO, which have no gas connected. Their A/D values follow
+  the setting as O2's does (§20.2).
+- What the panel's Response Time screen shows for 0, and whether it can set it.
+- A power cycle with a response time of 0. Settings are kept (§13.5); this one was
+  not tried.
+- Whether the analog outputs follow the setting in the same way.

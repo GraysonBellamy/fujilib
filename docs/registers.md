@@ -195,14 +195,14 @@ registry and run `python scripts/gen_register_docs.py`.
 
 | Address | Register | Name | Type | FC | Tier | Limits | Scaling | Requires | Evidence | Ref | Description |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| 004Bh | 40076 | `response_time.ndir1` | uint16 | 03 06 10 | PERSISTENT | 1..60 | s | - | documented | TN5A1190a p.30 | Response time of NDIR component 1. |
-| 004Dh | 40078 | `response_time.ndir2` | uint16 | 03 06 10 | PERSISTENT | 1..60 | s | - | documented | TN5A1190a p.30 | Response time of NDIR component 2. |
-| 004Fh | 40080 | `response_time.ndir3` | uint16 | 03 06 10 | PERSISTENT | 1..60 | s | - | documented | TN5A1190a p.30 | Response time of NDIR component 3. |
-| 0051h | 40082 | `response_time.ndir4` | uint16 | 03 06 10 | PERSISTENT | 1..60 | s | - | documented | TN5A1190a p.30 | Response time of NDIR component 4. |
-| 0053h | 40084 | `response_time.o2` | uint16 | 03 06 10 | PERSISTENT | 1..60 | s | - | documented | TN5A1190a p.30 | Response time of the O2 measurement, whatever its channel. |
+| 004Bh | 40076 | `response_time.ndir1` | uint16 | 03 06 10 | PERSISTENT | 0..60 | s | - | documented | TN5A1190a p.30 | Response time of NDIR component 1. |
+| 004Dh | 40078 | `response_time.ndir2` | uint16 | 03 06 10 | PERSISTENT | 0..60 | s | - | documented | TN5A1190a p.30 | Response time of NDIR component 2. |
+| 004Fh | 40080 | `response_time.ndir3` | uint16 | 03 06 10 | PERSISTENT | 0..60 | s | - | documented | TN5A1190a p.30 | Response time of NDIR component 3. |
+| 0051h | 40082 | `response_time.ndir4` | uint16 | 03 06 10 | PERSISTENT | 0..60 | s | - | documented | TN5A1190a p.30 | Response time of NDIR component 4. |
+| 0053h | 40084 | `response_time.o2` | uint16 | 03 06 10 | PERSISTENT | 0..60 | s | - | documented | TN5A1190a p.30 | Response time of the O2 measurement, whatever its channel. |
 
-- `response_time.ndir1`, `response_time.ndir2`, `response_time.ndir3`, `response_time.ndir4`: The manual's 'Ch1-Ch4' slots are NDIR components; O2 has its own slot (40084) whatever its channel. The MODBUS manual gives 0-60 s, the ZPA manual 1-60 s (ZPA p.65); a write is kept to 1-60 s.
-- `response_time.o2`: The MODBUS manual gives 0-60 s, the ZPA manual 1-60 s (ZPA p.65); a write is kept to 1-60 s.
+- `response_time.ndir1`, `response_time.ndir2`, `response_time.ndir3`, `response_time.ndir4`: The manual's 'Ch1-Ch4' slots are NDIR components; O2 has its own slot (40084) whatever its channel. The MODBUS manual gives 0-60 s, the ZPA manual 1-60 s (ZPA p.65). On the bench unit the filter is a moving average as long as the setting, and 0 switches it off: the A/D value then equals the unsmoothed detector count (protocol findings §20).
+- `response_time.o2`: The MODBUS manual gives 0-60 s, the ZPA manual 1-60 s (ZPA p.65). On the bench unit the filter is a moving average as long as the setting, and 0 switches it off: the O2 reading then follows every count of the detector (protocol findings §20).
 
 ### Moving average
 

@@ -147,7 +147,7 @@ async def test_what_a_document_would_change() -> None:
         ({"key_lock": True}, "read-only"),
         ({"alarm1.range1.high": {"value": None, "raw": 50}}, "read-only"),
         ({"response_time.o2": {"value": None, "raw": 20}}, "no value to write"),
-        ({"response_time.o2": 0}, "outside 1-60"),
+        ({"response_time.o2": 61}, "outside 0-60"),
         ({"response_time.o2": {"value": 16, "unit": "ms"}}, "takes no unit 'ms'"),
         ({"hold.mode": 1}, "expects one of"),
         ({"calibration_gas.ch3.range1.span": {"value": 2090, "unit": "ppm"}}, "not ppm"),

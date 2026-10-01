@@ -201,7 +201,7 @@ def test_write_limits() -> None:
     assert (
         REGISTRY.resolve("response_time.o2").minimum,
         REGISTRY.resolve("response_time.o2").maximum,
-    ) == (1, 60)
+    ) == (0, 60)
     assert REGISTRY.resolve("range.ch3.method").write_values == frozenset({0, 2})
     assert REGISTRY.resolve("calibration_gas.ch3.range1.span").write_percent_fs == (1, 105)
     assert REGISTRY.resolve("calibration_gas.ch3.range1.zero").write_percent_fs == (0, 100)

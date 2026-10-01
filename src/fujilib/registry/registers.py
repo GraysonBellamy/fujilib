@@ -789,13 +789,15 @@ def _measurement_settings() -> Iterator[RegisterSpec]:
             write=persistent,
             ref="TN5A1190a p.30",
             doc=f"Response time of NDIR component {k}.",
-            minimum=1,
+            minimum=0,
             maximum=60,
             unit="s",
             notes=(
                 "The manual's 'Ch1-Ch4' slots are NDIR components; O2 has its own slot "
                 "(40084) whatever its channel. The MODBUS manual gives 0-60 s, the ZPA "
-                "manual 1-60 s (ZPA p.65); a write is kept to 1-60 s."
+                "manual 1-60 s (ZPA p.65). On the bench unit the filter is a moving "
+                "average as long as the setting, and 0 switches it off: the A/D value "
+                "then equals the unsmoothed detector count (protocol findings §20)."
             ),
         )
     yield _setting(
@@ -805,12 +807,14 @@ def _measurement_settings() -> Iterator[RegisterSpec]:
         write=persistent,
         ref="TN5A1190a p.30",
         doc="Response time of the O2 measurement, whatever its channel.",
-        minimum=1,
+        minimum=0,
         maximum=60,
         unit="s",
         notes=(
-            "The MODBUS manual gives 0-60 s, the ZPA manual 1-60 s (ZPA p.65); a write is "
-            "kept to 1-60 s."
+            "The MODBUS manual gives 0-60 s, the ZPA manual 1-60 s (ZPA p.65). On the "
+            "bench unit the filter is a moving average as long as the setting, and 0 "
+            "switches it off: the O2 reading then follows every count of the detector "
+            "(protocol findings §20)."
         ),
     )
     averaging = {"requires": Capability.AVERAGING}

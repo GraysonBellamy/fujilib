@@ -17,9 +17,9 @@ kept without a save step? ``persist-write`` keeps what it wrote in a state
 file for ``persist-check``, which restores the register.
 
 ``out-of-range``: write 61 and 0 to ``response_time.ndir4`` with the client
-directly, past the library's own limit of 1-60 s (the MODBUS manual gives 0-60,
-the ZPA manual 1-60): does the analyzer refuse with exception 03, clamp, or
-store the value? The client still checks the frozen write envelope.
+directly, 61 being past the library's own limit of 0-60 s and 0 past the ZPA
+manual's 1-60 s: does the analyzer refuse with exception 03, clamp, or store
+the value? The client still checks the frozen write envelope.
 
 Every result goes to ``probe_out/probe_write_<step>_<time>.json`` with the
 arguments and package versions (design §11, "Evidence").

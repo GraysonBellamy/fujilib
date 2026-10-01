@@ -379,7 +379,7 @@ async def test_confirm_is_checked_before_the_value() -> None:
     async with analyzer_on(mock) as (anz, _):
         with pytest.raises(FujiConfirmationRequiredError):
             await anz.write_parameter("response_time.o2", 999)
-        with pytest.raises(FujiValidationError, match="outside 1-60"):
+        with pytest.raises(FujiValidationError, match="outside 0-60"):
             await anz.write_parameter("response_time.o2", 999, confirm=True)
     assert mock.exchanges == []
 

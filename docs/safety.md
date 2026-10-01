@@ -92,8 +92,10 @@ and SPAN: the value is checked as well as the address, so MODE and SIDE never
 reach the panel.
 
 Limits are the narrower of the two manuals' where they disagree: the MODBUS
-manual defers setting ranges to the instruction manual. A response time is
-1-60 s, for example, although the MODBUS manual allows 0.
+manual defers setting ranges to the instruction manual. The response time is
+the exception: it is 0-60 s, as the MODBUS manual gives it, since 0 switches
+the analyzer's filter off, where the instruction manual gives 1-60 s
+([protocol findings](protocol-findings.md) §20).
 
 ## A write, read back
 
@@ -324,9 +326,9 @@ authorization. The procedure is in [Hardware test day](hardware-test-day.md).
 - **`anymodbus` or another program used directly** on the same port: the
   guarantees are fujilib's, not the line's.
 - **A value outside a setting's range, sent by another program.** The
-  analyzer stores it as sent: the development analyzer took 61 s and 0 s as
-  a response time, outside fujilib's 1-60 s, without refusing or clamping
-  either. fujilib's own limits are the only guard, and fujilib never sends
+  analyzer stores it as sent: the development analyzer took 61 s as a
+  response time, outside fujilib's 0-60 s, without refusing or clamping
+  it. fujilib's own limits are the only guard, and fujilib never sends
   such a value.
 - **The gas at the inlet** during a calibration.
 
