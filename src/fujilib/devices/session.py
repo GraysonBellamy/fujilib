@@ -877,7 +877,10 @@ class Session:
                 except FujiConnectionError:
                     raise
                 except FujiError as exc:
-                    failure = exc
+                    # A read the budget cut short, after one that succeeded, is
+                    # the budget running out, not a range that cannot be read.
+                    if seen is None or deadline.remaining() > 0:
+                        failure = exc
                     break
                 if seen.words == result.requested.words:
                     return

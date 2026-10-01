@@ -214,6 +214,26 @@ async def test_a_channel_that_never_switches_fails_the_write() -> None:
     assert mock.transactions().count(CH3_CURRENT) > 1
 
 
+async def test_a_follow_the_budget_cuts_short_is_a_channel_that_never_switched() -> None:
+    mock = bench(replace(DEFAULT_ZPA_BANK, range_lag_s=3600.0))
+
+    def after_the_first(request: MockRequest) -> bool:
+        return request.key == CH3_CURRENT and mock.transactions().count(CH3_CURRENT) > 1
+
+    async with analyzer_on(mock) as (anz, _):
+        anz.session._verify_timeout = 0.2
+        # The second read of the current range gets no reply, and the budget
+        # ends before its request timeout (0.25 s) does.
+        mock.inject(FaultKind.DROP, times=None, when=after_the_first)
+        with pytest.raises(
+            FujiVerificationError, match=r"but CH3 still measures on range_1 after"
+        ) as info:
+            await anz.set_range(CH3, 2, confirm=True)
+    assert info.value.context.extra["current_range_raw"] == 0
+    assert info.value.__cause__ is None
+    assert mock.transactions().count(CH3_CURRENT) == 2
+
+
 async def test_a_current_range_that_cannot_be_read_fails_the_write() -> None:
     mock = bench()
     async with analyzer_on(mock) as (anz, _):
