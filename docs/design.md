@@ -2992,7 +2992,12 @@ process value. Two limits:
 - **`watlowlib`'s Modbus RTU path on `anymodbus` 0.3 has not run on hardware.** That
   controller (a PM3R1CA-AAAAAAA) answers Standard Bus only: asked again the same day,
   it gave no reply to Modbus RTU at 38400, 19200 or 9600 baud, with no parity or even.
-  It needs a controller set to Modbus.
+  The Watlow on this bench that speaks Modbus is the other one, a Series SD (9600
+  8-N-1, station 10). `watlowlib` 0.7.0 was validated against it in May 2026
+  (`watlowlib`'s README and its 0.7.0 changelog), on `anymodbus` before 0.2. It was
+  not connected on 2026-10-01: neither of the USB adapters it has been on was
+  present. `watlowlib`'s read-only checks against it on `anymodbus` 0.3 are still to
+  run.
 - **capa's smoke test was itself wrong in two places**, both since fixed in capa. Its
   free-run step declared its channel in degC where the adapter's wire unit is °F, so
   the channel was quarantined and recorded nothing. And its "no-op" setpoint step
