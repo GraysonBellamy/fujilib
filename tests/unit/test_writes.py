@@ -44,7 +44,6 @@ from fujilib.registry.channels import ChannelId, Gas
 from fujilib.registry.enums import HoldMode, RangeIndex, RangeMethod
 from fujilib.registry.registers import REGISTRY
 from fujilib.testing import DEFAULT_ZPA_BANK, FaultKind, MockRequest, mock_transport
-from tests.conftest import approx
 from tests.facade import FAST, FC03, FC04, POLL, RANGES, analyzer_on, bench, when
 
 if TYPE_CHECKING:
@@ -127,9 +126,9 @@ async def test_a_calibration_gas_is_scaled_by_its_range_read_just_before() -> No
         )
     assert mock.transactions() == POLL + RANGES + single(0x09)
     assert mock.holding[0x09] == 2090
-    assert result.requested.value == approx(20.9)
+    assert result.requested.value == pytest.approx(20.9)
     assert result.requested.unit == "vol%"
-    assert result.previous.value == approx(20.95)
+    assert result.previous.value == pytest.approx(20.95)
 
 
 async def test_a_calibration_gas_in_the_wrong_unit_is_not_written() -> None:
@@ -626,7 +625,7 @@ async def test_the_session_derives_its_read_back_budget() -> None:
     # Two block reads, each with every retry and a late-reply window.
     expected = 2 * (FAST["resync_window"] + 3 * FAST["request_timeout"])
     async with analyzer_on(bench()) as (anz, _):
-        assert anz.session.verify_timeout == approx(expected)
+        assert anz.session.verify_timeout == pytest.approx(expected)
 
 
 async def test_a_write_that_outlives_its_deadline_is_still_read_back() -> None:

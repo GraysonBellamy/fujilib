@@ -15,7 +15,6 @@ from hypothesis import strategies as st
 from fujilib.devices.steadiness import SteadinessJudge, SteadinessRule, SteadinessTarget
 from fujilib.errors import FujiValidationError
 from fujilib.registry.channels import ChannelId
-from tests.conftest import approx
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
@@ -92,7 +91,7 @@ def test_a_gas_that_holds_still_for_the_window_is_steady() -> None:
     assert verdict.steady
     channel = verdict.channels[CH3]
     assert channel.covered_s == 30.0
-    assert channel.spread_percent_fs == approx(100 * 0.01 / 21)
+    assert channel.spread_percent_fs == pytest.approx(100 * 0.01 / 21)
     assert channel.reason.startswith("steady: moved 0.05 %FS over 30 s")
     assert (verdict.elapsed_s, verdict.reads) == (30.0, 31)
     assert verdict.reasons == (f"CH3: {channel.reason}",)
@@ -111,7 +110,7 @@ def test_a_steady_reading_far_from_the_named_gas_is_the_wrong_gas() -> None:
     assert not verdict.steady
     reason = verdict.channels[CH3].reason
     assert reason == "reads 0.02 vol%, -99.7 %FS from the named gas 20.95 (at most ±10 %FS)"
-    assert verdict.channels[CH3].offset_percent_fs == approx(-99.66666, abs=1e-3)
+    assert verdict.channels[CH3].offset_percent_fs == pytest.approx(-99.66666, abs=1e-3)
 
 
 def test_an_undecoded_reading_in_the_window_is_not_steady() -> None:

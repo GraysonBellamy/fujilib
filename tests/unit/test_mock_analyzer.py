@@ -406,7 +406,7 @@ async def test_auto_calibration_runs_its_phases_on_the_clock() -> None:
         assert calibration is not None
         assert calibration.kind == "auto_calibration"
         assert calibration.channels == (1, 3)
-        assert calibration.duration_s == pytest.approx(0.4)  # pyright: ignore[reportUnknownMemberType]
+        assert calibration.duration_s == pytest.approx(0.4)
         assert [p[0] for p in calibration.phases] == ["zero", "span", "span", "extension"]
         assert calibration.phase_at(0.05) == ("zero", None)
         assert calibration.phase_at(0.25) == ("span", 3)

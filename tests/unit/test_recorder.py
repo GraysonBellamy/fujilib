@@ -201,7 +201,7 @@ async def test_an_overrun_skips_whole_slots_and_counts_them_late() -> None:
     assert len(batches) == summary.samples_emitted == 8
     assert summary.samples_emitted + summary.samples_late == summary.target_total_samples
     assert round(source.starts[3] - 100.0, 6) == 0.55
-    assert summary.max_drift_ms == pytest.approx(50.0)  # pyright: ignore[reportUnknownMemberType]
+    assert summary.max_drift_ms == pytest.approx(50.0)
 
 
 async def test_drift_is_how_late_a_poll_starts() -> None:
@@ -209,7 +209,7 @@ async def test_drift_is_how_late_a_poll_starts() -> None:
     async with recording(source, rate_hz=10.0, duration=0.5) as rec:
         _ = await collect(rec)
     assert rec.summary.samples_late == 0
-    assert rec.summary.max_drift_ms == pytest.approx(50.0)  # pyright: ignore[reportUnknownMemberType]
+    assert rec.summary.max_drift_ms == pytest.approx(50.0)
 
 
 async def test_an_overrun_without_a_duration() -> None:
