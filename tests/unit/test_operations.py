@@ -43,7 +43,6 @@ from fujilib.registry.registers import REGISTRY
 from fujilib.sinks import sample_to_row
 from fujilib.streaming import PollSourceAdapter, record
 from fujilib.testing import DEFAULT_ZPA_BANK, FaultKind, MockAnalyzer, MockRequest, mock_port
-from tests.conftest import approx
 from tests.facade import FC04, POLL, analyzer_on, bench, when
 
 pytestmark = pytest.mark.anyio
@@ -80,7 +79,7 @@ async def test_the_auto_calibration_plan_of_the_bench_analyzer() -> None:
     ch3 = plan.targets[2]
     assert (ch3.ranges, ch3.span, ch3.widened, ch3.established) == ((1,), True, False, True)
     assert ch3.zero_gas == (0.0,)
-    assert ch3.span_gas[0] == approx(20.95)
+    assert ch3.span_gas[0] == pytest.approx(20.95)
     assert ch3.units == ("vol%",)
     assert not plan.targets[3].established
     assert plan.hold is False
@@ -104,8 +103,8 @@ async def test_both_ranges_and_hold_widen_and_lengthen_the_plan() -> None:
         zero_plan = await anz.plan_auto_zero_calibration()
     ch1, ch2, ch3 = plan.targets
     assert (ch3.ranges, ch3.widened) == ((1, 2), True)
-    assert ch3.span_gas[0] == approx(20.95)
-    assert ch3.span_gas[1] == approx(20.01)
+    assert ch3.span_gas[0] == pytest.approx(20.95)
+    assert ch3.span_gas[1] == pytest.approx(20.01)
     assert (ch1.ranges, ch1.widened) == ((1,), False)
     assert ch2.ranges == (2,)
     assert any("CH2 is set to auto-calibrate range 2, but it has 1 range" in n for n in plan.notes)

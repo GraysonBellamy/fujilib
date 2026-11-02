@@ -43,7 +43,6 @@ from fujilib.registry.enums import (
 from fujilib.registry.registers import REGISTRY
 from fujilib.sync import Fuji, SyncPortal
 from fujilib.testing import DEFAULT_ZPA_BANK, FaultKind, MockAnalyzer, MockRequest, mock_transport
-from tests.conftest import approx
 from tests.facade import FC04, analyzer_on, documented_only, when
 from tests.factories import T0, frame, reading, status
 
@@ -149,7 +148,7 @@ def test_the_bench_zero_completes() -> None:
     assert event.ran_before == T0 + timedelta(seconds=3.0)
     assert event.calibrated_at == event.ran_before
     assert event.ended_at == T0 + timedelta(seconds=4.6)
-    assert event.before[CH3].value == approx(-0.12)
+    assert event.before[CH3].value == pytest.approx(-0.12)
     assert event.after[CH3].value == 0
     assert set(event.before) == set(event.after) == {CH3}
     assert event.new_errors == {}
@@ -447,7 +446,7 @@ def test_deviations_need_a_reading_and_a_gas() -> None:
     )
     assert event.deviations == {}
     with_gas = replace(event, gases=MappingProxyType({CH3: 20.95, CH1: None}))
-    assert with_gas.deviations == {CH3: approx(-0.26)}
+    assert with_gas.deviations == {CH3: pytest.approx(-0.26)}
     no_reading = replace(with_gas, before=MappingProxyType({}))
     assert no_reading.deviations == {}
 
@@ -639,10 +638,10 @@ async def test_watching_a_zero_made_at_the_panel() -> None:
     assert event.kind is ManualCalibrationKind.ZERO
     assert event.channels == (CH3,)
     assert event.evidence == ("a read showed it running",)
-    assert event.before[CH3].value == approx(-0.12)
+    assert event.before[CH3].value == pytest.approx(-0.12)
     assert event.after[CH3].value == 0
     assert event.gases == {CH3: 0.0}
-    assert event.deviations == {CH3: approx(-0.12)}
+    assert event.deviations == {CH3: pytest.approx(-0.12)}
     assert event.adc_before is not None
     assert len(event.adc_before.raw) == 21
     assert [k for k, _ in mock.keys] == [ZERO, DOWN, ENT, ENT]
@@ -656,8 +655,8 @@ async def test_a_run_between_two_polls_is_settled_by_the_result_register() -> No
     assert event.outcome is COMPLETED
     assert event.kind is ManualCalibrationKind.SPAN
     assert event.evidence == ("the result register went from 0 on the wait step to 4 or 6",)
-    assert event.after[CH3].value == approx(20.95)
-    assert event.gases == {CH3: approx(20.95)}
+    assert event.after[CH3].value == pytest.approx(20.95)
+    assert event.gases == {CH3: pytest.approx(20.95)}
     assert event.adc_before is None
 
 
@@ -780,7 +779,7 @@ async def test_planning_a_manual_calibration_on_the_bench_analyzer() -> None:
     )
     assert zero.targets[0].units == ("vol%",)
     assert span.channels == (CH3,)
-    assert span.targets[0].span_gas[0] == approx(20.95)
+    assert span.targets[0].span_gas[0] == pytest.approx(20.95)
 
 
 @pytest.mark.parametrize(("channel", "kind"), [("CH6", "zero"), ("CH3", "both"), ("CH3", 1)])

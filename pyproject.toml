@@ -128,7 +128,7 @@ type = [
     "pyright>=1.1.410",
 ]
 test = [
-    "pytest>=9.1.0",
+    "pytest>=9.2.0",
     # AnyIO ships its own pytest plugin; pytest-asyncio would conflict with it
     # (the two auto-modes disagree, and pytest-asyncio wraps fixtures in fresh
     # tasks that break cancel scopes / task groups). See AnyIO testing docs.
@@ -266,7 +266,7 @@ disallow_incomplete_defs = false
 include = ["src", "tests"]
 exclude = ["src/fujilib/_version.py", "**/__pycache__"]
 # Project root on the search path so ``tests`` resolves as a namespace package
-# (tests import shared fixtures via ``from tests.conftest import ...``).
+# (tests import shared fixtures via ``from tests.facade import ...``).
 extraPaths = ["."]
 pythonVersion = "3.13"
 typeCheckingMode = "strict"

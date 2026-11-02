@@ -17,24 +17,6 @@ import pytest
 
 if TYPE_CHECKING:
     from _pytest.mark.structures import ParameterSet
-    from _pytest.python_api import ApproxBase
-
-
-def approx(
-    expected: object,
-    *,
-    rel: float | None = None,
-    abs: float | None = None,  # noqa: A002 - mirrors pytest.approx's parameter name
-    nan_ok: bool = False,
-) -> ApproxBase:
-    """Typed shim over :func:`pytest.approx`.
-
-    ``pytest.approx`` has untyped parameters, so every call site trips pyright's
-    strict ``reportUnknownMemberType``. Funnelling through this typed wrapper
-    confines that to a single suppressed line here.
-    """
-    return pytest.approx(expected, rel=rel, abs=abs, nan_ok=nan_ok)  # pyright: ignore[reportUnknownMemberType]
-
 
 _UVLOOP_UNAVAILABLE = sys.platform == "win32" or find_spec("uvloop") is None
 
