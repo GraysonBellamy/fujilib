@@ -907,9 +907,10 @@ class MockAnalyzer:
             self.set_register("display.screen", 0)
             self.set_register("display.calibration_step", 0)
             self._cursor_reset = True
-        elif command in {_Command.AUTO_CALIBRATION, _Command.AUTO_ZERO}:
-            if self.calibration is None:
-                self._start_calibration(command, now)
+        elif (
+            command in {_Command.AUTO_CALIBRATION, _Command.AUTO_ZERO} and self.calibration is None
+        ):
+            self._start_calibration(command, now)
 
     def _flow_s(self, address: int) -> float:
         return self.holding.get(address, 0) * self.time_scale
